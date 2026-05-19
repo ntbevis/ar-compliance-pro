@@ -121,11 +121,17 @@ export async function syncLiveStateRegulations(targetSubClassification?: string)
 
         // 4. Pipe the full text directly into your aggressive vectorizer chunk array
         console.log(`🚀 Routing text blocks into your reg-monitor chunk loop for ${subClass}...`);
-        await ingestRegulatoryText(fullRuleText, metadata);
+        const ingestionSuccess = await ingestRegulatoryText(fullRuleText, metadata);
+        
+        if (!ingestionSuccess) {
+          throw new Error(`Failed to ingest regulatory text for ${subClass}`);
+        }
       }
 
-    } catch (err) {
+    } catch (err: any) {
       console.error(`❌ Automated extraction sync failed for ${repo.name}:`, err);
+      // Bubble up the error to the admin action layer for UI visibility
+      throw new Error(`Repository sync failed for ${repo.name}: ${err.message}`);
     }
   }
   console.log("🏁 State data extraction cycle complete. All vector spaces are optimized!");

@@ -73,20 +73,25 @@ export async function ingestRegulatoryText(rawText: string, metadata: any) {
     // Generate the 1536-dimension vector embedding
     const embedding = await generatePrecisionEmbedding(chunks[i]);
 
-    // Insert cleanly structured content into the vault
+    // Insert cleanly structured content into the vault with explicit schema alignment
     const { error } = await supabase.from('regulatory_knowledge').insert({
       content: chunks[i],
       embedding,
       category: metadata.category,
-      metadata: { 
-        ...metadata, 
-        chunk_index: i, 
+      metadata: {
+        ...metadata,
+        chunk_index: i,
         total_chunks: chunks.length,
         ingested_at: new Date().toISOString()
       }
     });
 
-    if (error) console.error(`   [Error] Segment ${i}:`, error.message);
+    if (error) {
+      console.error(`   [Error] Segment ${i}:`, error.message);
+      console.error(`   [Error Details]:`, error.details);
+      console.error(`   [Error Hint]:`, error.hint);
+      throw new Error(`Database Write Rejected: ${error.message} - Details: ${error.details || 'No additional details'}`);
+    }
     
     if (i % 20 === 0 && i > 0) {
       console.log(`   [Progress] ${i}/${chunks.length} segments secured...`);
