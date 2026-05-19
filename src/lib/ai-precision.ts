@@ -84,8 +84,15 @@ export async function getRelevantRegulations(documentText: string, facilityId: s
 /**
  * The "Auditor Brain": Compares the document against retrieved regulations.
  * Balanced to avoid false positives on fully cleared documents.
+ * Now accepts dynamic schema keys from the database for precise document type classification.
  */
-export async function analyzeCompliance(documentText: string, regulations: any[]) {
+export async function analyzeCompliance(
+  documentText: string,
+  regulations: any[],
+  allowedSystemKeys: string[],
+  facilityType: string,
+  subClassification: string | null
+) {
   const currentCalendarDate = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     year: 'numeric',
@@ -96,6 +103,9 @@ export async function analyzeCompliance(documentText: string, regulations: any[]
   const prompt = `
     You are an expert Senior Regulatory Auditor for the Arkansas Department of Human Services (DHS).
     Your job is to cross-reference the uploaded operational personnel document text against the official state regulations provided.
+    
+    FACILITY CLASSIFICATION SCOPE:
+    This document is being audited for a facility classified as: ${facilityType}${subClassification ? ` (${subClassification})` : ''}
     
     CRITICAL AUDIT REFERENCE TIME:
     Today's Current Date is: ${currentCalendarDate}
@@ -114,6 +124,7 @@ export async function analyzeCompliance(documentText: string, regulations: any[]
     4. Do not misinterpret general protective rules in the state code (like "staff must be supervised pending completion of checks") as active violations if the document text proves that the check is already fully completed and cleared.
     5. If there are genuinely missing certifications, clear expiration violations, or insufficient parameters, set compliance_status to "Non-Compliant". Otherwise, set it to "Compliant".
     6. PERSONNEL EXTRACTION: If this document pertains to a specific employee or staff member, extract their name information. Parse the name into separate first and last name components. Handle various formats like "Last, First", "First Last", "First Middle Last", etc.
+    7. DOCUMENT TYPE CLASSIFICATION: You must classify this document by returning an exact string match in the field 'extracted_document_type'. This string MUST be chosen exclusively from this allowed array of system keys defined in the database for this facility's regulatory framework: ${JSON.stringify(allowedSystemKeys)}. If the document matches none of these specific regulatory metrics, fallback to 'general_compliance_upload'.
 
     You must output valid JSON matching this schema precisely:
     {
@@ -122,7 +133,8 @@ export async function analyzeCompliance(documentText: string, regulations: any[]
       "corrective_action": "Clear, step-by-step resolution details for the facility director, or 'None' if compliant.",
       "extracted_personnel_name": "Full name as it appears in the document, or null if not a personnel document",
       "extracted_first_name": "First name only, or null if not extractable",
-      "extracted_last_name": "Last name only, or null if not extractable"
+      "extracted_last_name": "Last name only, or null if not extractable",
+      "extracted_document_type": "Must be one of the allowed system keys from the array above, or 'general_compliance_upload' if no match"
     }
   `;
 

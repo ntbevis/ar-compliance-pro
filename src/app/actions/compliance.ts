@@ -118,13 +118,13 @@ export async function handleDocumentUploadSuccess(facilityId: string, documentId
   console.log(`🔄 Processing upload action for facility ${facilityId}, document ${documentId}`);
   
   try {
-    // 1. Authenticate user and verify facility ownership
+    // 1. Authenticate user and verify facility ownership + fetch facility classification scope
     const { orgId } = await getAuthenticatedUserContext();
     const supabase = createAdminClient();
     
     const { data: facility, error: facilityError } = await supabase
       .from('facilities')
-      .select('id, org_id')
+      .select('id, org_id, facility_type, sub_classification')
       .eq('id', facilityId)
       .eq('org_id', orgId)
       .single();
@@ -133,7 +133,36 @@ export async function handleDocumentUploadSuccess(facilityId: string, documentId
       throw new Error('Unauthorized: Facility not found or does not belong to your organization');
     }
     
-    // 2. Fetch the exact record using your confirmed columns and verify it belongs to the facility
+    const facilityType = facility.facility_type;
+    const subClassification = facility.sub_classification;
+    
+    console.log(`📋 Facility Classification: ${facilityType}${subClassification ? ` (${subClassification})` : ''}`);
+    
+    // 2. Query compliance_criteria table for valid document types based on facility scope
+    let criteriaQuery = supabase
+      .from('compliance_criteria')
+      .select('required_document_type')
+      .eq('facility_type', facilityType);
+    
+    // Add sub-classification filter if available for precise regulatory scoping
+    if (subClassification) {
+      criteriaQuery = criteriaQuery.eq('sub_classification', subClassification);
+    }
+    
+    const { data: criteriaRecords, error: criteriaError } = await criteriaQuery;
+    
+    if (criteriaError) {
+      console.error('❌ Error querying compliance_criteria:', criteriaError);
+    }
+    
+    // Extract array of valid document type keys from database
+    const allowedSystemKeys = (criteriaRecords || [])
+      .map(record => record.required_document_type)
+      .filter(Boolean); // Remove any null/undefined values
+    
+    console.log(`🔑 Dynamic Schema Loaded: ${allowedSystemKeys.length} valid document types for this facility classification`);
+    
+    // 3. Fetch the exact record using your confirmed columns and verify it belongs to the facility
     const { data: docRecord, error: docError } = await supabase
       .from('facility_documents')
       .select('id, name, file_url, metadata, facility_id')
@@ -155,7 +184,7 @@ export async function handleDocumentUploadSuccess(facilityId: string, documentId
 
     let buffer: Buffer;
 
-    // 2. Resilient Binary Resolver: Handles both direct fully-qualified URLs and relative storage paths
+    // 4. Resilient Binary Resolver: Handles both direct fully-qualified URLs and relative storage paths
     if (fileTargetSource.startsWith('http://') || fileTargetSource.startsWith('https://')) {
       console.log(`📥 Downloading document asset via public source endpoint: ${fileTargetSource}`);
       const networkResponse = await fetch(fileTargetSource);
@@ -176,7 +205,7 @@ export async function handleDocumentUploadSuccess(facilityId: string, documentId
       buffer = Buffer.from(arrayBuffer);
     }
 
-    // 3. Pre-Validation Interceptor Layer - Scan for problematic keywords
+    // 5. Pre-Validation Interceptor Layer - Scan for problematic keywords
     console.log(`🔍 Running pre-validation keyword scan on document: ${fileName}`);
     
     let contentText = '';
@@ -231,18 +260,31 @@ export async function handleDocumentUploadSuccess(facilityId: string, documentId
 
     console.log(`✅ Pre-validation passed - No problematic keywords detected. Proceeding to AI analysis...`);
 
-    // 4. Pass the high-fidelity binary payload or raw string straight to the AI router
-    // Now includes facilityId for sub-classification scoped RAG retrieval
-    console.log(`🧠 Handing data payload directly to AI routing engine for perfect conversion...`);
+    // 6. Pass the high-fidelity binary payload or raw string straight to the AI router
+    // Now includes facilityId for sub-classification scoped RAG retrieval + dynamic schema keys
+    console.log(`🧠 Handing data payload directly to AI routing engine with dynamic schema for perfect conversion...`);
     
     let auditReport;
     if (mimeType === 'text/plain') {
       // Direct string evaluation for plain text files
       const cleanText = buffer.toString('utf-8');
-      auditReport = await routeAndExtract({ text: cleanText, facilityId });
+      auditReport = await routeAndExtract({
+        text: cleanText,
+        facilityId,
+        allowedSystemKeys,
+        facilityType,
+        subClassification
+      });
     } else {
       // Pass the binary buffer and mime type forward for multimodal image/document vision conversions
-      auditReport = await routeAndExtract({ buffer, mimeType, facilityId });
+      auditReport = await routeAndExtract({
+        buffer,
+        mimeType,
+        facilityId,
+        allowedSystemKeys,
+        facilityType,
+        subClassification
+      });
     }
 
     // Map compliance outcome directly to your allowed status categories
@@ -250,7 +292,11 @@ export async function handleDocumentUploadSuccess(facilityId: string, documentId
 
     console.log(`💾 Committing regulatory status [${finalStatus}] into table row records...`);
     
-    // 5. Intelligent Personnel Matching & Auto-Linking
+    // Extract the AI-classified document type from the audit report
+    const extractedDocumentType = auditReport.extracted_document_type || 'general_compliance_upload';
+    console.log(`📄 AI Classified Document Type: ${extractedDocumentType}`);
+    
+    // 7. Intelligent Personnel Matching & Auto-Linking
     let personnelId: string | null = null;
     let personnelMatchStatus = 'not_attempted';
     
@@ -298,10 +344,11 @@ export async function handleDocumentUploadSuccess(facilityId: string, documentId
       }
     }
     
-    // 6. Update the verified columns in place with enhanced audit metadata and personnel link
+    // 8. Update the verified columns in place with enhanced audit metadata, personnel link, and extracted document type
     const auditTimestamp = new Date().toISOString();
     const updatePayload: any = {
       status: finalStatus,
+      document_type: extractedDocumentType, // Save AI-extracted document type to database
       metadata: {
         ...(typeof docRecord.metadata === 'object' ? docRecord.metadata : {}),
         auditedAt: auditTimestamp,
@@ -330,6 +377,22 @@ export async function handleDocumentUploadSuccess(facilityId: string, documentId
       .eq('id', documentId);
 
     if (updateError) throw updateError;
+
+    // 9. Auto-Update Personnel Clearance Status if document is approved and linked to personnel
+    if (finalStatus === 'approved' && personnelId) {
+      console.log(`🔄 Auto-updating personnel clearance status for personnel_id: ${personnelId}`);
+      
+      const { error: personnelUpdateError } = await supabase
+        .from('personnel')
+        .update({ clearance_status: 'approved' })
+        .eq('id', personnelId);
+      
+      if (personnelUpdateError) {
+        console.error('❌ Error updating personnel clearance status:', personnelUpdateError);
+      } else {
+        console.log(`✅ Personnel ${personnelId} clearance status automatically updated to 'approved'`);
+      }
+    }
 
     console.log(`✅ Pipeline Success: Document ${documentId} completely verified.`);
     

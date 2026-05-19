@@ -6,6 +6,9 @@ interface AuditPayload {
   buffer?: Buffer;
   mimeType?: string;
   facilityId?: string;
+  allowedSystemKeys?: string[];
+  facilityType?: string;
+  subClassification?: string | null;
 }
 
 /**
@@ -13,6 +16,7 @@ interface AuditPayload {
  * Accepts raw text payloads or binary image buffers and coordinates
  * high-fidelity extraction and compliance matching.
  * Now scoped to facility's specific sub-classification for precise regulatory matching.
+ * Schema-driven: accepts dynamic document type keys from the database.
  */
 export async function routeAndExtract(payload: AuditPayload) {
   console.log("-> Initializing high-fidelity AI document conversion & audit...");
@@ -43,8 +47,18 @@ export async function routeAndExtract(payload: AuditPayload) {
     const relevantLaws = await getRelevantRegulations(textContentForRAG, payload.facilityId);
     console.log(`-> Context Injection: Linked ${relevantLaws.length} matching Arkansas regulations.`);
 
-    // 2. REASONING: Execute the final compliance audit report
-    const auditReport = await analyzeCompliance(textContentForRAG, relevantLaws);
+    // 2. REASONING: Execute the final compliance audit report with dynamic schema
+    const allowedKeys = payload.allowedSystemKeys || ['general_compliance_upload'];
+    const facilityType = payload.facilityType || 'unknown';
+    const subClassification = payload.subClassification || null;
+    
+    const auditReport = await analyzeCompliance(
+      textContentForRAG,
+      relevantLaws,
+      allowedKeys,
+      facilityType,
+      subClassification
+    );
     return auditReport;
 
   } catch (error) {
