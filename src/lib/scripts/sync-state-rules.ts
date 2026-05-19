@@ -1,4 +1,8 @@
 // src/lib/scripts/sync-state-rules.ts
+import https from 'https';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import { ingestRegulatoryText } from '../reg-monitor';
 import { extractTextFromBuffer } from '../document-processor';
 
@@ -52,23 +56,53 @@ export async function syncLiveStateRegulations(targetSubClassification?: string)
     try {
       console.log(`🌐 Stream-downloading complete legal code framework for: ${repo.name}...`);
       
-      // 1. Fetch the raw document binary directly over the network with browser-like headers
-      const response = await fetch(repo.url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/pdf,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        }
+      // 1. Download the raw document binary using native Node.js https streaming for memory safety
+      const tempInputPath = path.join(os.tmpdir(), `state_law_${Date.now()}.pdf`);
+      const fileStream = fs.createWriteStream(tempInputPath);
+
+      await new Promise<void>((resolve, reject) => {
+        const requestOptions = {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/pdf'
+          }
+        };
+
+        https.get(repo.url, requestOptions, (res) => {
+          if (res.statusCode !== 200) {
+            reject(new Error(`DHS Portal returned HTTP Status Code: ${res.statusCode}`));
+            return;
+          }
+          
+          console.log(`📥 Streaming ${repo.fileName} to temporary workspace...`);
+          res.pipe(fileStream);
+          
+          fileStream.on('finish', () => {
+            fileStream.close();
+            resolve();
+          });
+        }).on('error', (err) => {
+          if (fs.existsSync(tempInputPath)) {
+            fs.unlinkSync(tempInputPath);
+          }
+          reject(err);
+        });
       });
-      if (!response.ok) {
-        throw new Error(`HTTP network error: status ${response.status}`);
-      }
+
+      console.log(`✅ Download complete. Loading file into memory for text extraction...`);
       
-      const arrayBuffer = await response.arrayBuffer();
-      const documentBuffer = Buffer.from(arrayBuffer);
+      // 2. Load the downloaded bytes straight into our extraction tool safely
+      const documentBuffer = fs.readFileSync(tempInputPath);
 
       console.log(`🧠 Invoking internal document engine to extract the raw text...`);
-      // 2. Feed the network buffer directly into your existing parsing engine
+      // 3. Feed the buffer directly into your existing parsing engine
       const fullRuleText = await extractTextFromBuffer(documentBuffer, repo.fileName);
+      
+      // 4. Clean up temporary local workspace asset
+      if (fs.existsSync(tempInputPath)) {
+        fs.unlinkSync(tempInputPath);
+        console.log(`🗑️  Temporary file cleaned up: ${tempInputPath}`);
+      }
 
       const textLength = fullRuleText?.trim().length || 0;
       console.log(`📑 Successfully extracted ${textLength} characters from the live stream.`);
