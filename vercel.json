@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "src/app/admin/seed-laws/actions.ts": {
+      "maxDuration": 60
+    }
+  }
+}

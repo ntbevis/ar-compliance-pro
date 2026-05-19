@@ -5,7 +5,10 @@ import { discoverAllFacilityCriteria } from '@/lib/scripts/discover-all-facility
 
 /**
  * Server Action triggered by the Admin Dashboard button
- * to refresh the app's vector brain from official state portals.
+ * to process local regulatory documents and extract compliance criteria.
+ *
+ * IMPORTANT: This processes documents sequentially to avoid Vercel timeout limits.
+ * Each PDF is processed individually with its own AI extraction and vectorization.
  *
  * @param subClassification - Optional specific sub-classification to sync (e.g., "Licensed Child Care Center (CCC)")
  *                           If not provided, syncs all sub-classifications
@@ -13,12 +16,12 @@ import { discoverAllFacilityCriteria } from '@/lib/scripts/discover-all-facility
 export async function triggerStateWebSync(subClassification?: string) {
   try {
     if (subClassification) {
-      console.log(`🔒 [Admin] Authenticated web trigger received. Initiating state sync for: ${subClassification}...`);
+      console.log(`🔒 [Admin] Processing local documents for: ${subClassification}...`);
     } else {
-      console.log("🔒 [Admin] Authenticated web trigger received. Initiating state sync for ALL sub-classifications...");
+      console.log("🔒 [Admin] Processing all local regulatory documents...");
     }
     
-    // Fire off our live web scraper engine with optional sub-classification filter
+    // Process local PDFs and vectorize content
     await syncLiveStateRegulations(subClassification);
     
     // Run the AI compliance criteria discovery agent to extract structured requirements
@@ -27,13 +30,13 @@ export async function triggerStateWebSync(subClassification?: string) {
     console.log("✅ [Admin] AI compliance criteria discovery complete.");
     
     const message = subClassification
-      ? `State regulations synchronized and compliance criteria discovered for ${subClassification}.`
-      : "State regulations synchronized and compliance criteria discovered for all sub-classifications.";
+      ? `Successfully processed regulatory documents and discovered compliance criteria for ${subClassification}.`
+      : "Successfully processed all regulatory documents and discovered compliance criteria.";
     
     return { success: true, message };
   } catch (error: any) {
-    console.error("❌ [Admin] Web trigger sync failed:", error);
-    return { success: false, error: error.message || "Failed to sync live data." };
+    console.error("❌ [Admin] Document processing failed:", error);
+    return { success: false, error: error.message || "Failed to process documents." };
   }
 }
 
