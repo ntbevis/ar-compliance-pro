@@ -1,5 +1,5 @@
 // src/lib/scripts/sync-state-rules.ts
-import https from 'https';
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -56,47 +56,26 @@ export async function syncLiveStateRegulations(targetSubClassification?: string)
     try {
       console.log(`🌐 Stream-downloading complete legal code framework for: ${repo.name}...`);
       
-      // 1. Download the raw document binary using native Node.js https streaming for memory safety
+      // 1. Download the raw document binary using system curl with authentic browser TLS fingerprint
       const tempInputPath = path.join(os.tmpdir(), `state_law_${Date.now()}.pdf`);
-      const fileStream = fs.createWriteStream(tempInputPath);
+      console.log(`📥 Executing secure system channel download for ${repo.fileName}...`);
 
-      await new Promise<void>((resolve, reject) => {
-        const requestOptions = {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'identity',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0'
-          }
-        };
-
-        https.get(new URL(repo.url), requestOptions, (res) => {
-          if (res.statusCode !== 200) {
-            reject(new Error(`DHS Portal returned HTTP Status Code: ${res.statusCode}`));
-            return;
-          }
-          
-          console.log(`📥 Streaming ${repo.fileName} to temporary workspace...`);
-          res.pipe(fileStream);
-          
-          fileStream.on('finish', () => {
-            fileStream.close();
-            resolve();
-          });
-        }).on('error', (err) => {
-          if (fs.existsSync(tempInputPath)) {
-            fs.unlinkSync(tempInputPath);
-          }
-          reject(err);
-        });
-      });
+      try {
+        // Use system curl with an authentic browser context.
+        // The -L flag automatically follows internal state server redirects.
+        execSync(
+          `curl -L "${repo.url}" \
+            -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8" \
+            -H "Accept-Language: en-US,en;q=0.9" \
+            --compressed \
+            -o "${tempInputPath}"`,
+          { stdio: 'pipe' }
+        );
+      } catch (curlError: any) {
+        if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
+        throw new Error(`State Portal Connection Aborted by Firewall: ${curlError.message}`);
+      }
 
       console.log(`✅ Download complete. Loading file into memory for text extraction...`);
       
