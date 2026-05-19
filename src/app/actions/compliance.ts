@@ -250,32 +250,97 @@ export async function handleDocumentUploadSuccess(facilityId: string, documentId
 
     console.log(`💾 Committing regulatory status [${finalStatus}] into table row records...`);
     
-    // 5. Update the verified columns in place with enhanced audit metadata
+    // 5. Intelligent Personnel Matching & Auto-Linking
+    let personnelId: string | null = null;
+    let personnelMatchStatus = 'not_attempted';
+    
+    if (auditReport.extracted_personnel_name || auditReport.extracted_first_name || auditReport.extracted_last_name) {
+      console.log(`👤 Personnel name detected in document. Attempting fuzzy match...`);
+      
+      const firstName = auditReport.extracted_first_name?.trim();
+      const lastName = auditReport.extracted_last_name?.trim();
+      const fullName = auditReport.extracted_personnel_name?.trim();
+      
+      // Build fuzzy matching query
+      let personnelQuery = supabase
+        .from('personnel')
+        .select('id, name')
+        .eq('facility_id', facilityId)
+        .eq('status', 'active'); // Only match active personnel
+      
+      // Try multiple name format combinations for robust matching
+      if (firstName && lastName) {
+        // Match: "First Last" OR "Last, First" OR "Last First"
+        const { data: matches } = await personnelQuery.or(
+          `name.ilike.%${firstName}%${lastName}%,name.ilike.%${lastName}%${firstName}%`
+        );
+        
+        if (matches && matches.length > 0) {
+          personnelId = matches[0].id;
+          personnelMatchStatus = 'matched';
+          console.log(`✅ Personnel matched: ${matches[0].name} (ID: ${personnelId})`);
+        } else {
+          personnelMatchStatus = 'no_match';
+          console.log(`⚠️ No personnel match found for: ${firstName} ${lastName}`);
+        }
+      } else if (fullName) {
+        // Fallback: Try matching with full name string
+        const { data: matches } = await personnelQuery.ilike('name', `%${fullName}%`);
+        
+        if (matches && matches.length > 0) {
+          personnelId = matches[0].id;
+          personnelMatchStatus = 'matched';
+          console.log(`✅ Personnel matched: ${matches[0].name} (ID: ${personnelId})`);
+        } else {
+          personnelMatchStatus = 'no_match';
+          console.log(`⚠️ No personnel match found for: ${fullName}`);
+        }
+      }
+    }
+    
+    // 6. Update the verified columns in place with enhanced audit metadata and personnel link
     const auditTimestamp = new Date().toISOString();
+    const updatePayload: any = {
+      status: finalStatus,
+      metadata: {
+        ...(typeof docRecord.metadata === 'object' ? docRecord.metadata : {}),
+        auditedAt: auditTimestamp,
+        notes: finalStatus === 'approved'
+          ? 'Automated AI legal compliance scan passed.'
+          : `AI analysis flagged: ${auditReport.corrective_action || 'Compliance issues detected'}`,
+        pre_validation_result: 'passed',
+        keywords_detected: [],
+        audit_run_at: auditTimestamp,
+        compliance_status: auditReport.compliance_status,
+        regulatory_code_violated: auditReport.regulatory_code_violated || 'None',
+        corrective_action: auditReport.corrective_action || 'None',
+        extracted_personnel_name: auditReport.extracted_personnel_name || null,
+        personnel_match_status: personnelMatchStatus
+      }
+    };
+    
+    // Add personnel_id if matched
+    if (personnelId) {
+      updatePayload.personnel_id = personnelId;
+    }
+    
     const { error: updateError } = await supabase
       .from('facility_documents')
-      .update({
-        status: finalStatus,
-        metadata: {
-          ...(typeof docRecord.metadata === 'object' ? docRecord.metadata : {}),
-          auditedAt: auditTimestamp,
-          notes: finalStatus === 'approved'
-            ? 'Automated AI legal compliance scan passed.'
-            : `AI analysis flagged: ${auditReport.corrective_action || 'Compliance issues detected'}`,
-          pre_validation_result: 'passed',
-          keywords_detected: [],
-          audit_run_at: auditTimestamp,
-          compliance_status: auditReport.compliance_status,
-          regulatory_code_violated: auditReport.regulatory_code_violated || 'None',
-          corrective_action: auditReport.corrective_action || 'None'
-        }
-      })
+      .update(updatePayload)
       .eq('id', documentId);
 
     if (updateError) throw updateError;
 
     console.log(`✅ Pipeline Success: Document ${documentId} completely verified.`);
-    return { success: true, status: finalStatus, report: auditReport };
+    
+    // Include personnel match info in response
+    return {
+      success: true,
+      status: finalStatus,
+      report: auditReport,
+      personnelMatched: personnelMatchStatus === 'matched',
+      personnelName: auditReport.extracted_personnel_name || null
+    };
 
   } catch (error: any) {
     console.error(`❌ Action Failure: Unable to process document audit link:`, error.message);

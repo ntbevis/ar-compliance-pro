@@ -128,9 +128,18 @@ export default function ExecutiveOverview() {
       if (response.success && response.report) {
         const report = response.report;
         
+        // Build feedback message with personnel matching status
+        let feedbackMessage = `Document processed: ${report.compliance_status}. ${report.corrective_action || 'No action required.'}`;
+        
+        if (response.personnelName && !response.personnelMatched) {
+          feedbackMessage += ` ⚠️ Document accepted but could not be linked: Personnel '${response.personnelName}' is not registered in this facility's vault.`;
+        } else if (response.personnelMatched) {
+          feedbackMessage += ` ✅ Automatically linked to personnel record: ${response.personnelName}.`;
+        }
+        
         setUploadFeedback({
           status: report.compliance_status,
-          message: `Document processed: ${report.compliance_status}. ${report.corrective_action || 'No action required.'}`
+          message: feedbackMessage
         });
 
         // Refresh the documents list to show the new upload

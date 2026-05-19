@@ -94,7 +94,7 @@ export async function analyzeCompliance(documentText: string, regulations: any[]
   });
 
   const prompt = `
-    You are an expert Senior Regulatory Auditor for the Arkansas Department of Human Services (DHS). 
+    You are an expert Senior Regulatory Auditor for the Arkansas Department of Human Services (DHS).
     Your job is to cross-reference the uploaded operational personnel document text against the official state regulations provided.
     
     CRITICAL AUDIT REFERENCE TIME:
@@ -113,12 +113,16 @@ export async function analyzeCompliance(documentText: string, regulations: any[]
     3. AVOID FALSE POSITIVES: If the document text explicitly states that a requirement has been successfully passed, completed, or cleared (e.g., "DETERMINATION: ELIGIBLE", "PASSED", "officially cleared for unrestricted employment"), and it is not expired, it must be marked as "Compliant".
     4. Do not misinterpret general protective rules in the state code (like "staff must be supervised pending completion of checks") as active violations if the document text proves that the check is already fully completed and cleared.
     5. If there are genuinely missing certifications, clear expiration violations, or insufficient parameters, set compliance_status to "Non-Compliant". Otherwise, set it to "Compliant".
+    6. PERSONNEL EXTRACTION: If this document pertains to a specific employee or staff member, extract their name information. Parse the name into separate first and last name components. Handle various formats like "Last, First", "First Last", "First Middle Last", etc.
 
     You must output valid JSON matching this schema precisely:
     {
       "compliance_status": "Compliant" | "Non-Compliant",
       "regulatory_code_violated": "Identify specific sections, headers, or rules, or write 'None' if compliant.",
-      "corrective_action": "Clear, step-by-step resolution details for the facility director, or 'None' if compliant."
+      "corrective_action": "Clear, step-by-step resolution details for the facility director, or 'None' if compliant.",
+      "extracted_personnel_name": "Full name as it appears in the document, or null if not a personnel document",
+      "extracted_first_name": "First name only, or null if not extractable",
+      "extracted_last_name": "Last name only, or null if not extractable"
     }
   `;
 
@@ -149,7 +153,20 @@ export async function analyzeComplianceWithVision(base64Image: string, mimeType:
       {
         role: "user",
         content: [
-          { type: "text", text: "Extract all text elements from this facility compliance document precisely. Return it inside an 'extracted_text' JSON key." },
+          {
+            type: "text",
+            text: `Extract all text elements from this facility compliance document precisely.
+            
+            If this document pertains to a specific employee or staff member, also extract their name information:
+            - Parse the name into separate first and last name components
+            - Handle various formats like "Last, First", "First Last", "First Middle Last", etc.
+            
+            Return JSON with these keys:
+            - extracted_text: Full document text
+            - extracted_personnel_name: Full name as it appears, or null if not a personnel document
+            - extracted_first_name: First name only, or null
+            - extracted_last_name: Last name only, or null`
+          },
           {
             type: "image_url",
             image_url: {
