@@ -36,15 +36,15 @@ const STATE_REPOS = [
 ];
 
 export async function syncLiveStateRegulations(targetSubClassification?: string) {
-  if (targetSubClassification) {
+  if (targetSubClassification && targetSubClassification !== 'all') {
     console.log(`📡 Connecting to official Arkansas State cloud data repositories for: ${targetSubClassification}...`);
   } else {
     console.log("📡 Connecting to official Arkansas State cloud data repositories (ALL sub-classifications)...");
   }
 
   for (const repo of STATE_REPOS) {
-    // Filter by sub-classification if specified
-    const subClassificationsToProcess = targetSubClassification
+    // Filter by sub-classification if specified (and not 'all')
+    const subClassificationsToProcess = (targetSubClassification && targetSubClassification !== 'all')
       ? repo.subClassifications.filter(sc => sc === targetSubClassification)
       : repo.subClassifications;
 
