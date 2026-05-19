@@ -1,8 +1,6 @@
 // src/lib/scripts/sync-state-rules.ts
-import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import { ingestRegulatoryText } from '../reg-monitor';
 import { extractTextFromBuffer } from '../document-processor';
 
@@ -54,52 +52,28 @@ export async function syncLiveStateRegulations(targetSubClassification?: string)
     }
 
     try {
-      console.log(`🌐 Stream-downloading complete legal code framework for: ${repo.name}...`);
+      console.log(`📂 Ingesting local regulatory document: ${repo.name}...`);
       
-      // 1. Download the raw document binary using system curl with compliant browser headers
-      const tempInputPath = path.join(os.tmpdir(), `state_law_${Date.now()}.pdf`);
-      console.log(`📡 Initializing compliant secure document transfer for: ${repo.name}`);
+      // 1. Read the local file from the seed-laws directory
+      const localFilePath = path.join(process.cwd(), 'src/app/admin/seed-laws', repo.fileName);
+      console.log(`📂 Loading file from: ${localFilePath}`);
 
-      try {
-        // Use fully compliant standard browser headers to request the public static document
-        execSync(
-          `curl -L "${repo.url}" \
-            -H "Host: humanservices.arkansas.gov" \
-            -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
-            -H "Accept: application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
-            -H "Accept-Language: en-US,en;q=0.9" \
-            -H "Referer: https://humanservices.arkansas.gov/" \
-            -H "Connection: close" \
-            --compressed \
-            --connect-timeout 15 \
-            -o "${tempInputPath}"`,
-          { stdio: 'pipe' }
-        );
-        console.log(`✅ Document stream written securely to disk.`);
-      } catch (curlError: any) {
-        if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
-        throw new Error(`State Portal Connection Aborted: Ensure network visibility or domain availability. Details: ${curlError.message}`);
+      if (!fs.existsSync(localFilePath)) {
+        throw new Error(`File missing locally: ${localFilePath}. Please ensure the PDF is placed in src/app/admin/seed-laws/`);
       }
 
-      console.log(`✅ Download complete. Loading file into memory for text extraction...`);
-      
-      // 2. Load the downloaded bytes straight into our extraction tool safely
-      const documentBuffer = fs.readFileSync(tempInputPath);
+      // 2. Load the file buffer
+      const buffer = fs.readFileSync(localFilePath);
+      console.log(`✅ File loaded successfully (${buffer.length} bytes)`);
 
       console.log(`🧠 Invoking internal document engine to extract the raw text...`);
       // 3. Feed the buffer directly into your existing parsing engine
-      const fullRuleText = await extractTextFromBuffer(documentBuffer, repo.fileName);
-      
-      // 4. Clean up temporary local workspace asset
-      if (fs.existsSync(tempInputPath)) {
-        fs.unlinkSync(tempInputPath);
-        console.log(`🗑️  Temporary file cleaned up: ${tempInputPath}`);
-      }
+      const fullRuleText = await extractTextFromBuffer(buffer, repo.fileName);
 
       const textLength = fullRuleText?.trim().length || 0;
       console.log(`📑 Successfully extracted ${textLength} characters from the live stream.`);
 
-      // 3. Process for each applicable sub-classification
+      // 4. Process for each applicable sub-classification
       for (const subClass of subClassificationsToProcess) {
         console.log(`🎯 Processing rules for sub-classification: ${subClass}`);
         
@@ -111,7 +85,7 @@ export async function syncLiveStateRegulations(targetSubClassification?: string)
           synchronized_at: new Date().toISOString()
         };
 
-        // 4. Pipe the full text directly into your aggressive vectorizer chunk array
+        // 5. Pipe the full text directly into your aggressive vectorizer chunk array
         console.log(`🚀 Routing text blocks into your reg-monitor chunk loop for ${subClass}...`);
         const ingestionSuccess = await ingestRegulatoryText(fullRuleText, metadata);
         
