@@ -15,28 +15,25 @@ export const HEALTHCARE_SUBCLASSIFICATIONS = [
   'Assisted Living Facility (Tier I/II)'
 ] as const;
 
-// Authoritative state storage endpoints hosting the complete 2026 rule texts
+// Local regulatory document repository for AI-based ingestion
 const STATE_REPOS = [
   {
     name: 'Arkansas Childcare Centers Regulations',
     facilityType: 'childcare' as const,
     subClassifications: CHILDCARE_SUBCLASSIFICATIONS,
-    fileName: 'childcare_centers_regulations.pdf',
-    url: 'https://humanservices.arkansas.gov/wp-content/uploads/2020-Child-Care-centers.pdf'
+    fileName: 'childcare_centers_regulations.pdf'
   },
   {
     name: 'Arkansas Nursing Home Regulations',
     facilityType: 'nursing_home' as const,
     subClassifications: HEALTHCARE_SUBCLASSIFICATIONS,
-    fileName: 'nursing_home_regulations.pdf',
-    url: 'https://humanservices.arkansas.gov/wp-content/uploads/20CARpt.400-1.1.2025-A.pdf'
+    fileName: 'nursing_home_regulations.pdf'
   },
   {
     name: 'Arkansas Nursing Home Administrators Licensing Rules',
     facilityType: 'nursing_home' as const,
     subClassifications: HEALTHCARE_SUBCLASSIFICATIONS,
-    fileName: 'nursing_home_administrators_licensing_rules.pdf',
-    url: 'https://humanservices.arkansas.gov/nursing-home-administrators-licensing'
+    fileName: 'nursing_home_administrators_licensing_rules.pdf'
   }
 ];
 

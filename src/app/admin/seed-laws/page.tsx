@@ -45,7 +45,7 @@ export default function AdminSeedLawsPage() {
       <div className="mb-8 border-b pb-6">
         <h1 className="text-3xl font-bold text-gray-900 tracking-tight">System Administration Control</h1>
         <p className="text-gray-500 mt-2 text-sm md:text-base">
-          Manage and monitor the live regulatory knowledge layer. Triggering updates here forces our system to bypass static file copies and cross-reference live rules directly from state agency portals.
+          Process and vectorize local regulatory documents using AI-powered text extraction and embedding generation.
         </p>
       </div>
 
@@ -53,13 +53,13 @@ export default function AdminSeedLawsPage() {
       <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
         <div className="flex items-start justify-between mb-6">
           <div>
-            <h2 className="text-lg font-semibold text-gray-800">Dynamic State Vector Engine</h2>
+            <h2 className="text-lg font-semibold text-gray-800">Local Document Processing Engine</h2>
             <p className="text-xs text-gray-400 mt-1">
-              Active Targets: Arkansas DCCECE (Childcare) & OLTC (Nursing Homes) Authority Domains
+              Processing: Arkansas DCCECE (Childcare) & OLTC (Nursing Homes) Regulatory Documents
             </p>
           </div>
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-800 border border-blue-200">
-            Automated Web Pipeline
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-800 border border-green-200">
+            Local File Pipeline
           </span>
         </div>
 
@@ -105,8 +105,9 @@ export default function AdminSeedLawsPage() {
         <div className="text-sm text-gray-600 mb-6 space-y-2">
           <p className="font-medium text-gray-700">When triggered, this server task executes the following atomic operations:</p>
           <ul className="list-disc list-inside space-y-1 text-gray-500 pl-2">
-            <li>Establishes secure data stream tunnels to active DHS servers.</li>
-            <li>Passes layout arrays into OpenAI models to isolate core operational requirements.</li>
+            <li>Loads regulatory PDF documents from local seed-laws directory.</li>
+            <li>Extracts text using AI-powered PDF parsing (pdf2json).</li>
+            <li>Passes content to OpenAI models to isolate core operational requirements.</li>
             <li>Tags extracted rules with precise 4-tier sub-classification metadata.</li>
             <li>Purges obsolete vector database entries cleanly to avoid context fragmentation.</li>
             <li>Stores optimized, clean 1536-dimension embeddings inside your Supabase tables.</li>
@@ -126,13 +127,13 @@ export default function AdminSeedLawsPage() {
           {isPending ? (
             <span className="flex items-center justify-center gap-2">
               <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
-              Crawling State Portals & Vectorizing Data Engine...
+              Processing Local Documents & Vectorizing...
             </span>
           ) : (
             <>
-              {selectedSubClass === 'all' 
-                ? '🔄 Trigger Live State Portal Sync (All Classifications)'
-                : `🎯 Sync: ${selectedSubClass}`
+              {selectedSubClass === 'all'
+                ? '🔄 Process Local Regulatory Documents (All Classifications)'
+                : `🎯 Process: ${selectedSubClass}`
               }
             </>
           )}
