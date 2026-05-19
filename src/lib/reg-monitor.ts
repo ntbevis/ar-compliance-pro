@@ -98,8 +98,48 @@ export async function ingestRegulatoryText(rawText: string, metadata: any) {
 }
 
 /**
+ * String normalization helper for resilient fuzzy matching.
+ * Converts strings to lowercase, strips whitespace, and normalizes separators.
+ */
+function normalizeDocumentKey(input: string | null | undefined): string {
+  if (!input) return '';
+  return input
+    .toLowerCase()
+    .trim()
+    .replace(/[\s\-]+/g, '_')  // Replace spaces and hyphens with underscores
+    .replace(/[^a-z0-9_]/g, ''); // Remove any non-alphanumeric characters except underscores
+}
+
+/**
+ * Fuzzy token matching helper.
+ * Checks if two normalized strings share significant token overlap or containment.
+ */
+function tokensMatch(ruleKey: string, docKey: string): boolean {
+  const normalizedRule = normalizeDocumentKey(ruleKey);
+  const normalizedDoc = normalizeDocumentKey(docKey);
+  
+  // Direct match
+  if (normalizedRule === normalizedDoc) return true;
+  
+  // Containment check (either direction)
+  if (normalizedRule.includes(normalizedDoc) || normalizedDoc.includes(normalizedRule)) {
+    return true;
+  }
+  
+  // Token overlap check - split by underscore and check for shared meaningful tokens
+  const ruleTokens = normalizedRule.split('_').filter(t => t.length > 2); // Filter out short tokens
+  const docTokens = normalizedDoc.split('_').filter(t => t.length > 2);
+  
+  // If at least 2 significant tokens match, consider it a match
+  const sharedTokens = ruleTokens.filter(token => docTokens.includes(token));
+  if (sharedTokens.length >= 2) return true;
+  
+  return false;
+}
+
+/**
  * Reads from our database layers to calculate the real-time metrics
- * for the UI Dashboard, clearing out the compilation error.
+ * for the UI Dashboard using fully dynamic schema-driven token normalization.
  */
 export async function getRegulatoryStatus(facilityId: string) {
   const supabase = createAdminClient();
@@ -137,22 +177,42 @@ export async function getRegulatoryStatus(facilityId: string) {
       .eq('facility_id', facilityId)
       .eq('status', 'approved');
 
-    const verifiedSlugs = new Set(uploadedDocs?.map(d => d.document_type) || []);
-    const ruleCount = activeRules?.length || 0;
-    const verifiedCount = verifiedSlugs.size;
+    // 4. Dynamic Schema-Driven Fuzzy Metric Intersection
+    // Build a set of satisfied requirements using resilient token matching
+    const satisfiedRuleIds = new Set<string>();
+    const uploadedDocTypes = (uploadedDocs || []).map(d => d.document_type).filter(Boolean);
     
-    // Compute base document compliance score
+    console.log(`📊 Compliance Calculation: Evaluating ${activeRules?.length || 0} requirements against ${uploadedDocTypes.length} approved documents`);
+    
+    for (const rule of activeRules || []) {
+      const ruleKey = rule.required_document_type;
+      
+      // Check if any uploaded document matches this rule using fuzzy token matching
+      const isMatched = uploadedDocTypes.some(docType => tokensMatch(ruleKey, docType));
+      
+      if (isMatched) {
+        satisfiedRuleIds.add(rule.id);
+        console.log(`✅ Requirement satisfied: ${rule.requirement_name} (${ruleKey})`);
+      }
+    }
+    
+    const ruleCount = activeRules?.length || 0;
+    const verifiedCount = satisfiedRuleIds.size;
+    
+    // Compute base document compliance score as direct percentage of dynamic matches
     let calculatedScore = ruleCount > 0 ? Math.round((verifiedCount / ruleCount) * 100) : 0;
 
     // Filter down to map the current active gaps for the UI
     const identifiedGaps = (activeRules || [])
-      .filter(rule => !verifiedSlugs.has(rule.required_document_type))
+      .filter(rule => !satisfiedRuleIds.has(rule.id))
       .map(rule => ({
         id: rule.id,
         title: rule.requirement_name,
         systemSlug: rule.required_document_type,
         isCritical: rule.severity === 'critical'
       }));
+    
+    console.log(`📈 Compliance Score: ${calculatedScore}% (${verifiedCount}/${ruleCount} requirements met)`);
 
     // 4. Fetch actual active personnel count from the database
     const { count: personnelCount } = await supabase
