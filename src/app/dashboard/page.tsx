@@ -32,7 +32,7 @@ interface DocumentRecord {
 export default function ExecutiveOverview() {
   const router = useRouter();
   const supabase = createClient();
-  const { selectedFacilityId, currentView } = useFacility();
+  const { selectedFacilityId, setSelectedFacilityId, currentView } = useFacility();
   const [data, setData] = useState<any>(null);
   const [personnelData, setPersonnelData] = useState<PersonnelRecord[]>([]);
   const [separatedPersonnelData, setSeparatedPersonnelData] = useState<PersonnelRecord[]>([]);
@@ -310,10 +310,7 @@ export default function ExecutiveOverview() {
                 {/* View Details Button */}
                 <div className="px-6 pb-6">
                   <button
-                    onClick={() => {
-                      // This will be handled by the FacilitySelector component
-                      // User can click the facility in the selector to view details
-                    }}
+                    onClick={() => setSelectedFacilityId(facility.id)}
                     className="w-full bg-slate-100 hover:bg-slate-200 text-slate-800 font-medium py-2.5 px-4 rounded-lg transition-colors text-sm"
                   >
                     View Facility Details →
