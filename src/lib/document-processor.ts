@@ -1,5 +1,4 @@
 // src/lib/document-processor.ts
-const pdf = require('pdf-parse');
 
 export async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<string> {
   const extension = fileName.split('.').pop()?.toLowerCase();
@@ -14,15 +13,14 @@ export async function extractTextFromBuffer(buffer: Buffer, fileName: string): P
   // 2. PDF FILES - Native JavaScript Parser (Serverless-Compatible)
   if (extension === 'pdf') {
     try {
-      console.log(`[Parser] Using native pdf-parse library for ${fileName}...`);
-      const data = await pdf(buffer);
-      const extractedText = data.text || "";
+      // Dynamically require pdf-parse to maintain isolated bundle efficiency
+      const pdfParse = require('pdf-parse');
+      const parsedData = await pdfParse(buffer);
       
-      console.log(`[Parser] Successfully extracted ${extractedText.length} characters from PDF`);
-      return extractedText.trim();
+      return parsedData.text || "";
     } catch (err: any) {
-      console.error(`❌ Native PDF Parsing Error for ${fileName}:`, err.message);
-      throw new Error(`PDF Parsing Failed: ${err.message}`);
+      console.error(`❌ System PDF Extraction Failure for ${fileName}:`, err.message);
+      throw new Error(`Cloud Document Parser Interrupted: ${err.message}`);
     }
   }
 
