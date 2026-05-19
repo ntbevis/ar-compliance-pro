@@ -77,7 +77,7 @@ export async function syncLiveStateRegulations(targetSubClassification?: string)
           }
         };
 
-        https.get(repo.url, requestOptions, (res) => {
+        https.get(new URL(repo.url), requestOptions, (res) => {
           if (res.statusCode !== 200) {
             reject(new Error(`DHS Portal returned HTTP Status Code: ${res.statusCode}`));
             return;
