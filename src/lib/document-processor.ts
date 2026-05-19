@@ -13,18 +13,18 @@ export async function extractTextFromBuffer(buffer: Buffer, fileName: string): P
   // 2. PDF FILES - Native JavaScript Parser (Serverless-Compatible)
   if (extension === 'pdf') {
     try {
+      // Polyfill missing browser DOM APIs required by pdf.js in Next.js Server Actions
+      if (typeof global.DOMMatrix === 'undefined') {
+        (global as any).DOMMatrix = class DOMMatrix {};
+      }
+      if (typeof global.Path2D === 'undefined') {
+        (global as any).Path2D = class Path2D {};
+      }
+
       // Dynamically require pdf-parse to maintain isolated bundle efficiency
       const pdfParse = require('pdf-parse');
       
-      // Configure pdf-parse for serverless environments - disable canvas rendering
-      const options = {
-        // Disable page rendering to avoid DOMMatrix and canvas dependencies
-        pagerender: null,
-        // Use pure text extraction only
-        max: 0 // Process all pages
-      };
-      
-      const parsedData = await pdfParse(buffer, options);
+      const parsedData = await pdfParse(buffer);
       
       return parsedData.text || "";
     } catch (err: any) {
