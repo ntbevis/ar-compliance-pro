@@ -27,7 +27,7 @@ const STATE_REPOS = [
     facilityType: 'nursing_home' as const,
     subClassifications: HEALTHCARE_SUBCLASSIFICATIONS,
     fileName: 'nursing_home_rules_official.pdf',
-    url: 'https://humanservices.arkansas.gov/wp-content/uploads/20CARpt.400-1.1.2025-A.pdf%20'
+    url: 'https://humanservices.arkansas.gov/wp-content/uploads/20CARpt.400-1.1.2025-A.pdf'
   }
 ];
 
@@ -52,8 +52,13 @@ export async function syncLiveStateRegulations(targetSubClassification?: string)
     try {
       console.log(`🌐 Stream-downloading complete legal code framework for: ${repo.name}...`);
       
-      // 1. Fetch the raw document binary directly over the network
-      const response = await fetch(repo.url);
+      // 1. Fetch the raw document binary directly over the network with browser-like headers
+      const response = await fetch(repo.url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/pdf,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        }
+      });
       if (!response.ok) {
         throw new Error(`HTTP network error: status ${response.status}`);
       }
@@ -91,6 +96,3 @@ export async function syncLiveStateRegulations(targetSubClassification?: string)
   }
   console.log("🏁 State data extraction cycle complete. All vector spaces are optimized!");
 }
-
-// Trigger execution run
-syncLiveStateRegulations();
