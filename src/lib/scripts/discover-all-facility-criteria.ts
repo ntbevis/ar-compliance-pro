@@ -11,7 +11,7 @@ const openai = new OpenAI({
  * Sweeps through raw ingested regulatory texts using verified database columns,
  * and dynamically extracts structural criteria into the core application layout registry.
  */
-async function discoverAllFacilityCriteria() {
+export async function discoverAllFacilityCriteria() {
   console.log("🚀 Starting Multi-Sector Regulatory Knowledge Extraction Loop...");
   const supabase = createAdminClient();
 
@@ -114,6 +114,3 @@ async function discoverAllFacilityCriteria() {
 
   console.log("\n🏁 Discovery complete. Your master application checklists are completely synchronized with your ingested raw source data.");
 }
-
-// Fire execution block
-discoverAllFacilityCriteria();

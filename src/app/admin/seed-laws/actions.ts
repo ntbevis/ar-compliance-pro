@@ -1,6 +1,7 @@
 'use server';
 
 import { syncLiveStateRegulations, CHILDCARE_SUBCLASSIFICATIONS, HEALTHCARE_SUBCLASSIFICATIONS } from '@/lib/scripts/sync-state-rules';
+import { discoverAllFacilityCriteria } from '@/lib/scripts/discover-all-facility-criteria';
 
 /**
  * Server Action triggered by the Admin Dashboard button
@@ -20,9 +21,14 @@ export async function triggerStateWebSync(subClassification?: string) {
     // Fire off our live web scraper engine with optional sub-classification filter
     await syncLiveStateRegulations(subClassification);
     
+    // Run the AI compliance criteria discovery agent to extract structured requirements
+    console.log("🧠 [Admin] Initiating AI compliance criteria discovery agent...");
+    await discoverAllFacilityCriteria();
+    console.log("✅ [Admin] AI compliance criteria discovery complete.");
+    
     const message = subClassification
-      ? `State regulations synchronized for ${subClassification}.`
-      : "State regulations synchronized for all sub-classifications.";
+      ? `State regulations synchronized and compliance criteria discovered for ${subClassification}.`
+      : "State regulations synchronized and compliance criteria discovered for all sub-classifications.";
     
     return { success: true, message };
   } catch (error: any) {
