@@ -13,20 +13,23 @@ export async function extractTextFromBuffer(buffer: Buffer, fileName: string): P
   // 2. PDF FILES - Native JavaScript Parser (Serverless-Compatible)
   if (extension === 'pdf') {
     try {
-      // Polyfill missing browser DOM APIs required by pdf.js in Next.js Server Actions
-      if (typeof global.DOMMatrix === 'undefined') {
-        (global as any).DOMMatrix = class DOMMatrix {};
-      }
-      if (typeof global.Path2D === 'undefined') {
-        (global as any).Path2D = class Path2D {};
-      }
-
-      // Dynamically require pdf-parse to maintain isolated bundle efficiency
-      const pdfParse = require('pdf-parse');
+      const PDFParser = require('pdf2json');
       
-      const parsedData = await pdfParse(buffer);
-      
-      return parsedData.text || "";
+      return await new Promise<string>((resolve, reject) => {
+        // Initialize with '1' as the second argument to enable raw text extraction mode (skips heavy UI rendering)
+        const pdfParser = new PDFParser(null, 1);
+        
+        pdfParser.on("pdfParser_dataError", (errData: any) => {
+          reject(new Error(errData.parserError));
+        });
+        
+        pdfParser.on("pdfParser_dataReady", () => {
+          const text = pdfParser.getRawTextContent();
+          resolve(text || "");
+        });
+        
+        pdfParser.parseBuffer(buffer);
+      });
     } catch (err: any) {
       console.error(`❌ System PDF Extraction Failure for ${fileName}:`, err.message);
       throw new Error(`Cloud Document Parser Interrupted: ${err.message}`);
