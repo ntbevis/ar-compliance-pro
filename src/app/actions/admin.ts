@@ -32,7 +32,8 @@ async function getAuthenticatedUserContext() {
     throw new Error('Unauthorized: User profile not found or incomplete');
   }
   
-  if (!profile.org_id) {
+  // MODIFIED GATE: Global platform administrators bypass local tenant organization checks
+  if (profile.role !== 'admin' && !profile.org_id) {
     throw new Error('Unauthorized: User is not associated with any organization');
   }
   
@@ -43,7 +44,7 @@ async function getAuthenticatedUserContext() {
   
   return {
     userId,
-    orgId: profile.org_id,
+    orgId: profile.org_id || null, // Gracefully handle null for system admins
     role: profile.role,
     accountStatus: profile.account_status
   };
@@ -95,8 +96,7 @@ export async function getPendingRequests() {
  * 2. Sends auth invitation email
  * 3. Creates user profile with owner role
  * 4. Updates request status to approved
- * 
- * SECURITY: Only accessible by users with 'admin' role.
+ * * SECURITY: Only accessible by users with 'admin' role.
  */
 export async function approveRegistrationRequest(requestId: string) {
   try {
