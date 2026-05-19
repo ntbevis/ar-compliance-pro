@@ -9,15 +9,17 @@ interface Facility {
 
 interface FacilitySelectorProps {
   facilities: Facility[];
+  selectedFacilityId: string | null;
   onSelect: (value: string) => void;
 }
 
 // 2. Apply that blueprint to the function parameters with explicit Safari text-color safeguards
-export default function FacilitySelector({ facilities, onSelect }: FacilitySelectorProps) {
+export default function FacilitySelector({ facilities, selectedFacilityId, onSelect }: FacilitySelectorProps) {
   return (
     <div className="p-4 border-b border-gray-800">
       <label className="text-xs uppercase text-gray-500 font-bold tracking-widest">Select Facility</label>
-      <select 
+      <select
+        value={selectedFacilityId || 'all'}
         onChange={(e) => onSelect(e.target.value)}
         className="w-full mt-2 bg-black text-white border border-gray-700 rounded-md p-2 cursor-pointer focus:outline-none focus:border-blue-500"
       >

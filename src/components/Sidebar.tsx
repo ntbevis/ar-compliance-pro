@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react';
 import { createClient } from 'src/app/utils/supabase/client';
 
 export default function Sidebar() {
-  const { setSelectedFacilityId, currentView, setCurrentView } = useFacility();
+  const { selectedFacilityId, setSelectedFacilityId, currentView, setCurrentView } = useFacility();
   const [facilities, setFacilities] = useState<any[]>([]);
 
   useEffect(() => {
@@ -40,9 +40,10 @@ export default function Sidebar() {
         <h2 className="text-blue-500 font-black tracking-tighter text-xl italic">AR_GUARD</h2>
       </div>
 
-      <FacilitySelector 
-        facilities={facilities} 
-        onSelect={(id) => setSelectedFacilityId(id)} 
+      <FacilitySelector
+        facilities={facilities}
+        selectedFacilityId={selectedFacilityId}
+        onSelect={(id) => setSelectedFacilityId(id)}
       />
 
       <nav className="flex-1 p-4 space-y-2 mt-4">
