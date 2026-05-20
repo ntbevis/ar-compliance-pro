@@ -218,23 +218,30 @@ export async function getRegulatoryStatus(facilityId: string) {
       }
     }
     
-    const ruleCount = activeRules?.length || 0;
-    const verifiedCount = satisfiedRuleIds.size;
+    // Filter to only critical rules for scoring calculation
+    const criticalRules = (activeRules || []).filter(rule => rule.severity === 'critical');
+    const criticalRuleCount = criticalRules.length;
+    const verifiedCriticalCount = criticalRules.filter(rule => satisfiedRuleIds.has(rule.id)).length;
     
-    // Compute base document compliance score as direct percentage of dynamic matches
-    let calculatedScore = ruleCount > 0 ? Math.round((verifiedCount / ruleCount) * 100) : 0;
+    // Compute audit readiness score based ONLY on critical requirements
+    let calculatedScore = criticalRuleCount > 0
+      ? Math.round((verifiedCriticalCount / criticalRuleCount) * 100)
+      : 100; // Default to 100 if no critical rules exist
 
-    // Filter down to map the current active gaps for the UI
+    // Filter down to map the current active gaps for the UI, passing through severity and frequency
     const identifiedGaps = (activeRules || [])
       .filter(rule => !satisfiedRuleIds.has(rule.id))
       .map(rule => ({
         id: rule.id,
         title: rule.requirement_name,
         systemSlug: rule.required_document_type,
-        isCritical: rule.severity === 'critical'
+        isCritical: rule.severity === 'critical',
+        severity: rule.severity, // Pass through severity for frontend filtering
+        frequency: rule.frequency // Pass through frequency for frontend display
       }));
     
-    console.log(`📈 Compliance Score: ${calculatedScore}% (${verifiedCount}/${ruleCount} requirements met)`);
+    console.log(`📈 Audit Readiness Score: ${calculatedScore}% (${verifiedCriticalCount}/${criticalRuleCount} critical requirements met)`);
+    console.log(`📋 Total Requirements: ${activeRules?.length || 0} (${criticalRuleCount} critical, ${(activeRules?.length || 0) - criticalRuleCount} standard)`);
 
     // 4. Fetch actual active personnel count from the database
     const { count: personnelCount } = await supabase
@@ -268,7 +275,9 @@ export async function getRegulatoryStatus(facilityId: string) {
         id: 'staffing-ratio-deficit',
         title: `CRITICAL: Regulatory Staffing Ratio Deficit (Required: ${requiredStaff}, Active: ${activeStaffCount})`,
         systemSlug: 'staffing_ratio_deficit',
-        isCritical: true
+        isCritical: true,
+        severity: 'critical',
+        frequency: 'ongoing'
       });
 
       console.log(`⚠️ STAFFING VIOLATION: Facility ${facilityId} requires ${requiredStaff} staff but only has ${activeStaffCount} active. Score penalized by 25 points.`);

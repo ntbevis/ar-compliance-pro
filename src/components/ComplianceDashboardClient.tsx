@@ -40,6 +40,10 @@ export default function ComplianceDashboardClient({
     action?: string;
   } | null>(null);
 
+  // Segment gaps into critical and standard tiers
+  const criticalGaps = gaps.filter(g => g.severity === 'critical' || g.id === 'staffing-ratio-deficit');
+  const standardGaps = gaps.filter(g => g.severity === 'standard' && g.id !== 'staffing-ratio-deficit');
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, gap: Gap) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -104,7 +108,12 @@ export default function ComplianceDashboardClient({
         // Optimistically clear passing items out of the list view immediately
         if (report.compliance_status === 'Compliant') {
           setGaps((prev) => prev.filter((g) => g.id !== gap.id));
-          setScore((prev) => Math.min(100, prev + Math.round(100 / (initialGaps.length || 1))));
+          
+          // Only update score if this was a critical gap
+          if (gap.severity === 'critical') {
+            const initialCriticalCount = initialGaps.filter(g => g.severity === 'critical' || g.id === 'staffing-ratio-deficit').length;
+            setScore((prev) => Math.min(100, prev + Math.round(100 / (initialCriticalCount || 1))));
+          }
         }
       } else {
         alert(`Audit finished with processing issues. Please inspect system error parameters.`);
@@ -139,9 +148,11 @@ export default function ComplianceDashboardClient({
         // Remove the gap from the list
         setGaps(prevGaps => prevGaps.filter(g => g.id !== gap.id));
         
-        // Update score
-        const newScore = Math.min(100, score + Math.ceil(100 / (gaps.length || 1)));
-        setScore(newScore);
+        // Only update score if this was a critical gap
+        if (gap.severity === 'critical') {
+          const newScore = Math.min(100, score + Math.ceil(100 / (criticalGaps.length || 1)));
+          setScore(newScore);
+        }
         
         router.refresh();
       } else {
@@ -185,9 +196,11 @@ export default function ComplianceDashboardClient({
         // Remove the gap from the list
         setGaps(prevGaps => prevGaps.filter(g => g.id !== gap.id));
         
-        // Update score
-        const newScore = Math.min(100, score + Math.ceil(100 / (gaps.length || 1)));
-        setScore(newScore);
+        // Only update score if this was a critical gap
+        if (gap.severity === 'critical') {
+          const newScore = Math.min(100, score + Math.ceil(100 / (criticalGaps.length || 1)));
+          setScore(newScore);
+        }
         
         router.refresh();
       } else {
@@ -274,19 +287,19 @@ export default function ComplianceDashboardClient({
         </div>
       </div>
 
-      {/* Checklist View Panel */}
+      {/* Critical Requirements Panel */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="bg-slate-900 px-6 py-3">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-white">Outstanding Core Facility Requirements</h2>
+          <h2 className="text-sm font-bold uppercase tracking-wider text-white">Outstanding Core Facility Requirements (Critical)</h2>
         </div>
 
-        {gaps.length === 0 ? (
-          <div className="p-8 text-center text-slate-400 text-xs italic">
-            🎉 Maximum Precision Compliance Verified. No outstanding tracking gaps remain.
+        {criticalGaps.length === 0 ? (
+          <div className="p-8 text-center text-emerald-600 text-xs font-semibold">
+            ✅ All critical audit requirements satisfied. Your facility is audit-ready.
           </div>
         ) : (
           <div className="divide-y divide-slate-100">
-            {gaps.map((gap) => (
+            {criticalGaps.map((gap) => (
               <div key={gap.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 hover:bg-slate-50/50 transition-colors">
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2 flex-wrap">
@@ -387,6 +400,104 @@ export default function ComplianceDashboardClient({
           </div>
         )}
       </div>
+
+      {/* Standard Requirements Panel - Administrative Housekeeping */}
+      {standardGaps.length > 0 && (
+        <div className="bg-slate-50 rounded-xl shadow-sm border border-slate-300 overflow-hidden">
+          <div className="bg-slate-600 px-6 py-3">
+            <h2 className="text-sm font-bold uppercase tracking-wider text-slate-100">Administrative Housekeeping (Standard Requirements)</h2>
+          </div>
+
+          <div className="divide-y divide-slate-200">
+            {standardGaps.map((gap) => (
+              <div key={gap.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 hover:bg-white/50 transition-colors">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium text-slate-700 text-sm">{gap.name}</span>
+                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">
+                      {gap.severity.toUpperCase()}
+                    </span>
+                    {gap.frequency && (
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">
+                        {gap.frequency.replace(/_/g, ' ').toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-400 font-mono">Requirement Key: {gap.typeKey}</p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {uploadingId === gap.id ? (
+                    <div className="flex items-center gap-2 text-indigo-600 font-bold text-xs animate-pulse">
+                      <span className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></span>
+                      AI Verification running...
+                    </div>
+                  ) : signingAttestationId === gap.id ? (
+                    <div className="flex items-center gap-2 text-emerald-600 font-bold text-xs animate-pulse">
+                      <span className="w-3.5 h-3.5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin"></span>
+                      Signing attestation...
+                    </div>
+                  ) : markingNAId === gap.id ? (
+                    <div className="flex items-center gap-2 text-amber-600 font-bold text-xs animate-pulse">
+                      <span className="w-3.5 h-3.5 border-2 border-amber-600 border-t-transparent rounded-full animate-spin"></span>
+                      Marking N/A...
+                    </div>
+                  ) : (
+                    <>
+                      {/* Show attestation button for frequent requirements (daily, weekly, monthly) */}
+                      {gap.frequency && ['daily', 'weekly', 'monthly'].includes(gap.frequency) ? (
+                        <button
+                          onClick={() => handleSignAttestation(gap)}
+                          disabled={!userAttestation}
+                          className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-w-[140px] ${
+                            userAttestation
+                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                              : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                          }`}
+                          title={!userAttestation ? 'Please check the legal certification box above' : ''}
+                        >
+                          ✓ Sign Digital Attestation
+                        </button>
+                      ) : (
+                        <label className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all block text-center min-w-[120px] ${
+                          userAttestation
+                            ? 'cursor-pointer bg-white border border-slate-300 text-slate-700 hover:border-slate-500 hover:text-slate-900'
+                            : 'cursor-not-allowed bg-slate-200 border border-slate-300 text-slate-400'
+                        }`}
+                        title={!userAttestation ? 'Please check the legal certification box above' : ''}
+                        >
+                          Upload Document
+                          <input
+                            type="file"
+                            accept=".txt,.pdf,.png,.jpg,.jpeg"
+                            className="hidden"
+                            onChange={(e) => handleFileChange(e, gap)}
+                            disabled={!userAttestation}
+                          />
+                        </label>
+                      )}
+                      
+                      {/* Mark N/A button */}
+                      <button
+                        onClick={() => handleMarkNotApplicable(gap)}
+                        disabled={!userAttestation}
+                        className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
+                          userAttestation
+                            ? 'bg-slate-500 hover:bg-slate-600 text-white cursor-pointer'
+                            : 'bg-slate-300 text-slate-400 cursor-not-allowed'
+                        }`}
+                        title={!userAttestation ? 'Please check the legal certification box above' : 'Mark this requirement as Not Applicable'}
+                      >
+                        Mark N/A
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

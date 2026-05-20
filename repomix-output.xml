@@ -50,7 +50,10 @@ public/
   vercel.svg
   window.svg
 regulatory-docs/
+  AUDIT_LOGS_SCHEMA.md
+  FACILITIES_SCHEMA_UPDATE.md
   README.md
+  SCHEMA.md
 src/
   app/
     actions/
@@ -89,6 +92,7 @@ src/
   lib/
     scripts/
       discover-all-facility-criteria.ts
+      discover-personnel-roles.ts
       sync-state-rules.ts
       test-action-integration.ts
       test-audit.ts
@@ -107,6 +111,7 @@ postcss.config.js
 README.md
 run-discovery.ts
 run-ingestion.ts
+run-role-discovery.ts
 tailwind.config.ts
 tsconfig.json
 </directory_structure>
@@ -377,6 +382,160 @@ Expected output: Successful build with no errors or warnings.
 <svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M1.5 2.5h13v10a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM0 1h16v11.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 0 12.5zm3.75 4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5M7 4.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0m1.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5" fill="#666"/></svg>
 </file>
 
+<file path="regulatory-docs/AUDIT_LOGS_SCHEMA.md">
+# Audit Logs Table Schema
+
+This table provides immutable audit logging for all compliance-related actions to protect against fraud and ensure DHS auditing standards.
+
+## SQL Schema
+
+```sql
+CREATE TABLE audit_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  facility_id UUID NOT NULL REFERENCES facilities(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  action_type TEXT NOT NULL, -- 'document_upload', 'digital_attestation', 'document_approval', 'document_rejection'
+  ip_address TEXT,
+  file_hash TEXT, -- SHA-256 hash for uploaded files (null for attestations)
+  metadata JSONB DEFAULT '{}', -- Stores additional context: filename, document_type, user_attestation, etc.
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Index for facility lookups
+CREATE INDEX idx_audit_logs_facility ON audit_logs(facility_id);
+
+-- Index for user lookups
+CREATE INDEX idx_audit_logs_user ON audit_logs(user_id);
+
+-- Index for action type filtering
+CREATE INDEX idx_audit_logs_action_type ON audit_logs(action_type);
+
+-- Index for timestamp-based queries
+CREATE INDEX idx_audit_logs_created_at ON audit_logs(created_at DESC);
+
+-- Enable Row Level Security
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- Policy: Users can only view audit logs for their own organization's facilities
+CREATE POLICY "Users can view audit logs for their organization"
+  ON audit_logs
+  FOR SELECT
+  USING (
+    facility_id IN (
+      SELECT f.id FROM facilities f
+      INNER JOIN organizations o ON f.org_id = o.id
+      INNER JOIN auth.users u ON o.id = (
+        SELECT org_id FROM organizations WHERE id = (
+          SELECT org_id FROM facilities WHERE id = facility_id LIMIT 1
+        )
+      )
+      WHERE u.id = auth.uid()
+    )
+  );
+
+-- Policy: System can insert audit logs (no user updates/deletes allowed for immutability)
+CREATE POLICY "System can insert audit logs"
+  ON audit_logs
+  FOR INSERT
+  WITH CHECK (true);
+```
+
+## Columns
+
+- **id**: UUID primary key
+- **facility_id**: Reference to the facility where the action occurred
+- **user_id**: Reference to the user who performed the action
+- **action_type**: Type of action performed
+  - `document_upload`: User uploaded a compliance document
+  - `digital_attestation`: User signed a digital attestation
+  - `document_approval`: AI/system approved a document
+  - `document_rejection`: AI/system flagged a document
+- **ip_address**: IP address of the user (for fraud detection)
+- **file_hash**: SHA-256 hash of uploaded file (null for attestations)
+- **metadata**: JSONB containing:
+  - `filename`: Original filename
+  - `document_type`: Classified document type
+  - `user_attestation`: Boolean indicating if user certified authenticity
+  - `attestation_text`: The exact legal text the user agreed to
+  - `requirement_id`: ID of the compliance requirement being satisfied
+  - `requirement_name`: Name of the requirement
+- **created_at**: Immutable timestamp of when the action occurred
+
+## Usage
+
+Audit logs are automatically created by server actions. Users cannot modify or delete audit logs (immutability enforced by RLS policies).
+
+Query audit logs for a facility:
+
+```typescript
+const { data: logs } = await supabase
+  .from('audit_logs')
+  .select('*')
+  .eq('facility_id', facilityId)
+  .order('created_at', { ascending: false });
+```
+
+## Legal Protection
+
+This audit trail provides:
+- **Non-repudiation**: SHA-256 file hashes prove document integrity
+- **User accountability**: Explicit user attestation recorded
+- **Fraud detection**: IP addresses and timestamps for investigation
+- **DHS compliance**: Complete audit trail for regulatory inspections
+- **Immutability**: No updates or deletes allowed after creation
+</file>
+
+<file path="regulatory-docs/FACILITIES_SCHEMA_UPDATE.md">
+# Facilities Table Schema Update
+
+## Active Enrollment Column
+
+Add the `active_enrollment` column to track real-time attendance/enrollment for dynamic staffing ratio calculations.
+
+### SQL Migration
+
+```sql
+-- Add active_enrollment column to facilities table
+ALTER TABLE facilities 
+ADD COLUMN IF NOT EXISTS active_enrollment INTEGER DEFAULT NULL;
+
+-- Add comment for documentation
+COMMENT ON COLUMN facilities.active_enrollment IS 'Current number of enrolled children/residents. Used for dynamic staffing ratio calculations. Falls back to capacity if null.';
+
+-- Create index for performance
+CREATE INDEX IF NOT EXISTS idx_facilities_active_enrollment ON facilities(active_enrollment);
+```
+
+### Column Details
+
+- **active_enrollment**: INTEGER (nullable)
+- **Purpose**: Tracks current enrollment/attendance count
+- **Usage**: 
+  - Used by `getRegulatoryStatus()` for staffing ratio calculations
+  - Falls back to `capacity` if null or 0
+  - Updated via `updateEnrollment()` server action
+- **Default**: NULL (uses capacity as fallback)
+
+### Example Usage
+
+```typescript
+// Update enrollment
+await updateEnrollment(facilityId, 45);
+
+// Staffing calculation logic
+const enrollmentCount = facility.active_enrollment && facility.active_enrollment > 0
+  ? facility.active_enrollment
+  : facility.capacity;
+```
+
+### Benefits
+
+✅ **Real-time accuracy**: Reflects actual attendance vs. licensed capacity  
+✅ **Dynamic staffing**: Calculates required staff based on current enrollment  
+✅ **Compliance precision**: Prevents over-staffing alerts when enrollment is low  
+✅ **User control**: Facilities can update their current count as needed
+</file>
+
 <file path="regulatory-docs/README.md">
 # Regulatory Documents
 
@@ -410,6 +569,66 @@ This will:
 - OpenAI API key configured
 - Supabase connection configured
 - All 3 PDF files present in this directory
+</file>
+
+<file path="regulatory-docs/SCHEMA.md">
+# Database Schema Documentation
+
+## regulatory_roles Table
+
+This table stores AI-discovered personnel roles extracted from regulatory text.
+
+### SQL Schema
+
+```sql
+CREATE TABLE regulatory_roles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  role_name TEXT NOT NULL,
+  facility_type TEXT NOT NULL,
+  sub_classification TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  
+  -- Ensure unique combinations of role + facility type + sub-classification
+  CONSTRAINT unique_role_per_classification UNIQUE (role_name, facility_type, sub_classification)
+);
+
+-- Index for fast lookups by facility type
+CREATE INDEX idx_regulatory_roles_facility_type ON regulatory_roles(facility_type);
+
+-- Index for sub-classification queries
+CREATE INDEX idx_regulatory_roles_sub_classification ON regulatory_roles(sub_classification);
+
+-- Composite index for the most common query pattern
+CREATE INDEX idx_regulatory_roles_lookup ON regulatory_roles(facility_type, sub_classification);
+```
+
+### Columns
+
+- **id**: UUID primary key
+- **role_name**: Official personnel title (e.g., "Director of Nursing", "Primary Caregiver")
+- **facility_type**: Either "childcare" or "nursing_home"
+- **sub_classification**: Specific facility sub-type (e.g., "CCC", "FCCH", "SNF", "Assisted Living") or NULL for general roles
+- **created_at**: Timestamp when role was first discovered
+- **updated_at**: Timestamp of last update
+
+### Usage
+
+Run the discovery script to populate this table:
+
+```bash
+npm run discover:roles
+```
+
+Query roles for a specific facility:
+
+```typescript
+const { data: roles } = await supabase
+  .from('regulatory_roles')
+  .select('role_name')
+  .eq('facility_type', facilityType)
+  .eq('sub_classification', subClassification);
+```
 </file>
 
 <file path="src/app/actions/ingestion.ts">
@@ -850,6 +1069,175 @@ export const useFacility = () => {
 };
 </file>
 
+<file path="src/lib/scripts/discover-personnel-roles.ts">
+// src/lib/scripts/discover-personnel-roles.ts
+import OpenAI from 'openai';
+import { createAdminClient } from 'src/app/utils/supabase/admin';
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+/**
+ * AI-Powered Personnel Role Discovery Engine.
+ * Extracts official personnel titles from regulatory text and stores them in the database.
+ */
+export async function discoverPersonnelRoles() {
+  console.log("🚀 Starting AI-Powered Personnel Role Discovery...");
+  const supabase = createAdminClient();
+
+  // 1. Query regulatory_knowledge table for all chunks
+  const { data: lawChunks, error: fetchError } = await supabase
+    .from('regulatory_knowledge')
+    .select('id, content, category, metadata');
+
+  if (fetchError || !lawChunks) {
+    console.error("❌ Failed to query regulatory knowledge vault:", fetchError?.message);
+    return;
+  }
+
+  console.log(`📑 Processing ${lawChunks.length} regulatory text chunks for role extraction...`);
+
+  const discoveredRoles: Array<{
+    role_name: string;
+    facility_type: string;
+    sub_classification: string | null;
+  }> = [];
+
+  // 2. Process chunks in batches to extract personnel roles
+  for (const chunk of lawChunks) {
+    try {
+      // Normalize facility type from category
+      const facilityType = chunk.category === 'childcare' ? 'childcare' : 'nursing_home';
+      const subClassification = chunk.metadata?.sub_classification || null;
+
+      console.log(`🧠 Analyzing Chunk ID [${chunk.id}] for personnel roles...`);
+
+      // 3. Use GPT-4o with JSON schema to extract official personnel titles
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content: `You are an expert regulatory analyst specializing in healthcare and childcare facility staffing requirements. Your task is to extract ONLY official personnel titles, job roles, or positions that are explicitly mentioned in state licensing regulations.
+
+EXTRACTION RULES:
+- Extract ONLY specific job titles mentioned in the text (e.g., "Director of Nursing", "Primary Caregiver", "Administrator", "Licensed Practical Nurse")
+- Include roles that have specific regulatory requirements, qualifications, or responsibilities
+- DO NOT extract generic terms like "staff", "employee", "personnel", "worker"
+- DO NOT extract patient/client roles like "resident", "child", "patient"
+- DO NOT invent or infer roles not explicitly stated
+- Return an empty array if no specific personnel roles are mentioned
+
+OUTPUT FORMAT:
+Return a JSON object with a "roles" array containing unique role names found in this text chunk.`
+          },
+          {
+            role: "user",
+            content: `Extract all official personnel roles/titles from this regulatory text:\n\n${chunk.content}`
+          }
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "personnel_roles_extraction",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                roles: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      role_name: {
+                        type: "string",
+                        description: "The official personnel title or job role"
+                      }
+                    },
+                    required: ["role_name"],
+                    additionalProperties: false
+                  }
+                }
+              },
+              required: ["roles"],
+              additionalProperties: false
+            }
+          }
+        }
+      });
+
+      const result = JSON.parse(response.choices[0].message.content || '{"roles":[]}');
+      
+      if (result.roles && result.roles.length > 0) {
+        console.log(`✅ Found ${result.roles.length} roles in chunk ${chunk.id}`);
+        
+        // Add facility context to each discovered role
+        for (const role of result.roles) {
+          discoveredRoles.push({
+            role_name: role.role_name,
+            facility_type: facilityType,
+            sub_classification: subClassification
+          });
+        }
+      }
+
+    } catch (error) {
+      console.error(`❌ Error processing chunk ${chunk.id}:`, error);
+      continue;
+    }
+  }
+
+  console.log(`\n📊 Discovery Complete: Found ${discoveredRoles.length} total role mentions`);
+
+  // 4. Deduplicate roles based on role_name + facility_type + sub_classification
+  const uniqueRoles = Array.from(
+    new Map(
+      discoveredRoles.map(role => [
+        `${role.role_name}|${role.facility_type}|${role.sub_classification || 'null'}`,
+        role
+      ])
+    ).values()
+  );
+
+  console.log(`🔍 Deduplicated to ${uniqueRoles.length} unique roles`);
+
+  // 5. Insert unique roles into regulatory_roles table
+  if (uniqueRoles.length > 0) {
+    const { data: insertedRoles, error: insertError } = await supabase
+      .from('regulatory_roles')
+      .upsert(uniqueRoles, {
+        onConflict: 'role_name,facility_type,sub_classification',
+        ignoreDuplicates: false
+      })
+      .select();
+
+    if (insertError) {
+      console.error("❌ Error inserting roles into database:", insertError);
+      return;
+    }
+
+    console.log(`✅ Successfully saved ${insertedRoles?.length || 0} roles to regulatory_roles table`);
+    
+    // Display summary by facility type
+    const summary = uniqueRoles.reduce((acc, role) => {
+      const key = `${role.facility_type}${role.sub_classification ? ` (${role.sub_classification})` : ''}`;
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    console.log("\n📋 Roles by Facility Type:");
+    Object.entries(summary).forEach(([type, count]) => {
+      console.log(`   ${type}: ${count} roles`);
+    });
+  } else {
+    console.log("⚠️ No roles discovered from regulatory text");
+  }
+
+  console.log("\n✅ Personnel Role Discovery Complete!");
+}
+</file>
+
 <file path="src/lib/scripts/test-action-integration.ts">
 // src/lib/scripts/test-action-integration.ts
 import { createAdminClient } from '../../app/utils/supabase/admin';
@@ -1236,6 +1624,29 @@ async function executeDiscovery() {
 }
 
 executeDiscovery();
+</file>
+
+<file path="run-role-discovery.ts">
+import { loadEnvConfig } from '@next/env';
+
+// Load environment variables FIRST
+const projectDir = process.cwd();
+loadEnvConfig(projectDir);
+
+async function executeRoleDiscovery() {
+  console.log("🚀 Booting AI-powered personnel role discovery pipeline...");
+  try {
+    const { discoverPersonnelRoles } = await import('./src/lib/scripts/discover-personnel-roles');
+    await discoverPersonnelRoles();
+    console.log("✅ All personnel roles successfully extracted and saved to Supabase!");
+    process.exit(0);
+  } catch (error) {
+    console.error("❌ Role discovery crashed:", error);
+    process.exit(1);
+  }
+}
+
+executeRoleDiscovery();
 </file>
 
 <file path="tailwind.config.ts">
@@ -2682,284 +3093,6 @@ export default function LandingPage() {
 }
 </file>
 
-<file path="src/components/ComplianceDashboardClient.tsx">
-'use client';
-
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { createClient } from 'src/app/utils/supabase/client';
-import { handleDocumentUploadSuccess } from 'src/app/actions/compliance';
-
-interface Gap {
-  id: string;
-  name: string;
-  typeKey: string;
-  severity: 'critical' | 'standard';
-}
-
-interface DashboardProps {
-  facilityId: string;
-  initialScore: number;
-  initialGaps: Gap[];
-}
-
-export default function ComplianceDashboardClient({
-  facilityId,
-  initialScore,
-  initialGaps
-}: DashboardProps) {
-  const router = useRouter();
-  const supabase = createClient();
-  
-  const [gaps, setGaps] = useState<Gap[]>(initialGaps);
-  const [score, setScore] = useState<number>(initialScore);
-  const [uploadingId, setUploadingId] = useState<string | null>(null);
-  const [auditFeedback, setAuditFeedback] = useState<{
-    status: string;
-    code?: string;
-    action?: string;
-  } | null>(null);
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, gap: Gap) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    try {
-      setUploadingId(gap.id);
-      setAuditFeedback(null);
-      console.log(`🎬 Upload triggered for checklist element: ${gap.name}`);
-
-      // 1. Generate a standardized unique ID for the document record
-      const documentId = crypto.randomUUID();
-      const fileExtension = file.name.split('.').pop()?.toLowerCase() || 'txt';
-      const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
-
-      // 2. Stream the raw file directly to your private storage bucket
-      const { error: storageError } = await supabase.storage
-        .from('facility-documents')
-        .upload(storagePath, file);
-
-      if (storageError) throw storageError;
-
-      // 3. Insert the tracking row into facility_documents matching your schema columns
-      const { error: insertError } = await supabase
-        .from('facility_documents')
-        .insert({
-          id: documentId,
-          facility_id: facilityId,
-          document_type: gap.typeKey,
-          status: 'pending',
-          file_url: storagePath,
-          name: file.name,
-          metadata: { original_upload_method: 'dashboard_ui' }
-        });
-
-      if (insertError) throw insertError;
-
-      console.log(`🧠 Invoking real-time AI compliance verification...`);
-      
-      // 4. Trigger the Server Action loop
-      const response = await handleDocumentUploadSuccess(facilityId, documentId);
-
-      if (response.success && response.report) {
-        const report = response.report;
-        
-        // Lock in the live extraction details for user visibility
-        setAuditFeedback({
-          status: report.compliance_status,
-          code: report.regulatory_code_violated,
-          action: report.corrective_action
-        });
-
-        // Trigger an operational refresh to sync database states across server views
-        router.refresh();
-        
-        // Optimistically clear passing items out of the list view immediately
-        if (report.compliance_status === 'Compliant') {
-          setGaps((prev) => prev.filter((g) => g.id !== gap.id));
-          setScore((prev) => Math.min(100, prev + Math.round(100 / (initialGaps.length || 1))));
-        }
-      } else {
-        alert(`Audit finished with processing issues. Please inspect system error parameters.`);
-      }
-
-    } catch (error: any) {
-      console.error("❌ UI Upload Flow Exception:", error);
-      alert(`Processing failed: ${error.message || error}`);
-    } finally {
-      setUploadingId(null);
-    }
-  };
-
-  return (
-    <div className="space-y-6 max-w-6xl mx-auto text-slate-800">
-      {/* Dynamic Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Core Metric Ring */}
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col items-center justify-center text-center">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Facility Readiness</h3>
-          <div className={`w-28 h-28 rounded-full border-8 flex items-center justify-center text-2xl font-black ${
-            score >= 80 ? 'border-emerald-500 text-emerald-600 bg-emerald-50' : 
-            score >= 50 ? 'border-amber-500 text-amber-600 bg-amber-50' : 
-            'border-rose-500 text-rose-600 bg-rose-50'
-          }`}>
-            {score}%
-          </div>
-          <p className="text-xs text-slate-400 mt-3">Calculated against Arkansas Licensing requirements.</p>
-        </div>
-
-        {/* Live Audit Desk Interface */}
-        <div className="md:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-between">
-          <div>
-            <h3 className="text-base font-bold text-slate-800 mb-1">AR_Compliance_Guard Audit Desk</h3>
-            <p className="text-xs text-slate-400 mb-4">Upload facility files below. The system converts layouts natively via multimodal AI to run precise vector-law evaluations.</p>
-          </div>
-          
-          {auditFeedback ? (
-            <div className={`p-4 rounded-lg border text-xs space-y-1.5 ${
-              auditFeedback.status === 'Compliant' 
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-900' 
-                : 'bg-rose-50 border-rose-200 text-rose-900'
-            }`}>
-              <div className="flex items-center justify-between font-bold text-sm">
-                <span>Result: {auditFeedback.status.toUpperCase()}</span>
-                <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-white border border-slate-200 font-mono shadow-sm">Pristine Verification</span>
-              </div>
-              <p><span className="font-semibold">Code Section:</span> {auditFeedback.code}</p>
-              <p><span className="font-semibold">Remediation Action:</span> {auditFeedback.action}</p>
-            </div>
-          ) : (
-            <div className="border-2 border-dashed border-slate-200 bg-slate-50 rounded-lg p-5 text-center text-xs text-slate-400 italic">
-              Awaiting real-time ingestion triggers...
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Checklist View Panel */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="bg-slate-900 px-6 py-3">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-white">Outstanding Core Facility Requirements</h2>
-        </div>
-
-        {gaps.length === 0 ? (
-          <div className="p-8 text-center text-slate-400 text-xs italic">
-            🎉 Maximum Precision Compliance Verified. No outstanding tracking gaps remain.
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-100">
-            {gaps.map((gap) => (
-              <div key={gap.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 hover:bg-slate-50/50 transition-colors">
-                <div className="space-y-0.5">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-slate-800 text-sm">{gap.name}</span>
-                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
-                      gap.severity === 'critical' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'
-                    }`}>
-                      {gap.severity.toUpperCase()}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 font-mono">Requirement Key: {gap.typeKey}</p>
-                </div>
-
-                <div className="flex items-center">
-                  {uploadingId === gap.id ? (
-                    <div className="flex items-center gap-2 text-indigo-600 font-bold text-xs animate-pulse">
-                      <span className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></span>
-                      AI Verification running...
-                    </div>
-                  ) : (
-                    <label className="cursor-pointer bg-white border border-slate-300 text-slate-800 hover:border-indigo-500 hover:text-indigo-600 px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all block text-center min-w-[120px]">
-                      Upload Document
-                      <input
-                        type="file"
-                        accept=".txt,.pdf,.png,.jpg,.jpeg"
-                        className="hidden"
-                        onChange={(e) => handleFileChange(e, gap)}
-                      />
-                    </label>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="src/components/Sidebar.tsx">
-'use client';
-import { useFacility, ViewType } from 'src/context/FacilityContext';
-import FacilitySelector from './FacilitySelector';
-import { useState, useEffect } from 'react';
-import { createClient } from 'src/app/utils/supabase/client';
-
-export default function Sidebar() {
-  const { selectedFacilityId, setSelectedFacilityId, currentView, setCurrentView } = useFacility();
-  const [facilities, setFacilities] = useState<any[]>([]);
-
-  useEffect(() => {
-    const fetchFacilities = async () => {
-      const supabase = createClient();
-      const { data } = await supabase.from('facilities').select('id, name');
-      if (data) setFacilities(data);
-    };
-    fetchFacilities();
-  }, []);
-
-  // Structural helper for clean tab rendering
-  const navItem = (label: string, view: ViewType) => {
-    const isActive = currentView === view;
-    return (
-      <button
-        onClick={() => setCurrentView(view)}
-        className={`w-full text-left p-3 rounded-xl font-bold transition-all border ${
-          isActive
-            ? 'bg-blue-600/10 text-blue-500 border-blue-600/20'
-            : 'text-gray-500 border-transparent hover:bg-gray-900'
-        }`}
-      >
-        {label}
-      </button>
-    );
-  };
-
-  return (
-    <aside className="w-64 border-r border-gray-800 flex flex-col bg-black">
-      <div className="p-6">
-        <h2 className="text-blue-500 font-black tracking-tighter text-xl italic">AR_GUARD</h2>
-      </div>
-
-      <FacilitySelector
-        facilities={facilities}
-        selectedFacilityId={selectedFacilityId}
-        onSelect={(id) => setSelectedFacilityId(id)}
-      />
-
-      <nav className="flex-1 p-4 space-y-2 mt-4">
-        <div className="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-4 px-2">Navigation</div>
-        {navItem('Executive Overview', 'overview')}
-        {navItem('Personnel Vault', 'personnel')}
-        {navItem('Document Center', 'documents')}
-      </nav>
-
-      <div className="p-4 border-t border-gray-800">
-        <div className="flex items-center gap-3 p-2">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600" />
-          <div className="text-xs">
-            <p className="font-bold text-white">Admin User</p>
-            <p className="text-gray-500">Settings</p>
-          </div>
-        </div>
-      </div>
-    </aside>
-  );
-}
-</file>
-
 <file path="src/lib/llm-router.ts">
 // src/lib/llm-router.ts
 import { getRelevantRegulations, analyzeCompliance } from './ai-precision';
@@ -3096,6 +3229,85 @@ export default function FacilitySelector({ facilities, selectedFacilityId, onSel
         ))}
       </select>
     </div>
+  );
+}
+</file>
+
+<file path="src/components/Sidebar.tsx">
+'use client';
+import { useFacility, ViewType } from 'src/context/FacilityContext';
+import FacilitySelector from './FacilitySelector';
+import { useState, useEffect } from 'react';
+import { createClient } from 'src/app/utils/supabase/client';
+
+export default function Sidebar() {
+  const { selectedFacilityId, setSelectedFacilityId, currentView, setCurrentView } = useFacility();
+  const [facilities, setFacilities] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchFacilities = async () => {
+      const supabase = createClient();
+      const { data } = await supabase.from('facilities').select('id, name');
+      if (data) setFacilities(data);
+    };
+    fetchFacilities();
+  }, []);
+
+  // Check if user is in Master View
+  const isMasterView = selectedFacilityId === 'all' || !selectedFacilityId;
+
+  // Structural helper for clean tab rendering
+  const navItem = (label: string, view: ViewType, disabled: boolean = false) => {
+    const isActive = currentView === view;
+    return (
+      <button
+        onClick={() => !disabled && setCurrentView(view)}
+        disabled={disabled}
+        className={`w-full text-left p-3 rounded-xl font-bold transition-all border ${
+          disabled
+            ? 'opacity-50 cursor-not-allowed text-gray-600 border-transparent'
+            : isActive
+            ? 'bg-blue-600/10 text-blue-500 border-blue-600/20'
+            : 'text-gray-500 border-transparent hover:bg-gray-900'
+        }`}
+      >
+        {label}
+      </button>
+    );
+  };
+
+  return (
+    <aside className="w-64 border-r border-gray-800 flex flex-col bg-black">
+      <div className="p-6">
+        <h2 className="text-blue-500 font-black tracking-tighter text-xl italic">AR_GUARD</h2>
+      </div>
+
+      <FacilitySelector
+        facilities={facilities}
+        selectedFacilityId={selectedFacilityId}
+        onSelect={(id) => {
+          setSelectedFacilityId(id);
+          if (id === 'all') setCurrentView('overview');
+        }}
+      />
+
+      <nav className="flex-1 p-4 space-y-2 mt-4">
+        <div className="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-4 px-2">Navigation</div>
+        {navItem('Executive Overview', 'overview')}
+        {navItem('Personnel Vault', 'personnel', isMasterView)}
+        {navItem('Document Center', 'documents', isMasterView)}
+      </nav>
+
+      <div className="p-4 border-t border-gray-800">
+        <div className="flex items-center gap-3 p-2">
+          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600" />
+          <div className="text-xs">
+            <p className="font-bold text-white">Admin User</p>
+            <p className="text-gray-500">Settings</p>
+          </div>
+        </div>
+      </div>
+    </aside>
   );
 }
 </file>
@@ -3318,6 +3530,2028 @@ const nextConfig: NextConfig = {
 export default nextConfig;
 </file>
 
+<file path="src/lib/reg-monitor.ts">
+// src/lib/reg-monitor.ts
+import { createAdminClient } from 'src/app/utils/supabase/admin';
+import { generatePrecisionEmbedding } from './ai-precision';
+
+/**
+ * Core engine for Regulatory Ingestion.
+ * Takes raw legal text, chunks it at natural sentence boundaries, and stores it in the Supabase vault.
+ */
+export async function ingestRegulatoryText(rawText: string, metadata: any) {
+  const supabase = createAdminClient();
+
+  // --- CLEANUP BLOCK ---
+  // Ensures zero duplicate data if the sync is rerun for this specific sub-classification.
+  // Only delete entries matching BOTH source AND sub_classification to preserve other sub-classifications.
+  const subClassification = metadata.sub_classification || null;
+  console.log(`[Monitor] Clearing old vault entries for: ${metadata.source} (sub_classification: ${subClassification})...`);
+  
+  let deleteQuery = supabase
+    .from('regulatory_knowledge')
+    .delete()
+    .eq('metadata->>source', metadata.source);
+  
+  if (subClassification) {
+    deleteQuery = deleteQuery.eq('metadata->>sub_classification', subClassification);
+  } else {
+    deleteQuery = deleteQuery.is('metadata->>sub_classification', null);
+  }
+  
+  await deleteQuery;
+
+  const textLength = rawText?.trim().length || 0;
+  console.log(`[Monitor] Received ${textLength} characters for ${metadata.source}`);
+
+  if (textLength < 10) {
+    console.error(`❌ REJECTED: Content too short for ${metadata.source}`);
+    return false;
+  }
+
+  // 1. SURGICAL CLEAN: Strip non-printable control characters globally before breaking text
+  const cleanRawText = rawText.replace(/[^\x20-\x7E\s]/g, '');
+
+  // 2. SENTENCE BOUNDARY DETECTION: Split text by sentences cleanly (. ! or ? followed by space)
+  const sentences = cleanRawText.match(/[^.!?]+[.!?]+(\s|$)/g) || [cleanRawText];
+  
+  const chunks: string[] = [];
+  let currentChunk = "";
+  const targetChunkSize = 1000;
+
+  for (const sentence of sentences) {
+    const trimmedSentence = sentence.trim();
+    if (!trimmedSentence) continue;
+
+    // Check if adding this complete sentence exceeds our target size
+    if ((currentChunk + " " + trimmedSentence).length > targetChunkSize) {
+      const finalizedChunk = currentChunk.trim();
+      
+      // THE QUALITY GATE: Must contain letters, basic word count, and structure
+      const hasLetters = /[a-zA-Z]/.test(finalizedChunk);
+      const hasWordDensity = (finalizedChunk.match(/\s/g) || []).length >= 3;
+      const isSubstantial = finalizedChunk.length >= 40;
+
+      if (hasLetters && hasWordDensity && isSubstantial) {
+        chunks.push(finalizedChunk);
+      }
+
+      // Overlap: Start the next chunk with the current sentence to maintain semantic linkage
+      currentChunk = trimmedSentence;
+    } else {
+      currentChunk = currentChunk ? `${currentChunk} ${trimmedSentence}` : trimmedSentence;
+    }
+  }
+
+  // Catch any remaining sentence aggregates left in the buffer
+  if (currentChunk.trim().length >= 40) {
+    const remainingChunk = currentChunk.trim();
+    if (/[a-zA-Z]/.test(remainingChunk) && (remainingChunk.match(/\s/g) || []).length >= 3) {
+      chunks.push(remainingChunk);
+    }
+  }
+
+  console.log(`🚀 Vectorizing ${chunks.length} immaculate, full-sentence segments for ${metadata.source}...`);
+
+  for (let i = 0; i < chunks.length; i++) {
+    // Generate the 1536-dimension vector embedding
+    const embedding = await generatePrecisionEmbedding(chunks[i]);
+
+    // Insert cleanly structured content into the vault with explicit schema alignment
+    const { error } = await supabase.from('regulatory_knowledge').insert({
+      content: chunks[i],
+      embedding,
+      category: metadata.category,
+      metadata: {
+        ...metadata,
+        chunk_index: i,
+        total_chunks: chunks.length,
+        ingested_at: new Date().toISOString()
+      }
+    });
+
+    if (error) {
+      console.error(`   [Error] Segment ${i}:`, error.message);
+      console.error(`   [Error Details]:`, error.details);
+      console.error(`   [Error Hint]:`, error.hint);
+      throw new Error(`Database Write Rejected: ${error.message} - Details: ${error.details || 'No additional details'}`);
+    }
+    
+    if (i % 20 === 0 && i > 0) {
+      console.log(`   [Progress] ${i}/${chunks.length} segments secured...`);
+    }
+  }
+
+  console.log(`✅ SUCCESS: ${metadata.source} is cleanly secured.`);
+  return true;
+}
+
+/**
+ * String normalization helper for resilient fuzzy matching.
+ * Converts strings to lowercase, strips whitespace, and normalizes separators.
+ */
+function normalizeDocumentKey(input: string | null | undefined): string {
+  if (!input) return '';
+  return input
+    .toLowerCase()
+    .trim()
+    .replace(/[\s\-]+/g, '_')  // Replace spaces and hyphens with underscores
+    .replace(/[^a-z0-9_]/g, ''); // Remove any non-alphanumeric characters except underscores
+}
+
+/**
+ * Fuzzy token matching helper.
+ * Checks if two normalized strings share significant token overlap or containment.
+ */
+function tokensMatch(ruleKey: string, docKey: string): boolean {
+  const normalizedRule = normalizeDocumentKey(ruleKey);
+  const normalizedDoc = normalizeDocumentKey(docKey);
+  
+  // Direct match
+  if (normalizedRule === normalizedDoc) return true;
+  
+  // Containment check (either direction)
+  if (normalizedRule.includes(normalizedDoc) || normalizedDoc.includes(normalizedRule)) {
+    return true;
+  }
+  
+  // Token overlap check - split by underscore and check for shared meaningful tokens
+  const ruleTokens = normalizedRule.split('_').filter(t => t.length > 2); // Filter out short tokens
+  const docTokens = normalizedDoc.split('_').filter(t => t.length > 2);
+  
+  // If at least 2 significant tokens match, consider it a match
+  const sharedTokens = ruleTokens.filter(token => docTokens.includes(token));
+  if (sharedTokens.length >= 2) return true;
+  
+  return false;
+}
+
+/**
+ * Reads from our database layers to calculate the real-time metrics
+ * for the UI Dashboard using fully dynamic schema-driven token normalization.
+ */
+export async function getRegulatoryStatus(facilityId: string) {
+  const supabase = createAdminClient();
+
+  try {
+    // 1. Fetch the facility profile with capacity, active_enrollment, and sub_classification for staffing calculations
+    const { data: facility } = await supabase
+      .from('facilities')
+      .select('facility_type, capacity, active_enrollment, sub_classification')
+      .eq('id', facilityId)
+      .single();
+
+    const currentType = facility?.facility_type || 'childcare';
+    const subClassification = facility?.sub_classification;
+    
+    // Use active_enrollment if available and > 0, otherwise fall back to capacity
+    const enrollmentCount = facility?.active_enrollment && facility.active_enrollment > 0
+      ? facility.active_enrollment
+      : (facility?.capacity || 0);
+    
+    console.log(`📊 Enrollment: ${enrollmentCount} (active: ${facility?.active_enrollment || 'N/A'}, capacity: ${facility?.capacity || 0})`);
+
+    // 2. Gather the active target requirements for this facility type AND specific sub-classification
+    // This ensures we only pull rules that match the exact facility classification scope
+    let rulesQuery = supabase
+      .from('compliance_criteria')
+      .select('*')
+      .eq('facility_type', currentType);
+    
+    // Add sub-classification filter if available to narrow down regulatory scope
+    if (subClassification) {
+      rulesQuery = rulesQuery.eq('sub_classification', subClassification);
+    }
+    
+    const { data: activeRules } = await rulesQuery;
+
+    // 3. Gather what files the facility has already successfully verified
+    const { data: uploadedDocs } = await supabase
+      .from('facility_documents')
+      .select('document_type, status')
+      .eq('facility_id', facilityId)
+      .eq('status', 'approved');
+
+    // 4. Dynamic Schema-Driven Fuzzy Metric Intersection
+    // Build a set of satisfied requirements using resilient token matching
+    const satisfiedRuleIds = new Set<string>();
+    const uploadedDocTypes = (uploadedDocs || []).map(d => d.document_type).filter(Boolean);
+    
+    console.log(`📊 Compliance Calculation: Evaluating ${activeRules?.length || 0} requirements against ${uploadedDocTypes.length} approved documents`);
+    
+    for (const rule of activeRules || []) {
+      const ruleKey = rule.required_document_type;
+      
+      // Check if any uploaded document matches this rule using fuzzy token matching
+      const isMatched = uploadedDocTypes.some(docType => tokensMatch(ruleKey, docType));
+      
+      if (isMatched) {
+        satisfiedRuleIds.add(rule.id);
+        console.log(`✅ Requirement satisfied: ${rule.requirement_name} (${ruleKey})`);
+      }
+    }
+    
+    const ruleCount = activeRules?.length || 0;
+    const verifiedCount = satisfiedRuleIds.size;
+    
+    // Compute base document compliance score as direct percentage of dynamic matches
+    let calculatedScore = ruleCount > 0 ? Math.round((verifiedCount / ruleCount) * 100) : 0;
+
+    // Filter down to map the current active gaps for the UI
+    const identifiedGaps = (activeRules || [])
+      .filter(rule => !satisfiedRuleIds.has(rule.id))
+      .map(rule => ({
+        id: rule.id,
+        title: rule.requirement_name,
+        systemSlug: rule.required_document_type,
+        isCritical: rule.severity === 'critical'
+      }));
+    
+    console.log(`📈 Compliance Score: ${calculatedScore}% (${verifiedCount}/${ruleCount} requirements met)`);
+
+    // 4. Fetch actual active personnel count from the database
+    const { count: personnelCount } = await supabase
+      .from('personnel')
+      .select('*', { count: 'exact', head: true })
+      .eq('facility_id', facilityId)
+      .eq('status', 'active');
+
+    const activeStaffCount = personnelCount ?? 0;
+
+    // 5. Calculate required staff threshold based on regulatory sector rules
+    // Defensive check: only calculate if enrollment count is valid (not null, undefined, or 0)
+    let requiredStaff = 0;
+    if (enrollmentCount && enrollmentCount > 0) {
+      if (currentType === 'childcare') {
+        requiredStaff = Math.ceil(enrollmentCount / 10);
+      } else if (currentType === 'nursing_home') {
+        requiredStaff = Math.ceil(enrollmentCount / 15);
+      }
+    } else {
+      console.log(`⚠️ Facility ${facilityId} has invalid or missing enrollment count (${enrollmentCount}). Skipping staffing ratio calculations.`);
+    }
+
+    // 6. Apply staffing ratio deficit penalty if understaffed
+    if (requiredStaff > 0 && activeStaffCount < requiredStaff) {
+      // Deduct strict 25-point penalty for staffing violations
+      calculatedScore = Math.max(0, calculatedScore - 25);
+      
+      // Add critical staffing gap to the violations list
+      identifiedGaps.push({
+        id: 'staffing-ratio-deficit',
+        title: `CRITICAL: Regulatory Staffing Ratio Deficit (Required: ${requiredStaff}, Active: ${activeStaffCount})`,
+        systemSlug: 'staffing_ratio_deficit',
+        isCritical: true
+      });
+
+      console.log(`⚠️ STAFFING VIOLATION: Facility ${facilityId} requires ${requiredStaff} staff but only has ${activeStaffCount} active. Score penalized by 25 points.`);
+    }
+
+    return {
+      calculatedScore,
+      identifiedGaps,
+      staffCount: activeStaffCount
+    };
+  } catch (error) {
+    console.error("❌ Failed to query metrics inside getRegulatoryStatus:", error);
+    return {
+      calculatedScore: 0,
+      identifiedGaps: [],
+      staffCount: 0
+    };
+  }
+}
+</file>
+
+<file path="src/components/ComplianceDashboardClient.tsx">
+'use client';
+
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { createClient } from 'src/app/utils/supabase/client';
+import { handleDocumentUploadSuccess, signAttestation, markNotApplicable } from 'src/app/actions/compliance';
+import { useFacility } from 'src/context/FacilityContext';
+
+interface Gap {
+  id: string;
+  name: string;
+  typeKey: string;
+  severity: 'critical' | 'standard';
+  frequency?: string; // Dynamic frequency: 'one-time', 'daily', 'weekly', 'monthly', 'annual', '2_years', '5_years', etc.
+}
+
+interface DashboardProps {
+  facilityId: string;
+  initialScore: number;
+  initialGaps: Gap[];
+}
+
+export default function ComplianceDashboardClient({
+  facilityId,
+  initialScore,
+  initialGaps
+}: DashboardProps) {
+  const router = useRouter();
+  const supabase = createClient();
+  
+  const [gaps, setGaps] = useState<Gap[]>(initialGaps);
+  const [score, setScore] = useState<number>(initialScore);
+  const [uploadingId, setUploadingId] = useState<string | null>(null);
+  const [signingAttestationId, setSigningAttestationId] = useState<string | null>(null);
+  const [markingNAId, setMarkingNAId] = useState<string | null>(null);
+  const [userAttestation, setUserAttestation] = useState<boolean>(false);
+  const [auditFeedback, setAuditFeedback] = useState<{
+    status: string;
+    code?: string;
+    action?: string;
+  } | null>(null);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, gap: Gap) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Require user attestation before upload
+    if (!userAttestation) {
+      alert('⚠️ You must certify the authenticity of this document before uploading.');
+      e.target.value = ''; // Reset file input
+      return;
+    }
+
+    try {
+      setUploadingId(gap.id);
+      setAuditFeedback(null);
+      console.log(`🎬 Upload triggered for checklist element: ${gap.name}`);
+
+      // 1. Generate a standardized unique ID for the document record
+      const documentId = crypto.randomUUID();
+      const fileExtension = file.name.split('.').pop()?.toLowerCase() || 'txt';
+      const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
+
+      // 2. Stream the raw file directly to your private storage bucket
+      const { error: storageError } = await supabase.storage
+        .from('facility-documents')
+        .upload(storagePath, file);
+
+      if (storageError) throw storageError;
+
+      // 3. Insert the tracking row into facility_documents matching your schema columns
+      const { error: insertError } = await supabase
+        .from('facility_documents')
+        .insert({
+          id: documentId,
+          facility_id: facilityId,
+          document_type: gap.typeKey,
+          status: 'pending',
+          file_url: storagePath,
+          name: file.name,
+          metadata: { original_upload_method: 'dashboard_ui' }
+        });
+
+      if (insertError) throw insertError;
+
+      console.log(`🧠 Invoking real-time AI compliance verification...`);
+      
+      // 4. Trigger the Server Action loop with user attestation
+      const response = await handleDocumentUploadSuccess(facilityId, documentId, userAttestation);
+
+      if (response.success && response.report) {
+        const report = response.report;
+        
+        // Lock in the live extraction details for user visibility
+        setAuditFeedback({
+          status: report.compliance_status,
+          code: report.regulatory_code_violated,
+          action: report.corrective_action
+        });
+
+        // Trigger an operational refresh to sync database states across server views
+        router.refresh();
+        
+        // Optimistically clear passing items out of the list view immediately
+        if (report.compliance_status === 'Compliant') {
+          setGaps((prev) => prev.filter((g) => g.id !== gap.id));
+          setScore((prev) => Math.min(100, prev + Math.round(100 / (initialGaps.length || 1))));
+        }
+      } else {
+        alert(`Audit finished with processing issues. Please inspect system error parameters.`);
+      }
+
+    } catch (error: any) {
+      console.error("❌ UI Upload Flow Exception:", error);
+      alert(`Processing failed: ${error.message || error}`);
+    } finally {
+      setUploadingId(null);
+    }
+  };
+
+  const handleSignAttestation = async (gap: Gap) => {
+    // Require user attestation before signing
+    if (!userAttestation) {
+      alert('⚠️ You must certify the authenticity of this attestation before signing.');
+      return;
+    }
+
+    if (!confirm(`Sign digital attestation for: ${gap.name}?\n\nThis will mark the requirement as satisfied without uploading a physical document.`)) {
+      return;
+    }
+
+    setSigningAttestationId(gap.id);
+    try {
+      const result = await signAttestation(facilityId, gap.id, userAttestation);
+      
+      if (result.success) {
+        alert(`✅ ${result.message}`);
+        
+        // Remove the gap from the list
+        setGaps(prevGaps => prevGaps.filter(g => g.id !== gap.id));
+        
+        // Update score
+        const newScore = Math.min(100, score + Math.ceil(100 / (gaps.length || 1)));
+        setScore(newScore);
+        
+        router.refresh();
+      } else {
+        alert(`❌ Failed to sign attestation: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error signing attestation:', error);
+      alert('❌ An unexpected error occurred');
+    } finally {
+      setSigningAttestationId(null);
+    }
+  };
+
+  const handleNavigateToPersonnel = () => {
+    // This will be handled by the parent component through context
+    const { setCurrentView } = useFacility();
+    setCurrentView('personnel');
+  };
+
+  const handleMarkNotApplicable = async (gap: Gap) => {
+    // Require user attestation before marking N/A
+    if (!userAttestation) {
+      alert('⚠️ You must certify the authenticity of this N/A declaration before proceeding.');
+      return;
+    }
+
+    const reason = prompt(`Mark "${gap.name}" as Not Applicable?\n\nPlease provide a brief reason (required):`);
+    
+    if (!reason || reason.trim() === '') {
+      alert('⚠️ A reason is required to mark a requirement as N/A.');
+      return;
+    }
+
+    setMarkingNAId(gap.id);
+    try {
+      const result = await markNotApplicable(facilityId, gap.id, reason.trim(), userAttestation);
+      
+      if (result.success) {
+        alert(`✅ ${result.message}`);
+        
+        // Remove the gap from the list
+        setGaps(prevGaps => prevGaps.filter(g => g.id !== gap.id));
+        
+        // Update score
+        const newScore = Math.min(100, score + Math.ceil(100 / (gaps.length || 1)));
+        setScore(newScore);
+        
+        router.refresh();
+      } else {
+        alert(`❌ Failed to mark as N/A: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error marking as N/A:', error);
+      alert('❌ An unexpected error occurred');
+    } finally {
+      setMarkingNAId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6 max-w-6xl mx-auto text-slate-800">
+      {/* Dynamic Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* Core Metric Ring */}
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col items-center justify-center text-center">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Facility Readiness</h3>
+          <div className={`w-28 h-28 rounded-full border-8 flex items-center justify-center text-2xl font-black ${
+            score >= 80 ? 'border-emerald-500 text-emerald-600 bg-emerald-50' : 
+            score >= 50 ? 'border-amber-500 text-amber-600 bg-amber-50' : 
+            'border-rose-500 text-rose-600 bg-rose-50'
+          }`}>
+            {score}%
+          </div>
+          <p className="text-xs text-slate-400 mt-3">Calculated against Arkansas Licensing requirements.</p>
+        </div>
+
+        {/* Live Audit Desk Interface */}
+        <div className="md:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-between">
+          <div>
+            <h3 className="text-base font-bold text-slate-800 mb-1">AR_Compliance_Guard Audit Desk</h3>
+            <p className="text-xs text-slate-400 mb-4">Upload facility files below. The system converts layouts natively via multimodal AI to run precise vector-law evaluations.</p>
+          </div>
+          
+          {auditFeedback ? (
+            <div className={`p-4 rounded-lg border text-xs space-y-1.5 ${
+              auditFeedback.status === 'Compliant' 
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900' 
+                : 'bg-rose-50 border-rose-200 text-rose-900'
+            }`}>
+              <div className="flex items-center justify-between font-bold text-sm">
+                <span>Result: {auditFeedback.status.toUpperCase()}</span>
+                <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-white border border-slate-200 font-mono shadow-sm">Pristine Verification</span>
+              </div>
+              <p><span className="font-semibold">Code Section:</span> {auditFeedback.code}</p>
+              <p><span className="font-semibold">Remediation Action:</span> {auditFeedback.action}</p>
+            </div>
+          ) : (
+            <div className="border-2 border-dashed border-slate-200 bg-slate-50 rounded-lg p-5 text-center text-xs text-slate-400 italic">
+              Awaiting real-time ingestion triggers...
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Legal Attestation Checkbox - Penalty of Perjury */}
+      <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-6 shadow-sm">
+        <div className="flex items-start gap-4">
+          <input
+            type="checkbox"
+            id="user-attestation"
+            checked={userAttestation}
+            onChange={(e) => setUserAttestation(e.target.checked)}
+            className="mt-1 w-5 h-5 text-blue-600 border-amber-400 rounded focus:ring-2 focus:ring-blue-500 cursor-pointer"
+          />
+          <label htmlFor="user-attestation" className="flex-1 cursor-pointer">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-sm font-bold text-amber-900">⚖️ Legal Certification Required</span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+                MANDATORY
+              </span>
+            </div>
+            <p className="text-sm text-amber-900 leading-relaxed">
+              I certify that this information is authentic, unaltered, and satisfies Arkansas DHS requirements.
+              I understand that providing false information may result in penalties under state and federal law.
+            </p>
+            <p className="text-xs text-amber-700 mt-2 italic">
+              By checking this box, you acknowledge that all documents and attestations are subject to audit and legal review.
+            </p>
+          </label>
+        </div>
+      </div>
+
+      {/* Checklist View Panel */}
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <div className="bg-slate-900 px-6 py-3">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-white">Outstanding Core Facility Requirements</h2>
+        </div>
+
+        {gaps.length === 0 ? (
+          <div className="p-8 text-center text-slate-400 text-xs italic">
+            🎉 Maximum Precision Compliance Verified. No outstanding tracking gaps remain.
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {gaps.map((gap) => (
+              <div key={gap.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 hover:bg-slate-50/50 transition-colors">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-slate-800 text-sm">{gap.name}</span>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                      gap.severity === 'critical' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'
+                    }`}>
+                      {gap.severity.toUpperCase()}
+                    </span>
+                    {gap.frequency && (
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                        {gap.frequency.replace(/_/g, ' ').toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-400 font-mono">Requirement Key: {gap.typeKey}</p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {uploadingId === gap.id ? (
+                    <div className="flex items-center gap-2 text-indigo-600 font-bold text-xs animate-pulse">
+                      <span className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></span>
+                      AI Verification running...
+                    </div>
+                  ) : signingAttestationId === gap.id ? (
+                    <div className="flex items-center gap-2 text-emerald-600 font-bold text-xs animate-pulse">
+                      <span className="w-3.5 h-3.5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin"></span>
+                      Signing attestation...
+                    </div>
+                  ) : markingNAId === gap.id ? (
+                    <div className="flex items-center gap-2 text-amber-600 font-bold text-xs animate-pulse">
+                      <span className="w-3.5 h-3.5 border-2 border-amber-600 border-t-transparent rounded-full animate-spin"></span>
+                      Marking N/A...
+                    </div>
+                  ) : gap.id === 'staffing-ratio-deficit' ? (
+                    /* Special UI for staffing ratio deficit - navigate to Personnel Vault */
+                    <button
+                      onClick={handleNavigateToPersonnel}
+                      className="px-4 py-2 rounded-md text-xs font-bold shadow-sm transition-all bg-rose-600 hover:bg-rose-700 text-white flex items-center gap-2"
+                    >
+                      👥 Add Staff to Vault
+                    </button>
+                  ) : (
+                    <>
+                      {/* Show attestation button for frequent requirements (daily, weekly, monthly) */}
+                      {gap.frequency && ['daily', 'weekly', 'monthly'].includes(gap.frequency) ? (
+                        <button
+                          onClick={() => handleSignAttestation(gap)}
+                          disabled={!userAttestation}
+                          className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-w-[140px] ${
+                            userAttestation
+                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                              : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                          }`}
+                          title={!userAttestation ? 'Please check the legal certification box above' : ''}
+                        >
+                          ✓ Sign Digital Attestation
+                        </button>
+                      ) : (
+                        <label className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all block text-center min-w-[120px] ${
+                          userAttestation
+                            ? 'cursor-pointer bg-white border border-slate-300 text-slate-800 hover:border-indigo-500 hover:text-indigo-600'
+                            : 'cursor-not-allowed bg-slate-100 border border-slate-300 text-slate-400'
+                        }`}
+                        title={!userAttestation ? 'Please check the legal certification box above' : ''}
+                        >
+                          Upload Document
+                          <input
+                            type="file"
+                            accept=".txt,.pdf,.png,.jpg,.jpeg"
+                            className="hidden"
+                            onChange={(e) => handleFileChange(e, gap)}
+                            disabled={!userAttestation}
+                          />
+                        </label>
+                      )}
+                      
+                      {/* Mark N/A button - not available for staffing deficit */}
+                      {gap.id !== 'staffing-ratio-deficit' && (
+                        <button
+                          onClick={() => handleMarkNotApplicable(gap)}
+                          disabled={!userAttestation}
+                          className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
+                            userAttestation
+                              ? 'bg-slate-600 hover:bg-slate-700 text-white cursor-pointer'
+                              : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                          }`}
+                          title={!userAttestation ? 'Please check the legal certification box above' : 'Mark this requirement as Not Applicable'}
+                        >
+                          Mark N/A
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/lib/document-processor.ts">
+// src/lib/document-processor.ts
+
+export async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<string> {
+  const extension = fileName.split('.').pop()?.toLowerCase();
+  
+  console.log(`[Parser] Analyzing ${fileName}`);
+
+  // 1. TEXT FILES (.txt) - Verified Success
+  if (extension === 'txt') {
+    return buffer.toString('utf-8').trim();
+  }
+
+  // 2. PDF FILES - Native JavaScript Parser (Serverless-Compatible)
+  if (extension === 'pdf') {
+    try {
+      const PDFParser = require('pdf2json');
+      
+      return await new Promise<string>((resolve, reject) => {
+        // Initialize with '1' as the second argument to enable raw text extraction mode (skips heavy UI rendering)
+        const pdfParser = new PDFParser(null, 1);
+        
+        pdfParser.on("pdfParser_dataError", (errData: any) => {
+          reject(new Error(errData.parserError));
+        });
+        
+        pdfParser.on("pdfParser_dataReady", () => {
+          const text = pdfParser.getRawTextContent();
+          resolve(text || "");
+        });
+        
+        pdfParser.parseBuffer(buffer);
+      });
+    } catch (err: any) {
+      console.error(`❌ System PDF Extraction Failure for ${fileName}:`, err.message);
+      throw new Error(`Cloud Document Parser Interrupted: ${err.message}`);
+    }
+  }
+
+  return "";
+}
+</file>
+
+<file path="src/lib/scripts/discover-all-facility-criteria.ts">
+// src/lib/scripts/discover-all-facility-criteria.ts
+import OpenAI from 'openai';
+import { createAdminClient } from 'src/app/utils/supabase/admin';
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+/**
+ * Proactive Compliance Discovery Agent.
+ * Sweeps through raw ingested regulatory texts using verified database columns,
+ * and dynamically extracts structural criteria into the core application layout registry.
+ */
+export async function discoverAllFacilityCriteria() {
+  console.log("🚀 Starting Multi-Sector Regulatory Knowledge Extraction Loop...");
+  const supabase = createAdminClient();
+
+  // 1. Query only the explicit columns visible in your schema, including sub_classification metadata
+  const { data: lawChunks, error: fetchError } = await supabase
+    .from('regulatory_knowledge')
+    .select('id, content, category, metadata');
+
+  if (fetchError || !lawChunks) {
+    console.error("❌ Failed to query regulatory knowledge vault:", fetchError?.message);
+    return;
+  }
+
+  console.log(`📑 Ingested Pool Analyzer: Processing ${lawChunks.length} targeted legal text chunks...`);
+
+  for (const chunk of lawChunks) {
+    try {
+      // Normalize our database category string to align with your application slugs
+      const normalizedFacilityType = chunk.category === 'childcare' ? 'childcare' : 'nursing_home';
+      
+      // Extract sub_classification from metadata if available
+      const subClassification = chunk.metadata?.sub_classification || null;
+
+      console.log(`🧠 Analyzing Chunk ID [${chunk.id}] under category [${normalizedFacilityType}] / sub-class [${subClassification || 'GENERAL'}]...`);
+
+      // 2. Pass the legal text block to the intelligence layer for checklist structuring
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content: "You are an elite systems engineer and state regulatory draftsman. Analyze the provided state licensing rule block and extract any explicit document, record ledger, insurance card, log sheet, certificate, OR personnel/staffing requirement that the facility infrastructure is forced to maintain to pass state inspection."
+          },
+          {
+            role: "user",
+            content: `
+              Analyze this Arkansas state regulatory requirement block:
+              ---
+              Target Facility Profile: ${normalizedFacilityType}
+              Specific Sub-Classification: ${subClassification || 'General (applies to all)'}
+              Legal Content: ${chunk.content}
+              ---
+
+              Extract any explicit documentation OR personnel requirements into structured JSON matching this format exactly:
+              {
+                "requirements": [
+                  {
+                    "requirement_name": "Clear, descriptive title of the tracked requirement (e.g., 'Commercial General Liability Insurance Certificate' or 'Minimum Staff-to-Child Ratio')",
+                    "required_document_type": "lowercase_snake_case_slug_for_system_keys",
+                    "severity": "critical" | "standard",
+                    "frequency": "string (see guidelines below)",
+                    "applies_to_subclass": "Indicate if this requirement is specific to the sub-classification mentioned above, or if it applies generally to all facilities of this type",
+                    "is_personnel_requirement": boolean (true if this is a staffing/personnel requirement, false for documents)
+                  }
+                ]
+              }
+              
+              FREQUENCY EXTRACTION GUIDELINES:
+              Determine the exact renewal frequency stated in the regulatory text. Standardize the output to strings like:
+              - "one-time": Initial setup documents that never expire (floor plans, facility layouts, initial certifications)
+              - "daily": Daily logs, attendance records, operational checklists
+              - "weekly": Weekly inspections, checklists, or logs
+              - "monthly": Monthly reports, logs, or attestations
+              - "quarterly": Quarterly reports or reviews
+              - "biannual": Every 6 months
+              - "annual": Documents renewed yearly (licenses, certifications, insurance policies)
+              - "2_years": Documents renewed every 2 years
+              - "3_years": Documents renewed every 3 years
+              - "5_years": Documents renewed every 5 years
+              - "10_years": Documents renewed every 10 years
+              
+              If the text implies an initial setup document that never expires, use "one-time".
+              If the renewal period is unspecified, default to "annual".
+              
+              PERSONNEL REQUIREMENT EXTRACTION:
+              If the text specifies staffing ratios (e.g., "one staff member per 10 children" or "minimum of 3 nurses per 50 residents"), extract this as a personnel requirement with:
+              - requirement_name: Descriptive title like "Minimum Staff-to-Child Ratio (1:10)"
+              - required_document_type: Use format "staffing_ratio_{facility_type}" (e.g., "staffing_ratio_childcare")
+              - severity: "critical" (staffing requirements are always critical)
+              - frequency: "ongoing" (staffing is continuously monitored)
+              - is_personnel_requirement: true
+              
+              If the text describes general behavior and does not mandate a retrievable file asset, document, permit, or staffing requirement, return an empty array.
+            `
+          }
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.0 // Zero temperature for reproducible data normalization
+      });
+
+      const result = JSON.parse(response.choices[0].message.content || '{"requirements": []}');
+      
+      if (result.requirements && result.requirements.length > 0) {
+        for (const req of result.requirements) {
+          // Determine if this requirement should be tagged with the specific sub-classification
+          const requirementSubClass = subClassification && req.applies_to_subclass?.toLowerCase().includes('specific')
+            ? subClassification
+            : null;
+          
+          const displaySubClass = requirementSubClass || 'ALL';
+          console.log(`✨ Extracting Rule for [${normalizedFacilityType.toUpperCase()}/${displaySubClass}]: ${req.requirement_name}`);
+          
+          // 3. Insert the extracted requirement directly into your master tracking schema
+          const { error: insertError } = await supabase
+            .from('compliance_criteria')
+            .insert({
+              facility_type: normalizedFacilityType,
+              sub_classification: requirementSubClass,
+              requirement_name: req.requirement_name,
+              required_document_type: req.required_document_type,
+              severity: req.severity,
+              frequency: req.frequency || 'annual' // Default to annual if not specified
+            });
+
+          if (insertError) {
+            // Ignore unique constraint exceptions if overlapping rules are extracted
+            if (insertError.code !== '23505') {
+              console.error(`⚠️ Database insertion failure:`, insertError.message);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`❌ Error parsing regulatory chunk ID ${chunk.id}:`, err);
+    }
+  }
+
+  console.log("\n🏁 Discovery complete. Your master application checklists are completely synchronized with your ingested raw source data.");
+}
+</file>
+
+<file path="package.json">
+{
+  "name": "ar-compliance-pro",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "ingest": "tsx run-ingestion.ts",
+    "discover": "tsx run-discovery.ts",
+    "discover:roles": "tsx run-role-discovery.ts"
+  },
+  "dependencies": {
+    "@supabase/ssr": "^0.10.3",
+    "@supabase/supabase-js": "^2.105.4",
+    "next": "16.2.6",
+    "openai": "^6.37.0",
+    "pdf-parse": "^2.4.5",
+    "pdf-to-text": "^0.0.7",
+    "pdf2json": "^4.0.3",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.0",
+    "@types/node": "^20.19.41",
+    "@types/pdf-parse": "^1.1.5",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.6",
+    "tailwindcss": "^4",
+    "tsx": "^4.22.3",
+    "typescript": "^5"
+  }
+}
+</file>
+
+<file path="src/app/dashboard/page.tsx">
+'use client';
+
+import { useFacility } from 'src/context/FacilityContext';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { getFacilityComplianceData, getPersonnelData, getDocumentsData, markEmployeeSeparated, handleDocumentUploadSuccess, getSeparatedPersonnelData, getAllFacilitiesOverview, getAvailableRoles, addPersonnel, updateEnrollment } from 'src/app/actions/compliance';
+import { createClient } from 'src/app/utils/supabase/client';
+import ComplianceDashboardClient from 'src/components/ComplianceDashboardClient';
+
+// Type definitions for personnel and documents
+interface PersonnelRecord {
+  id: string;
+  name: string;
+  role: string;
+  clearance_status: string;
+  hire_date: string;
+  created_at: string;
+  status?: string;
+  separation_date?: string;
+}
+
+interface DocumentRecord {
+  id: string;
+  name: string;
+  document_type: string;
+  status: string;
+  file_url: string;
+  metadata: any;
+  created_at: string;
+}
+
+export default function ExecutiveOverview() {
+  const router = useRouter();
+  const supabase = createClient();
+  const { selectedFacilityId, setSelectedFacilityId, currentView, setCurrentView } = useFacility();
+  const [data, setData] = useState<any>(null);
+  const [personnelData, setPersonnelData] = useState<PersonnelRecord[]>([]);
+  const [separatedPersonnelData, setSeparatedPersonnelData] = useState<PersonnelRecord[]>([]);
+  const [showArchiveView, setShowArchiveView] = useState(false);
+  const [documentsData, setDocumentsData] = useState<DocumentRecord[]>([]);
+  const [facilitiesData, setFacilitiesData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [separatingId, setSeparatingId] = useState<string | null>(null);
+  const [uploadingDocument, setUploadingDocument] = useState(false);
+  const [uploadFeedback, setUploadFeedback] = useState<{
+    status: string;
+    message: string;
+  } | null>(null);
+  const [selectedAuditReport, setSelectedAuditReport] = useState<DocumentRecord | null>(null);
+  
+  // Personnel form state
+  const [showAddPersonnelForm, setShowAddPersonnelForm] = useState(false);
+  const [availableRoles, setAvailableRoles] = useState<string[]>([]);
+  const [loadingRoles, setLoadingRoles] = useState(false);
+  const [addingPersonnel, setAddingPersonnel] = useState(false);
+  const [personnelFormData, setPersonnelFormData] = useState({
+    name: '',
+    role: '',
+    hire_date: new Date().toISOString().split('T')[0],
+    attestation_frequency: 'annual' as 'annual' | 'biannual' | 'quarterly' | 'monthly'
+  });
+  
+  // Enrollment state
+  const [enrollmentInput, setEnrollmentInput] = useState<string>('');
+  const [updatingEnrollment, setUpdatingEnrollment] = useState(false);
+
+  // Load available roles when form is opened
+  useEffect(() => {
+    if (showAddPersonnelForm && selectedFacilityId && selectedFacilityId !== 'all') {
+      loadAvailableRoles();
+    }
+  }, [showAddPersonnelForm, selectedFacilityId]);
+
+  const loadAvailableRoles = async () => {
+    if (!selectedFacilityId || selectedFacilityId === 'all') return;
+    
+    setLoadingRoles(true);
+    try {
+      const result = await getAvailableRoles(selectedFacilityId);
+      if (result.success) {
+        setAvailableRoles(result.roles);
+      } else {
+        alert(`Failed to load roles: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error loading roles:', error);
+    } finally {
+      setLoadingRoles(false);
+    }
+  };
+
+  const handleAddPersonnel = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!selectedFacilityId || selectedFacilityId === 'all') {
+      alert('Please select a specific facility first');
+      return;
+    }
+    
+    if (!personnelFormData.name || !personnelFormData.role) {
+      alert('Please fill in all required fields');
+      return;
+    }
+    
+    setAddingPersonnel(true);
+    try {
+      const result = await addPersonnel(selectedFacilityId, personnelFormData);
+      
+      if (result.success) {
+        alert(`✅ Successfully added ${personnelFormData.name} to the roster!`);
+        
+        // Reset form and close
+        setPersonnelFormData({
+          name: '',
+          role: '',
+          hire_date: new Date().toISOString().split('T')[0],
+          attestation_frequency: 'annual'
+        });
+        setShowAddPersonnelForm(false);
+        
+        // Reload personnel data
+        const personnel = await getPersonnelData(selectedFacilityId);
+        setPersonnelData(personnel);
+      } else {
+        alert(`❌ Failed to add personnel: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error adding personnel:', error);
+      alert('❌ An unexpected error occurred');
+    } finally {
+      setAddingPersonnel(false);
+    }
+  };
+
+  // Handle employee separation with confirmation
+  const handleUpdateEnrollment = async () => {
+    if (!selectedFacilityId || selectedFacilityId === 'all') {
+      alert('Please select a specific facility first');
+      return;
+    }
+    
+    const enrollment = parseInt(enrollmentInput);
+    if (isNaN(enrollment) || enrollment < 0) {
+      alert('Please enter a valid enrollment number (0 or greater)');
+      return;
+    }
+    
+    setUpdatingEnrollment(true);
+    try {
+      const result = await updateEnrollment(selectedFacilityId, enrollment);
+      
+      if (result.success) {
+        alert(`✅ Successfully updated enrollment to ${enrollment}`);
+        setEnrollmentInput('');
+        
+        // Refresh the compliance data to recalculate staffing ratios
+        const updatedData = await getFacilityComplianceData(selectedFacilityId);
+        setData(updatedData);
+        router.refresh();
+      } else {
+        alert(`❌ Failed to update enrollment: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error updating enrollment:', error);
+      alert('❌ An unexpected error occurred');
+    } finally {
+      setUpdatingEnrollment(false);
+    }
+  };
+
+  const handleSeparateEmployee = async (personnelId: string, employeeName: string) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to mark ${employeeName} as separated?\n\nThis will:\n• Remove them from the active roster\n• Set their status to 'separated'\n• Record the separation date\n• Preserve all historical records\n\nThis action can be reversed by updating the database directly.`
+    );
+
+    if (!confirmed) return;
+
+    setSeparatingId(personnelId);
+    try {
+      const result = await markEmployeeSeparated(personnelId);
+      
+      if (result.success) {
+        // Remove from local state immediately for instant UI feedback
+        setPersonnelData(prev => prev.filter(p => p.id !== personnelId));
+        alert(`✅ ${employeeName} has been marked as separated and removed from the active roster.`);
+      } else {
+        alert(`❌ Failed to mark employee as separated: ${result.error}`);
+      }
+    } catch (error: any) {
+      console.error('Error separating employee:', error);
+      alert(`❌ Error: ${error.message}`);
+    } finally {
+      setSeparatingId(null);
+    }
+  };
+
+  // Handle document upload with AI processing
+  const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!selectedFacilityId || selectedFacilityId === 'all') {
+      alert('⚠️ Please select a specific facility before uploading documents.');
+      return;
+    }
+
+    try {
+      setUploadingDocument(true);
+      setUploadFeedback(null);
+      console.log(`🎬 Document upload triggered for facility: ${selectedFacilityId}`);
+
+      // 1. Generate a standardized unique ID for the document record
+      const documentId = crypto.randomUUID();
+      const fileExtension = file.name.split('.').pop()?.toLowerCase() || 'pdf';
+      const storagePath = `${selectedFacilityId}/${documentId}.${fileExtension}`;
+
+      // 2. Stream the raw file directly to the storage bucket
+      const { error: storageError } = await supabase.storage
+        .from('facility-documents')
+        .upload(storagePath, file);
+
+      if (storageError) throw storageError;
+
+      // 3. Insert the tracking row into facility_documents
+      const { error: insertError } = await supabase
+        .from('facility_documents')
+        .insert({
+          id: documentId,
+          facility_id: selectedFacilityId,
+          document_type: 'general_compliance_upload', // Default type for Document Center uploads
+          status: 'pending',
+          file_url: storagePath,
+          name: file.name,
+          metadata: {
+            original_upload_method: 'documents_view',
+            uploaded_at: new Date().toISOString()
+          }
+        });
+
+      if (insertError) throw insertError;
+
+      console.log(`🧠 Invoking real-time AI compliance verification...`);
+      
+      // 4. Trigger the Server Action loop for AI processing
+      const response = await handleDocumentUploadSuccess(selectedFacilityId, documentId);
+
+      if (response.success && response.report) {
+        const report = response.report;
+        
+        // Build feedback message with personnel matching status
+        let feedbackMessage = `Document processed: ${report.compliance_status}. ${report.corrective_action || 'No action required.'}`;
+        
+        if (response.personnelName && !response.personnelMatched) {
+          feedbackMessage += ` ⚠️ Document accepted but could not be linked: Personnel '${response.personnelName}' is not registered in this facility's vault.`;
+        } else if (response.personnelMatched) {
+          feedbackMessage += ` ✅ Automatically linked to personnel record: ${response.personnelName}.`;
+        }
+        
+        setUploadFeedback({
+          status: report.compliance_status,
+          message: feedbackMessage
+        });
+
+        // Refresh the documents list to show the new upload
+        const updatedDocs = await getDocumentsData(selectedFacilityId);
+        setDocumentsData(updatedDocs);
+        
+        // Also refresh the router to sync all views
+        router.refresh();
+      } else {
+        setUploadFeedback({
+          status: 'warning',
+          message: 'Document uploaded but AI processing encountered issues. Check system logs.'
+        });
+        
+        // Still refresh to show the document
+        const updatedDocs = await getDocumentsData(selectedFacilityId);
+        setDocumentsData(updatedDocs);
+      }
+
+    } catch (error: any) {
+      console.error("❌ Document Upload Exception:", error);
+      setUploadFeedback({
+        status: 'error',
+        message: `Upload failed: ${error.message || 'Unknown error'}`
+      });
+    } finally {
+      setUploadingDocument(false);
+      // Clear the file input
+      e.target.value = '';
+    }
+  };
+
+  useEffect(() => {
+    async function loadStats() {
+      if (!selectedFacilityId || selectedFacilityId === 'all') {
+        setData(null);
+        setPersonnelData([]);
+        setSeparatedPersonnelData([]);
+        setDocumentsData([]);
+        
+        // Load all facilities for master view
+        if (selectedFacilityId === 'all') {
+          setLoading(true);
+          try {
+            const facilities = await getAllFacilitiesOverview();
+            setFacilitiesData(facilities);
+          } catch (error) {
+            console.error('Error loading facilities:', error);
+            setFacilitiesData([]);
+          }
+        }
+        
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      try {
+        // Fetch all data in parallel for better performance
+        const [stats, personnel, separatedPersonnel, documents] = await Promise.all([
+          getFacilityComplianceData(selectedFacilityId),
+          getPersonnelData(selectedFacilityId),
+          getSeparatedPersonnelData(selectedFacilityId),
+          getDocumentsData(selectedFacilityId)
+        ]);
+        
+        setData(stats);
+        setPersonnelData(personnel);
+        setSeparatedPersonnelData(separatedPersonnel);
+        setDocumentsData(documents);
+      } catch (error) {
+        console.error("Dashboard Load Error:", error);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadStats();
+  }, [selectedFacilityId]);
+
+  if (loading) {
+    return (
+      <div className="p-12 min-h-screen bg-slate-50 flex items-center justify-center animate-pulse">
+        <p className="text-blue-500 font-black tracking-[0.3em] uppercase text-xs">
+          Synchronizing DHS Brain...
+        </p>
+      </div>
+    );
+  }
+
+  if (selectedFacilityId === 'all' || !selectedFacilityId) {
+    return (
+      <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700">
+        <header className="mb-8">
+          <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">DHS Regulatory Engine</p>
+          <h1 className="text-5xl font-bold tracking-tight text-slate-900 mb-2">Executive Fleet Overview</h1>
+          <p className="text-slate-600 text-lg">Real-time compliance monitoring across all facilities</p>
+        </header>
+
+        {facilitiesData.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20">
+            <div className="p-8 border border-dashed border-slate-300 rounded-2xl bg-white max-w-md shadow-sm text-center">
+              <p className="text-slate-500 italic">
+                No facilities found. Add facilities to begin monitoring compliance across your organization.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {facilitiesData.map((facility) => (
+              <div
+                key={facility.id}
+                className="bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden"
+              >
+                {/* Facility Header */}
+                <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4">
+                  <h3 className="text-white font-bold text-lg mb-1">{facility.name}</h3>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs bg-white/20 text-white px-2 py-0.5 rounded-full font-medium">
+                      {facility.facility_type === 'childcare' ? 'Childcare' : 'Nursing Home'}
+                    </span>
+                    {facility.sub_classification && (
+                      <span className="text-xs text-slate-300">
+                        {facility.sub_classification}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Compliance Score Dial */}
+                <div className="p-6 flex items-center justify-center border-b border-slate-100">
+                  <div className="relative">
+                    <div className={`w-32 h-32 rounded-full border-8 flex flex-col items-center justify-center ${
+                      facility.complianceScore >= 80
+                        ? 'border-emerald-500 bg-emerald-50'
+                        : facility.complianceScore >= 50
+                        ? 'border-amber-500 bg-amber-50'
+                        : 'border-rose-500 bg-rose-50'
+                    }`}>
+                      <span className={`text-3xl font-black ${
+                        facility.complianceScore >= 80
+                          ? 'text-emerald-600'
+                          : facility.complianceScore >= 50
+                          ? 'text-amber-600'
+                          : 'text-rose-600'
+                      }`}>
+                        {facility.complianceScore}%
+                      </span>
+                      <span className="text-xs text-slate-500 font-medium mt-1">Compliance</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Facility Stats */}
+                <div className="p-6 space-y-3">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-slate-600 font-medium">Capacity:</span>
+                    <span className="text-slate-900 font-bold">{facility.capacity || 'N/A'}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-slate-600 font-medium">Active Staff:</span>
+                    <span className="text-slate-900 font-bold">{facility.totalPersonnel}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-slate-600 font-medium">Open Gaps:</span>
+                    <span className={`font-bold ${
+                      facility.gapsCount === 0
+                        ? 'text-emerald-600'
+                        : facility.gapsCount <= 3
+                        ? 'text-amber-600'
+                        : 'text-rose-600'
+                    }`}>
+                      {facility.gapsCount}
+                    </span>
+                  </div>
+                </div>
+
+                {/* View Details Button */}
+                <div className="px-6 pb-6">
+                  <button
+                    onClick={() => {
+                      setSelectedFacilityId(facility.id);
+                      setCurrentView('overview');
+                    }}
+                    className="w-full bg-slate-100 hover:bg-slate-200 text-slate-800 font-medium py-2.5 px-4 rounded-lg transition-colors text-sm"
+                  >
+                    View Facility Details →
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Fleet Summary Footer */}
+        {facilitiesData.length > 0 && (
+          <div className="mt-8 bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+            <h3 className="text-lg font-bold text-slate-900 mb-4">Fleet Summary</h3>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              <div className="text-center">
+                <p className="text-3xl font-black text-slate-900">{facilitiesData.length}</p>
+                <p className="text-sm text-slate-600 mt-1">Total Facilities</p>
+              </div>
+              <div className="text-center">
+                <p className="text-3xl font-black text-emerald-600">
+                  {facilitiesData.filter(f => f.complianceScore >= 80).length}
+                </p>
+                <p className="text-sm text-slate-600 mt-1">Compliant (≥80%)</p>
+              </div>
+              <div className="text-center">
+                <p className="text-3xl font-black text-slate-900">
+                  {facilitiesData.reduce((sum, f) => sum + f.totalPersonnel, 0)}
+                </p>
+                <p className="text-sm text-slate-600 mt-1">Total Active Staff</p>
+              </div>
+              <div className="text-center">
+                <p className="text-3xl font-black text-rose-600">
+                  {facilitiesData.reduce((sum, f) => sum + f.gapsCount, 0)}
+                </p>
+                <p className="text-sm text-slate-600 mt-1">Total Open Gaps</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="p-12 min-h-screen bg-slate-50 text-slate-500 italic flex items-center justify-center">
+        ⚠️ Failed to pull compliance schema configurations.
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
+      {/* Dynamic Main Header Titles */}
+      <header>
+        <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">DHS Regulatory Engine</p>
+        <h1 className="text-5xl font-bold tracking-tight text-slate-900">
+          {currentView === 'overview' && 'Executive Overview'}
+          {currentView === 'personnel' && 'Personnel Vault'}
+          {currentView === 'documents' && 'Document Center'}
+        </h1>
+      </header>
+
+      {/* Dynamic Workspace Tab Content Panels */}
+      {currentView === 'overview' && (
+        <>
+          {/* Active Enrollment Input */}
+          <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm max-w-6xl mx-auto">
+            <div className="flex items-center gap-4">
+              <div className="flex-1">
+                <label htmlFor="enrollment-input" className="block text-sm font-bold text-slate-800 mb-2">
+                  Baseline Active Enrollment
+                </label>
+                <p className="text-xs text-slate-500 mb-3">
+                  Set your baseline enrolled headcount. You only need to update this when a child/resident officially enrolls or withdraws. The system uses this baseline to calculate your required minimum staff in the Personnel Vault.
+                </p>
+                <div className="flex items-center gap-3">
+                  <input
+                    id="enrollment-input"
+                    type="number"
+                    min="0"
+                    value={enrollmentInput}
+                    onChange={(e) => setEnrollmentInput(e.target.value)}
+                    placeholder="e.g., 45"
+                    className="px-4 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-32"
+                    disabled={updatingEnrollment}
+                  />
+                  <button
+                    onClick={handleUpdateEnrollment}
+                    disabled={updatingEnrollment || !enrollmentInput}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                      updatingEnrollment || !enrollmentInput
+                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                        : 'bg-blue-600 text-white hover:bg-blue-700'
+                    }`}
+                  >
+                    {updatingEnrollment ? (
+                      <span className="flex items-center gap-2">
+                        <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                        Updating...
+                      </span>
+                    ) : (
+                      'Update Enrollment'
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <ComplianceDashboardClient
+            key={selectedFacilityId}
+            facilityId={selectedFacilityId}
+            initialScore={data.score}
+            initialGaps={data.gaps}
+          />
+        </>
+      )}
+
+      {currentView === 'personnel' && (
+        <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm max-w-6xl mx-auto text-slate-800">
+          <div className="flex items-start justify-between mb-6">
+            <div>
+              <h2 className="text-lg font-bold mb-2">
+                {showArchiveView ? 'Archived Employee Roster' : 'Active Employee Clearance Rosters'}
+              </h2>
+              <p className="text-xs text-slate-400">
+                Tracking employee background clearance codes against facility ID: <span className="font-mono text-slate-600 bg-slate-100 px-1 rounded">{selectedFacilityId}</span>
+              </p>
+            </div>
+            
+            {/* Action Buttons */}
+            <div className="flex items-center gap-3">
+              {!showArchiveView && (
+                <button
+                  onClick={() => setShowAddPersonnelForm(!showAddPersonnelForm)}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all bg-blue-600 text-white hover:bg-blue-700"
+                >
+                  ➕ Add Employee
+                </button>
+              )}
+              
+              <button
+                onClick={() => setShowArchiveView(!showArchiveView)}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all border"
+              style={{
+                backgroundColor: showArchiveView ? '#f1f5f9' : '#ffffff',
+                borderColor: showArchiveView ? '#94a3b8' : '#e2e8f0',
+                color: showArchiveView ? '#475569' : '#64748b'
+              }}
+            >
+              📦 {showArchiveView ? 'Show Active Roster' : 'Show Archived Roster'}
+              {showArchiveView && separatedPersonnelData.length > 0 && (
+                <span className="bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full text-xs font-bold">
+                  {separatedPersonnelData.length}
+                </span>
+              )}
+            </button>
+            </div>
+          </div>
+          
+          {/* Add Personnel Form */}
+          {showAddPersonnelForm && !showArchiveView && (
+            <div className="mb-6 p-6 bg-blue-50 border border-blue-200 rounded-xl">
+              <h3 className="text-md font-bold text-slate-800 mb-4">Add New Employee</h3>
+              <form onSubmit={handleAddPersonnel} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Name Field */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Full Name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={personnelFormData.name}
+                      onChange={(e) => setPersonnelFormData({ ...personnelFormData, name: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="John Doe"
+                      required
+                    />
+                  </div>
+                  
+                  {/* Role Field - Dynamic from Database */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Role <span className="text-red-500">*</span>
+                    </label>
+                    {loadingRoles ? (
+                      <div className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-slate-50 text-slate-400">
+                        Loading roles...
+                      </div>
+                    ) : availableRoles.length === 0 ? (
+                      <div className="w-full px-3 py-2 border border-amber-300 rounded-lg bg-amber-50 text-amber-700 text-sm">
+                        ⚠️ No roles found. Run role discovery first.
+                      </div>
+                    ) : (
+                      <select
+                        value={personnelFormData.role}
+                        onChange={(e) => setPersonnelFormData({ ...personnelFormData, role: e.target.value })}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        required
+                      >
+                        <option value="">Select a role...</option>
+                        {availableRoles.map((role) => (
+                          <option key={role} value={role}>
+                            {role}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                  
+                  {/* Hire Date Field */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Hire Date <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={personnelFormData.hire_date}
+                      onChange={(e) => setPersonnelFormData({ ...personnelFormData, hire_date: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+                  
+                  {/* Attestation Frequency Field */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Attestation Frequency <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={personnelFormData.attestation_frequency}
+                      onChange={(e) => setPersonnelFormData({ ...personnelFormData, attestation_frequency: e.target.value as any })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    >
+                      <option value="monthly">Monthly</option>
+                      <option value="quarterly">Quarterly</option>
+                      <option value="biannual">Biannual (Every 6 months)</option>
+                      <option value="annual">Annual (Yearly)</option>
+                    </select>
+                  </div>
+                </div>
+                
+                {/* Form Actions */}
+                <div className="flex items-center gap-3 pt-2">
+                  <button
+                    type="submit"
+                    disabled={addingPersonnel || availableRoles.length === 0}
+                    className="px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {addingPersonnel ? 'Adding...' : 'Add Employee'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddPersonnelForm(false)}
+                    className="px-6 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+          
+          {(showArchiveView ? separatedPersonnelData.length === 0 : personnelData.length === 0) ? (
+            <div className="border border-dashed border-slate-200 rounded-xl p-12 text-center italic text-slate-400 text-xs bg-slate-50">
+              {showArchiveView
+                ? 'No archived personnel records found for this facility.'
+                : 'No personnel records found for this facility. Add employees to begin tracking clearance status.'}
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Name</th>
+                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Role</th>
+                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Clearance Status</th>
+                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Hire Date</th>
+                    <th className="text-right py-3 px-4 font-semibold text-slate-700">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {(showArchiveView ? separatedPersonnelData : personnelData).map((person) => (
+                    <tr
+                      key={person.id}
+                      className={`transition-colors ${
+                        showArchiveView
+                          ? 'bg-slate-50/50 opacity-75'
+                          : 'hover:bg-slate-50/50'
+                      }`}
+                    >
+                      <td className={`py-3 px-4 font-medium ${showArchiveView ? 'text-slate-500' : 'text-slate-800'}`}>
+                        {person.name}
+                      </td>
+                      <td className={`py-3 px-4 ${showArchiveView ? 'text-slate-400' : 'text-slate-600'}`}>
+                        {person.role}
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          showArchiveView
+                            ? 'bg-slate-100 text-slate-500'
+                            : person.clearance_status === 'approved' || person.clearance_status === 'cleared'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : person.clearance_status === 'pending'
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-rose-100 text-rose-800'
+                        }`}>
+                          {person.clearance_status}
+                        </span>
+                      </td>
+                      <td className={`py-3 px-4 text-xs ${showArchiveView ? 'text-slate-400' : 'text-slate-600'}`}>
+                        {new Date(person.hire_date).toLocaleDateString('en-US', {
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric'
+                        })}
+                      </td>
+                      <td className="py-3 px-4 text-right">
+                        {showArchiveView ? (
+                          // Show separation date badge for archived employees
+                          <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-slate-100 border border-slate-200 rounded-md">
+                            <span className="text-xs font-medium text-slate-600">Separated:</span>
+                            <span className="text-xs text-slate-500">
+                              {person.separation_date
+                                ? new Date(person.separation_date).toLocaleDateString('en-US', {
+                                    year: 'numeric',
+                                    month: 'short',
+                                    day: 'numeric'
+                                  })
+                                : 'N/A'}
+                            </span>
+                          </div>
+                        ) : (
+                          // Show archive button for active employees
+                          <button
+                            onClick={() => handleSeparateEmployee(person.id, person.name)}
+                            disabled={separatingId === person.id}
+                            className={`text-xs font-medium px-3 py-1.5 rounded-md transition-all ${
+                              separatingId === person.id
+                                ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                : 'bg-slate-100 text-slate-700 hover:bg-rose-100 hover:text-rose-700 hover:border-rose-300 border border-slate-200'
+                            }`}
+                            title="Mark employee as separated (soft delete - preserves records)"
+                          >
+                            {separatingId === person.id ? (
+                              <span className="flex items-center gap-1.5">
+                                <span className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></span>
+                                Processing...
+                              </span>
+                            ) : (
+                              '📦 Archive / Mark Separated'
+                            )}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="mt-4 text-xs text-slate-400 text-right">
+                {showArchiveView
+                  ? `Total Archived: ${separatedPersonnelData.length}`
+                  : `Total Active Personnel: ${personnelData.length}`}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {currentView === 'documents' && (
+        <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm max-w-6xl mx-auto text-slate-800">
+          <div className="flex items-start justify-between mb-6">
+            <div>
+              <h2 className="text-lg font-bold mb-2">Audit-Trail Vault</h2>
+              <p className="text-xs text-slate-400">Historical database record outputs for facility documents.</p>
+            </div>
+            
+            {/* Upload Document Button */}
+            <div className="flex flex-col items-end gap-2">
+              <label className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
+                uploadingDocument
+                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm hover:shadow-md'
+              }`}>
+                {uploadingDocument ? (
+                  <>
+                    <span className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></span>
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    📤 Upload Document
+                  </>
+                )}
+                <input
+                  type="file"
+                  accept=".txt,.pdf,.png,.jpg,.jpeg"
+                  className="hidden"
+                  onChange={handleDocumentUpload}
+                  disabled={uploadingDocument}
+                />
+              </label>
+              <p className="text-[10px] text-slate-400 italic">Accepts: PDF, TXT, PNG, JPG</p>
+            </div>
+          </div>
+
+          {/* Upload Feedback Banner */}
+          {uploadFeedback && (
+            <div className={`mb-6 p-4 rounded-lg border text-sm ${
+              uploadFeedback.status === 'Compliant'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : uploadFeedback.status === 'error'
+                ? 'bg-rose-50 border-rose-200 text-rose-900'
+                : 'bg-amber-50 border-amber-200 text-amber-900'
+            }`}>
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="font-semibold mb-1">
+                    {uploadFeedback.status === 'Compliant' ? '✅ Upload Successful' :
+                     uploadFeedback.status === 'error' ? '❌ Upload Failed' :
+                     '⚠️ Upload Warning'}
+                  </p>
+                  <p className="text-xs">{uploadFeedback.message}</p>
+                </div>
+                <button
+                  onClick={() => setUploadFeedback(null)}
+                  className="text-slate-400 hover:text-slate-600 text-lg leading-none"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          )}
+          
+          {documentsData.length === 0 ? (
+            <div className="border border-dashed border-slate-200 rounded-xl p-12 text-center italic text-slate-400 text-xs bg-slate-50">
+              No documents found for this facility. Upload compliance documents to begin tracking.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Document Name</th>
+                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Type</th>
+                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Status</th>
+                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Upload Date</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {documentsData.map((doc) => (
+                    <tr key={doc.id} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="py-3 px-4 font-medium text-slate-800">
+                        <div className="flex items-center gap-2">
+                          <span>{doc.name}</span>
+                        </div>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="text-xs font-mono bg-slate-100 text-slate-600 px-2 py-1 rounded">
+                          {doc.document_type}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-2">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            doc.status === 'approved'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : doc.status === 'pending'
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-rose-100 text-rose-800'
+                          }`}>
+                            {doc.status}
+                          </span>
+                          {doc.metadata && (doc.status === 'approved' || doc.status === 'flagged') && (
+                            <button
+                              onClick={() => setSelectedAuditReport(doc)}
+                              className="text-slate-400 hover:text-indigo-600 transition-colors"
+                              title="View Compliance Audit Report"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-3 px-4 text-slate-600 text-xs">
+                        {new Date(doc.created_at).toLocaleDateString('en-US', {
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="mt-4 text-xs text-slate-400 text-right">
+                Total Documents: {documentsData.length}
+              </div>
+            </div>
+          )}
+
+          {/* Compliance Audit Report Modal */}
+          {selectedAuditReport && (
+            <div
+              className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+              onClick={() => setSelectedAuditReport(null)}
+            >
+              <div
+                className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Modal Header */}
+                <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-900">Compliance Audit Report</h3>
+                    <p className="text-xs text-slate-500 mt-1">{selectedAuditReport.name}</p>
+                  </div>
+                  <button
+                    onClick={() => setSelectedAuditReport(null)}
+                    className="text-slate-400 hover:text-slate-600 transition-colors"
+                  >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+
+                {/* Modal Body */}
+                <div className="p-6 space-y-6">
+                  {/* Pre-Validation Badge */}
+                  {selectedAuditReport.metadata?.ai_processing_skipped && (
+                    <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+                      <div className="flex items-center gap-2">
+                        <span className="text-indigo-600 font-bold text-sm">⚡ Pre-Validation Filtered</span>
+                        <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full text-xs font-medium">
+                          Token Saved
+                        </span>
+                      </div>
+                      <p className="text-xs text-indigo-700 mt-2">
+                        Document was flagged by automated keyword scan before AI processing to optimize costs.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Compliance Status */}
+                  <div>
+                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                      Compliance Status
+                    </label>
+                    <div className="mt-2">
+                      <span className={`inline-flex items-center px-3 py-1.5 rounded-lg text-sm font-medium ${
+                        selectedAuditReport.metadata?.compliance_status === 'Compliant' ||
+                        selectedAuditReport.metadata?.ai_compliance_status === 'Compliant'
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                          : 'bg-rose-100 text-rose-800 border border-rose-200'
+                      }`}>
+                        {selectedAuditReport.metadata?.compliance_status ||
+                         selectedAuditReport.metadata?.ai_compliance_status ||
+                         'Unknown'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Regulatory Code Violated */}
+                  <div>
+                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                      Regulatory Code Violated
+                    </label>
+                    <div className="mt-2 p-4 bg-slate-50 rounded-lg border border-slate-200">
+                      <p className="text-sm text-slate-700 font-mono">
+                        {selectedAuditReport.metadata?.regulatory_code_violated ||
+                         selectedAuditReport.metadata?.ai_regulatory_code ||
+                         'None'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Corrective Action */}
+                  <div>
+                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                      Corrective Action Required
+                    </label>
+                    <div className="mt-2 p-4 bg-slate-50 rounded-lg border border-slate-200">
+                      <p className="text-sm text-slate-700 leading-relaxed">
+                        {selectedAuditReport.metadata?.corrective_action ||
+                         selectedAuditReport.metadata?.ai_corrective_action ||
+                         selectedAuditReport.metadata?.notes ||
+                         'No action required'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Keywords Detected (if pre-validation) */}
+                  {selectedAuditReport.metadata?.keywords_detected &&
+                   selectedAuditReport.metadata.keywords_detected.length > 0 && (
+                    <div>
+                      <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                        Keywords Detected
+                      </label>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {selectedAuditReport.metadata.keywords_detected.map((keyword: string, idx: number) => (
+                          <span
+                            key={idx}
+                            className="bg-rose-100 text-rose-700 px-2.5 py-1 rounded-md text-xs font-medium border border-rose-200"
+                          >
+                            {keyword}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Audit Timestamp */}
+                  <div className="pt-4 border-t border-slate-200">
+                    <div className="flex items-center justify-between text-xs text-slate-500">
+                      <span className="font-medium">Audit Completed:</span>
+                      <span className="font-mono">
+                        {selectedAuditReport.metadata?.auditedAt || selectedAuditReport.metadata?.audit_run_at
+                          ? new Date(selectedAuditReport.metadata.auditedAt || selectedAuditReport.metadata.audit_run_at).toLocaleString('en-US', {
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              second: '2-digit'
+                            })
+                          : 'N/A'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Modal Footer */}
+                <div className="sticky bottom-0 bg-slate-50 border-t border-slate-200 px-6 py-4">
+                  <button
+                    onClick={() => setSelectedAuditReport(null)}
+                    className="w-full bg-slate-800 hover:bg-slate-900 text-white font-medium py-2.5 px-4 rounded-lg transition-colors"
+                  >
+                    Close Report
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+</file>
+
 <file path="src/app/actions/compliance.ts">
 // src/app/actions/compliance.ts
 'use server';
@@ -3326,6 +5560,9 @@ import { getRegulatoryStatus } from '@/lib/reg-monitor';
 import { createAdminClient } from 'src/app/utils/supabase/admin';
 import { createClient } from 'src/app/utils/supabase/server';
 import { routeAndExtract } from '@/lib/llm-router';
+import { extractTextFromBuffer } from 'src/lib/document-processor';
+import { createHash } from 'crypto';
+import { headers } from 'next/headers';
 
 /**
  * Multi-Tenant Security Helper
@@ -3373,6 +5610,41 @@ async function getAuthenticatedUserContext() {
 }
 
 // Helper to determine content type from file name extensions
+/**
+ * Create an immutable audit log entry for compliance actions.
+ * Provides legal protection and DHS compliance trail.
+ */
+async function createAuditLog(params: {
+  facilityId: string;
+  userId: string;
+  actionType: 'document_upload' | 'digital_attestation' | 'document_approval' | 'document_rejection' | 'enrollment_update';
+  fileHash?: string;
+  metadata: Record<string, any>;
+}) {
+  const supabase = createAdminClient();
+  
+  // Get IP address from headers
+  const headersList = await headers();
+  const ipAddress = headersList.get('x-forwarded-for') || headersList.get('x-real-ip') || 'unknown';
+  
+  const { error } = await supabase
+    .from('audit_logs')
+    .insert({
+      facility_id: params.facilityId,
+      user_id: params.userId,
+      action_type: params.actionType,
+      ip_address: ipAddress,
+      file_hash: params.fileHash || null,
+      metadata: params.metadata
+    });
+  
+  if (error) {
+    console.error('❌ Failed to create audit log:', error);
+  } else {
+    console.log(`✅ Audit log created: ${params.actionType} for facility ${params.facilityId}`);
+  }
+}
+
 function getMimeType(fileName: string): string {
   const ext = fileName.split('.').pop()?.toLowerCase();
   if (ext === 'png') return 'image/png';
@@ -3435,12 +5707,16 @@ export async function getFacilityComplianceData(facilityId: string) {
  * and passes the raw content stream to the AI routing engine for flawless conversion.
  * SECURITY: Verifies facility belongs to authenticated user's organization.
  */
-export async function handleDocumentUploadSuccess(facilityId: string, documentId: string) {
+export async function handleDocumentUploadSuccess(
+  facilityId: string,
+  documentId: string,
+  userAttestation: boolean = false
+) {
   console.log(`🔄 Processing upload action for facility ${facilityId}, document ${documentId}`);
   
   try {
     // 1. Authenticate user and verify facility ownership + fetch facility classification scope
-    const { orgId } = await getAuthenticatedUserContext();
+    const { userId, orgId } = await getAuthenticatedUserContext();
     const supabase = createAdminClient();
     
     const { data: facility, error: facilityError } = await supabase
@@ -3525,6 +5801,28 @@ export async function handleDocumentUploadSuccess(facilityId: string, documentId
       const arrayBuffer = await storageBlob.arrayBuffer();
       buffer = Buffer.from(arrayBuffer);
     }
+
+    // Calculate SHA-256 hash for audit trail and non-repudiation
+    const fileHash = createHash('sha256').update(buffer).digest('hex');
+    console.log(`🔐 File hash calculated: ${fileHash.substring(0, 16)}...`);
+
+    // Create immutable audit log for document upload
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'document_upload',
+      fileHash,
+      metadata: {
+        filename: fileName,
+        document_id: documentId,
+        file_size: buffer.length,
+        mime_type: mimeType,
+        user_attestation: userAttestation,
+        attestation_text: userAttestation
+          ? 'I certify that this information is authentic, unaltered, and satisfies Arkansas DHS requirements.'
+          : null
+      }
+    });
 
     // 5. Pre-Validation Interceptor Layer - Scan for problematic keywords
     console.log(`🔍 Running pre-validation keyword scan on document: ${fileName}`);
@@ -4057,1311 +6355,380 @@ export async function toggleUserStatus(
     };
   }
 }
-</file>
-
-<file path="src/app/dashboard/page.tsx">
-'use client';
-
-import { useFacility } from 'src/context/FacilityContext';
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { getFacilityComplianceData, getPersonnelData, getDocumentsData, markEmployeeSeparated, handleDocumentUploadSuccess, getSeparatedPersonnelData, getAllFacilitiesOverview } from 'src/app/actions/compliance';
-import { createClient } from 'src/app/utils/supabase/client';
-import ComplianceDashboardClient from 'src/components/ComplianceDashboardClient';
-
-// Type definitions for personnel and documents
-interface PersonnelRecord {
-  id: string;
-  name: string;
-  role: string;
-  clearance_status: string;
-  hire_date: string;
-  created_at: string;
-  status?: string;
-  separation_date?: string;
-}
-
-interface DocumentRecord {
-  id: string;
-  name: string;
-  document_type: string;
-  status: string;
-  file_url: string;
-  metadata: any;
-  created_at: string;
-}
-
-export default function ExecutiveOverview() {
-  const router = useRouter();
-  const supabase = createClient();
-  const { selectedFacilityId, setSelectedFacilityId, currentView } = useFacility();
-  const [data, setData] = useState<any>(null);
-  const [personnelData, setPersonnelData] = useState<PersonnelRecord[]>([]);
-  const [separatedPersonnelData, setSeparatedPersonnelData] = useState<PersonnelRecord[]>([]);
-  const [showArchiveView, setShowArchiveView] = useState(false);
-  const [documentsData, setDocumentsData] = useState<DocumentRecord[]>([]);
-  const [facilitiesData, setFacilitiesData] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [separatingId, setSeparatingId] = useState<string | null>(null);
-  const [uploadingDocument, setUploadingDocument] = useState(false);
-  const [uploadFeedback, setUploadFeedback] = useState<{
-    status: string;
-    message: string;
-  } | null>(null);
-  const [selectedAuditReport, setSelectedAuditReport] = useState<DocumentRecord | null>(null);
-
-  // Handle employee separation with confirmation
-  const handleSeparateEmployee = async (personnelId: string, employeeName: string) => {
-    const confirmed = window.confirm(
-      `Are you sure you want to mark ${employeeName} as separated?\n\nThis will:\n• Remove them from the active roster\n• Set their status to 'separated'\n• Record the separation date\n• Preserve all historical records\n\nThis action can be reversed by updating the database directly.`
-    );
-
-    if (!confirmed) return;
-
-    setSeparatingId(personnelId);
-    try {
-      const result = await markEmployeeSeparated(personnelId);
-      
-      if (result.success) {
-        // Remove from local state immediately for instant UI feedback
-        setPersonnelData(prev => prev.filter(p => p.id !== personnelId));
-        alert(`✅ ${employeeName} has been marked as separated and removed from the active roster.`);
-      } else {
-        alert(`❌ Failed to mark employee as separated: ${result.error}`);
-      }
-    } catch (error: any) {
-      console.error('Error separating employee:', error);
-      alert(`❌ Error: ${error.message}`);
-    } finally {
-      setSeparatingId(null);
-    }
-  };
-
-  // Handle document upload with AI processing
-  const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!selectedFacilityId || selectedFacilityId === 'all') {
-      alert('⚠️ Please select a specific facility before uploading documents.');
-      return;
-    }
-
-    try {
-      setUploadingDocument(true);
-      setUploadFeedback(null);
-      console.log(`🎬 Document upload triggered for facility: ${selectedFacilityId}`);
-
-      // 1. Generate a standardized unique ID for the document record
-      const documentId = crypto.randomUUID();
-      const fileExtension = file.name.split('.').pop()?.toLowerCase() || 'pdf';
-      const storagePath = `${selectedFacilityId}/${documentId}.${fileExtension}`;
-
-      // 2. Stream the raw file directly to the storage bucket
-      const { error: storageError } = await supabase.storage
-        .from('facility-documents')
-        .upload(storagePath, file);
-
-      if (storageError) throw storageError;
-
-      // 3. Insert the tracking row into facility_documents
-      const { error: insertError } = await supabase
-        .from('facility_documents')
-        .insert({
-          id: documentId,
-          facility_id: selectedFacilityId,
-          document_type: 'general_compliance_upload', // Default type for Document Center uploads
-          status: 'pending',
-          file_url: storagePath,
-          name: file.name,
-          metadata: {
-            original_upload_method: 'documents_view',
-            uploaded_at: new Date().toISOString()
-          }
-        });
-
-      if (insertError) throw insertError;
-
-      console.log(`🧠 Invoking real-time AI compliance verification...`);
-      
-      // 4. Trigger the Server Action loop for AI processing
-      const response = await handleDocumentUploadSuccess(selectedFacilityId, documentId);
-
-      if (response.success && response.report) {
-        const report = response.report;
-        
-        // Build feedback message with personnel matching status
-        let feedbackMessage = `Document processed: ${report.compliance_status}. ${report.corrective_action || 'No action required.'}`;
-        
-        if (response.personnelName && !response.personnelMatched) {
-          feedbackMessage += ` ⚠️ Document accepted but could not be linked: Personnel '${response.personnelName}' is not registered in this facility's vault.`;
-        } else if (response.personnelMatched) {
-          feedbackMessage += ` ✅ Automatically linked to personnel record: ${response.personnelName}.`;
-        }
-        
-        setUploadFeedback({
-          status: report.compliance_status,
-          message: feedbackMessage
-        });
-
-        // Refresh the documents list to show the new upload
-        const updatedDocs = await getDocumentsData(selectedFacilityId);
-        setDocumentsData(updatedDocs);
-        
-        // Also refresh the router to sync all views
-        router.refresh();
-      } else {
-        setUploadFeedback({
-          status: 'warning',
-          message: 'Document uploaded but AI processing encountered issues. Check system logs.'
-        });
-        
-        // Still refresh to show the document
-        const updatedDocs = await getDocumentsData(selectedFacilityId);
-        setDocumentsData(updatedDocs);
-      }
-
-    } catch (error: any) {
-      console.error("❌ Document Upload Exception:", error);
-      setUploadFeedback({
-        status: 'error',
-        message: `Upload failed: ${error.message || 'Unknown error'}`
-      });
-    } finally {
-      setUploadingDocument(false);
-      // Clear the file input
-      e.target.value = '';
-    }
-  };
-
-  useEffect(() => {
-    async function loadStats() {
-      if (!selectedFacilityId || selectedFacilityId === 'all') {
-        setData(null);
-        setPersonnelData([]);
-        setSeparatedPersonnelData([]);
-        setDocumentsData([]);
-        
-        // Load all facilities for master view
-        if (selectedFacilityId === 'all') {
-          setLoading(true);
-          try {
-            const facilities = await getAllFacilitiesOverview();
-            setFacilitiesData(facilities);
-          } catch (error) {
-            console.error('Error loading facilities:', error);
-            setFacilitiesData([]);
-          }
-        }
-        
-        setLoading(false);
-        return;
-      }
-
-      setLoading(true);
-      try {
-        // Fetch all data in parallel for better performance
-        const [stats, personnel, separatedPersonnel, documents] = await Promise.all([
-          getFacilityComplianceData(selectedFacilityId),
-          getPersonnelData(selectedFacilityId),
-          getSeparatedPersonnelData(selectedFacilityId),
-          getDocumentsData(selectedFacilityId)
-        ]);
-        
-        setData(stats);
-        setPersonnelData(personnel);
-        setSeparatedPersonnelData(separatedPersonnel);
-        setDocumentsData(documents);
-      } catch (error) {
-        console.error("Dashboard Load Error:", error);
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadStats();
-  }, [selectedFacilityId]);
-
-  if (loading) {
-    return (
-      <div className="p-12 min-h-screen bg-slate-50 flex items-center justify-center animate-pulse">
-        <p className="text-blue-500 font-black tracking-[0.3em] uppercase text-xs">
-          Synchronizing DHS Brain...
-        </p>
-      </div>
-    );
-  }
-
-  if (selectedFacilityId === 'all' || !selectedFacilityId) {
-    return (
-      <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700">
-        <header className="mb-8">
-          <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">DHS Regulatory Engine</p>
-          <h1 className="text-5xl font-bold tracking-tight text-slate-900 mb-2">Executive Fleet Overview</h1>
-          <p className="text-slate-600 text-lg">Real-time compliance monitoring across all facilities</p>
-        </header>
-
-        {facilitiesData.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20">
-            <div className="p-8 border border-dashed border-slate-300 rounded-2xl bg-white max-w-md shadow-sm text-center">
-              <p className="text-slate-500 italic">
-                No facilities found. Add facilities to begin monitoring compliance across your organization.
-              </p>
-            </div>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {facilitiesData.map((facility) => (
-              <div
-                key={facility.id}
-                className="bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden"
-              >
-                {/* Facility Header */}
-                <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4">
-                  <h3 className="text-white font-bold text-lg mb-1">{facility.name}</h3>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs bg-white/20 text-white px-2 py-0.5 rounded-full font-medium">
-                      {facility.facility_type === 'childcare' ? 'Childcare' : 'Nursing Home'}
-                    </span>
-                    {facility.sub_classification && (
-                      <span className="text-xs text-slate-300">
-                        {facility.sub_classification}
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                {/* Compliance Score Dial */}
-                <div className="p-6 flex items-center justify-center border-b border-slate-100">
-                  <div className="relative">
-                    <div className={`w-32 h-32 rounded-full border-8 flex flex-col items-center justify-center ${
-                      facility.complianceScore >= 80
-                        ? 'border-emerald-500 bg-emerald-50'
-                        : facility.complianceScore >= 50
-                        ? 'border-amber-500 bg-amber-50'
-                        : 'border-rose-500 bg-rose-50'
-                    }`}>
-                      <span className={`text-3xl font-black ${
-                        facility.complianceScore >= 80
-                          ? 'text-emerald-600'
-                          : facility.complianceScore >= 50
-                          ? 'text-amber-600'
-                          : 'text-rose-600'
-                      }`}>
-                        {facility.complianceScore}%
-                      </span>
-                      <span className="text-xs text-slate-500 font-medium mt-1">Compliance</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Facility Stats */}
-                <div className="p-6 space-y-3">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-slate-600 font-medium">Capacity:</span>
-                    <span className="text-slate-900 font-bold">{facility.capacity || 'N/A'}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-slate-600 font-medium">Active Staff:</span>
-                    <span className="text-slate-900 font-bold">{facility.totalPersonnel}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-slate-600 font-medium">Open Gaps:</span>
-                    <span className={`font-bold ${
-                      facility.gapsCount === 0
-                        ? 'text-emerald-600'
-                        : facility.gapsCount <= 3
-                        ? 'text-amber-600'
-                        : 'text-rose-600'
-                    }`}>
-                      {facility.gapsCount}
-                    </span>
-                  </div>
-                </div>
-
-                {/* View Details Button */}
-                <div className="px-6 pb-6">
-                  <button
-                    onClick={() => setSelectedFacilityId(facility.id)}
-                    className="w-full bg-slate-100 hover:bg-slate-200 text-slate-800 font-medium py-2.5 px-4 rounded-lg transition-colors text-sm"
-                  >
-                    View Facility Details →
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Fleet Summary Footer */}
-        {facilitiesData.length > 0 && (
-          <div className="mt-8 bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-            <h3 className="text-lg font-bold text-slate-900 mb-4">Fleet Summary</h3>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-              <div className="text-center">
-                <p className="text-3xl font-black text-slate-900">{facilitiesData.length}</p>
-                <p className="text-sm text-slate-600 mt-1">Total Facilities</p>
-              </div>
-              <div className="text-center">
-                <p className="text-3xl font-black text-emerald-600">
-                  {facilitiesData.filter(f => f.complianceScore >= 80).length}
-                </p>
-                <p className="text-sm text-slate-600 mt-1">Compliant (≥80%)</p>
-              </div>
-              <div className="text-center">
-                <p className="text-3xl font-black text-slate-900">
-                  {facilitiesData.reduce((sum, f) => sum + f.totalPersonnel, 0)}
-                </p>
-                <p className="text-sm text-slate-600 mt-1">Total Active Staff</p>
-              </div>
-              <div className="text-center">
-                <p className="text-3xl font-black text-rose-600">
-                  {facilitiesData.reduce((sum, f) => sum + f.gapsCount, 0)}
-                </p>
-                <p className="text-sm text-slate-600 mt-1">Total Open Gaps</p>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  if (!data) {
-    return (
-      <div className="p-12 min-h-screen bg-slate-50 text-slate-500 italic flex items-center justify-center">
-        ⚠️ Failed to pull compliance schema configurations.
-      </div>
-    );
-  }
-
-  return (
-    <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
-      {/* Dynamic Main Header Titles */}
-      <header>
-        <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">DHS Regulatory Engine</p>
-        <h1 className="text-5xl font-bold tracking-tight text-slate-900">
-          {currentView === 'overview' && 'Executive Overview'}
-          {currentView === 'personnel' && 'Personnel Vault'}
-          {currentView === 'documents' && 'Document Center'}
-        </h1>
-      </header>
-
-      {/* Dynamic Workspace Tab Content Panels */}
-      {currentView === 'overview' && (
-        <ComplianceDashboardClient
-          key={selectedFacilityId}
-          facilityId={selectedFacilityId}
-          initialScore={data.score}
-          initialGaps={data.gaps}
-        />
-      )}
-
-      {currentView === 'personnel' && (
-        <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm max-w-6xl mx-auto text-slate-800">
-          <div className="flex items-start justify-between mb-6">
-            <div>
-              <h2 className="text-lg font-bold mb-2">
-                {showArchiveView ? 'Archived Employee Roster' : 'Active Employee Clearance Rosters'}
-              </h2>
-              <p className="text-xs text-slate-400">
-                Tracking employee background clearance codes against facility ID: <span className="font-mono text-slate-600 bg-slate-100 px-1 rounded">{selectedFacilityId}</span>
-              </p>
-            </div>
-            
-            {/* Archive View Toggle Button */}
-            <button
-              onClick={() => setShowArchiveView(!showArchiveView)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all border"
-              style={{
-                backgroundColor: showArchiveView ? '#f1f5f9' : '#ffffff',
-                borderColor: showArchiveView ? '#94a3b8' : '#e2e8f0',
-                color: showArchiveView ? '#475569' : '#64748b'
-              }}
-            >
-              📦 {showArchiveView ? 'Show Active Roster' : 'Show Archived Roster'}
-              {showArchiveView && separatedPersonnelData.length > 0 && (
-                <span className="bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full text-xs font-bold">
-                  {separatedPersonnelData.length}
-                </span>
-              )}
-            </button>
-          </div>
-          
-          {(showArchiveView ? separatedPersonnelData.length === 0 : personnelData.length === 0) ? (
-            <div className="border border-dashed border-slate-200 rounded-xl p-12 text-center italic text-slate-400 text-xs bg-slate-50">
-              {showArchiveView
-                ? 'No archived personnel records found for this facility.'
-                : 'No personnel records found for this facility. Add employees to begin tracking clearance status.'}
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Name</th>
-                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Role</th>
-                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Clearance Status</th>
-                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Hire Date</th>
-                    <th className="text-right py-3 px-4 font-semibold text-slate-700">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {(showArchiveView ? separatedPersonnelData : personnelData).map((person) => (
-                    <tr
-                      key={person.id}
-                      className={`transition-colors ${
-                        showArchiveView
-                          ? 'bg-slate-50/50 opacity-75'
-                          : 'hover:bg-slate-50/50'
-                      }`}
-                    >
-                      <td className={`py-3 px-4 font-medium ${showArchiveView ? 'text-slate-500' : 'text-slate-800'}`}>
-                        {person.name}
-                      </td>
-                      <td className={`py-3 px-4 ${showArchiveView ? 'text-slate-400' : 'text-slate-600'}`}>
-                        {person.role}
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                          showArchiveView
-                            ? 'bg-slate-100 text-slate-500'
-                            : person.clearance_status === 'approved' || person.clearance_status === 'cleared'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : person.clearance_status === 'pending'
-                            ? 'bg-amber-100 text-amber-800'
-                            : 'bg-rose-100 text-rose-800'
-                        }`}>
-                          {person.clearance_status}
-                        </span>
-                      </td>
-                      <td className={`py-3 px-4 text-xs ${showArchiveView ? 'text-slate-400' : 'text-slate-600'}`}>
-                        {new Date(person.hire_date).toLocaleDateString('en-US', {
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric'
-                        })}
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        {showArchiveView ? (
-                          // Show separation date badge for archived employees
-                          <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-slate-100 border border-slate-200 rounded-md">
-                            <span className="text-xs font-medium text-slate-600">Separated:</span>
-                            <span className="text-xs text-slate-500">
-                              {person.separation_date
-                                ? new Date(person.separation_date).toLocaleDateString('en-US', {
-                                    year: 'numeric',
-                                    month: 'short',
-                                    day: 'numeric'
-                                  })
-                                : 'N/A'}
-                            </span>
-                          </div>
-                        ) : (
-                          // Show archive button for active employees
-                          <button
-                            onClick={() => handleSeparateEmployee(person.id, person.name)}
-                            disabled={separatingId === person.id}
-                            className={`text-xs font-medium px-3 py-1.5 rounded-md transition-all ${
-                              separatingId === person.id
-                                ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                                : 'bg-slate-100 text-slate-700 hover:bg-rose-100 hover:text-rose-700 hover:border-rose-300 border border-slate-200'
-                            }`}
-                            title="Mark employee as separated (soft delete - preserves records)"
-                          >
-                            {separatingId === person.id ? (
-                              <span className="flex items-center gap-1.5">
-                                <span className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></span>
-                                Processing...
-                              </span>
-                            ) : (
-                              '📦 Archive / Mark Separated'
-                            )}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="mt-4 text-xs text-slate-400 text-right">
-                {showArchiveView
-                  ? `Total Archived: ${separatedPersonnelData.length}`
-                  : `Total Active Personnel: ${personnelData.length}`}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {currentView === 'documents' && (
-        <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm max-w-6xl mx-auto text-slate-800">
-          <div className="flex items-start justify-between mb-6">
-            <div>
-              <h2 className="text-lg font-bold mb-2">Audit-Trail Vault</h2>
-              <p className="text-xs text-slate-400">Historical database record outputs for facility documents.</p>
-            </div>
-            
-            {/* Upload Document Button */}
-            <div className="flex flex-col items-end gap-2">
-              <label className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
-                uploadingDocument
-                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                  : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm hover:shadow-md'
-              }`}>
-                {uploadingDocument ? (
-                  <>
-                    <span className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></span>
-                    Processing...
-                  </>
-                ) : (
-                  <>
-                    📤 Upload Document
-                  </>
-                )}
-                <input
-                  type="file"
-                  accept=".txt,.pdf,.png,.jpg,.jpeg"
-                  className="hidden"
-                  onChange={handleDocumentUpload}
-                  disabled={uploadingDocument}
-                />
-              </label>
-              <p className="text-[10px] text-slate-400 italic">Accepts: PDF, TXT, PNG, JPG</p>
-            </div>
-          </div>
-
-          {/* Upload Feedback Banner */}
-          {uploadFeedback && (
-            <div className={`mb-6 p-4 rounded-lg border text-sm ${
-              uploadFeedback.status === 'Compliant'
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                : uploadFeedback.status === 'error'
-                ? 'bg-rose-50 border-rose-200 text-rose-900'
-                : 'bg-amber-50 border-amber-200 text-amber-900'
-            }`}>
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="font-semibold mb-1">
-                    {uploadFeedback.status === 'Compliant' ? '✅ Upload Successful' :
-                     uploadFeedback.status === 'error' ? '❌ Upload Failed' :
-                     '⚠️ Upload Warning'}
-                  </p>
-                  <p className="text-xs">{uploadFeedback.message}</p>
-                </div>
-                <button
-                  onClick={() => setUploadFeedback(null)}
-                  className="text-slate-400 hover:text-slate-600 text-lg leading-none"
-                >
-                  ×
-                </button>
-              </div>
-            </div>
-          )}
-          
-          {documentsData.length === 0 ? (
-            <div className="border border-dashed border-slate-200 rounded-xl p-12 text-center italic text-slate-400 text-xs bg-slate-50">
-              No documents found for this facility. Upload compliance documents to begin tracking.
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Document Name</th>
-                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Type</th>
-                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Status</th>
-                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Upload Date</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {documentsData.map((doc) => (
-                    <tr key={doc.id} className="hover:bg-slate-50/50 transition-colors">
-                      <td className="py-3 px-4 font-medium text-slate-800">
-                        <div className="flex items-center gap-2">
-                          <span>{doc.name}</span>
-                        </div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className="text-xs font-mono bg-slate-100 text-slate-600 px-2 py-1 rounded">
-                          {doc.document_type}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-2">
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                            doc.status === 'approved'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : doc.status === 'pending'
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'bg-rose-100 text-rose-800'
-                          }`}>
-                            {doc.status}
-                          </span>
-                          {doc.metadata && (doc.status === 'approved' || doc.status === 'flagged') && (
-                            <button
-                              onClick={() => setSelectedAuditReport(doc)}
-                              className="text-slate-400 hover:text-indigo-600 transition-colors"
-                              title="View Compliance Audit Report"
-                            >
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-slate-600 text-xs">
-                        {new Date(doc.created_at).toLocaleDateString('en-US', {
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit'
-                        })}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="mt-4 text-xs text-slate-400 text-right">
-                Total Documents: {documentsData.length}
-              </div>
-            </div>
-          )}
-
-          {/* Compliance Audit Report Modal */}
-          {selectedAuditReport && (
-            <div
-              className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-              onClick={() => setSelectedAuditReport(null)}
-            >
-              <div
-                className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {/* Modal Header */}
-                <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
-                  <div>
-                    <h3 className="text-lg font-bold text-slate-900">Compliance Audit Report</h3>
-                    <p className="text-xs text-slate-500 mt-1">{selectedAuditReport.name}</p>
-                  </div>
-                  <button
-                    onClick={() => setSelectedAuditReport(null)}
-                    className="text-slate-400 hover:text-slate-600 transition-colors"
-                  >
-                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-
-                {/* Modal Body */}
-                <div className="p-6 space-y-6">
-                  {/* Pre-Validation Badge */}
-                  {selectedAuditReport.metadata?.ai_processing_skipped && (
-                    <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
-                      <div className="flex items-center gap-2">
-                        <span className="text-indigo-600 font-bold text-sm">⚡ Pre-Validation Filtered</span>
-                        <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full text-xs font-medium">
-                          Token Saved
-                        </span>
-                      </div>
-                      <p className="text-xs text-indigo-700 mt-2">
-                        Document was flagged by automated keyword scan before AI processing to optimize costs.
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Compliance Status */}
-                  <div>
-                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                      Compliance Status
-                    </label>
-                    <div className="mt-2">
-                      <span className={`inline-flex items-center px-3 py-1.5 rounded-lg text-sm font-medium ${
-                        selectedAuditReport.metadata?.compliance_status === 'Compliant' ||
-                        selectedAuditReport.metadata?.ai_compliance_status === 'Compliant'
-                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                          : 'bg-rose-100 text-rose-800 border border-rose-200'
-                      }`}>
-                        {selectedAuditReport.metadata?.compliance_status ||
-                         selectedAuditReport.metadata?.ai_compliance_status ||
-                         'Unknown'}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Regulatory Code Violated */}
-                  <div>
-                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                      Regulatory Code Violated
-                    </label>
-                    <div className="mt-2 p-4 bg-slate-50 rounded-lg border border-slate-200">
-                      <p className="text-sm text-slate-700 font-mono">
-                        {selectedAuditReport.metadata?.regulatory_code_violated ||
-                         selectedAuditReport.metadata?.ai_regulatory_code ||
-                         'None'}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Corrective Action */}
-                  <div>
-                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                      Corrective Action Required
-                    </label>
-                    <div className="mt-2 p-4 bg-slate-50 rounded-lg border border-slate-200">
-                      <p className="text-sm text-slate-700 leading-relaxed">
-                        {selectedAuditReport.metadata?.corrective_action ||
-                         selectedAuditReport.metadata?.ai_corrective_action ||
-                         selectedAuditReport.metadata?.notes ||
-                         'No action required'}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Keywords Detected (if pre-validation) */}
-                  {selectedAuditReport.metadata?.keywords_detected &&
-                   selectedAuditReport.metadata.keywords_detected.length > 0 && (
-                    <div>
-                      <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                        Keywords Detected
-                      </label>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {selectedAuditReport.metadata.keywords_detected.map((keyword: string, idx: number) => (
-                          <span
-                            key={idx}
-                            className="bg-rose-100 text-rose-700 px-2.5 py-1 rounded-md text-xs font-medium border border-rose-200"
-                          >
-                            {keyword}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Audit Timestamp */}
-                  <div className="pt-4 border-t border-slate-200">
-                    <div className="flex items-center justify-between text-xs text-slate-500">
-                      <span className="font-medium">Audit Completed:</span>
-                      <span className="font-mono">
-                        {selectedAuditReport.metadata?.auditedAt || selectedAuditReport.metadata?.audit_run_at
-                          ? new Date(selectedAuditReport.metadata.auditedAt || selectedAuditReport.metadata.audit_run_at).toLocaleString('en-US', {
-                              year: 'numeric',
-                              month: 'short',
-                              day: 'numeric',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                              second: '2-digit'
-                            })
-                          : 'N/A'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Modal Footer */}
-                <div className="sticky bottom-0 bg-slate-50 border-t border-slate-200 px-6 py-4">
-                  <button
-                    onClick={() => setSelectedAuditReport(null)}
-                    className="w-full bg-slate-800 hover:bg-slate-900 text-white font-medium py-2.5 px-4 rounded-lg transition-colors"
-                  >
-                    Close Report
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-</file>
-
-<file path="src/lib/scripts/discover-all-facility-criteria.ts">
-// src/lib/scripts/discover-all-facility-criteria.ts
-import OpenAI from 'openai';
-import { createAdminClient } from 'src/app/utils/supabase/admin';
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 
 /**
- * Proactive Compliance Discovery Agent.
- * Sweeps through raw ingested regulatory texts using verified database columns,
- * and dynamically extracts structural criteria into the core application layout registry.
+ * Get available personnel roles for a facility based on its classification.
+ * Pulls from AI-discovered regulatory_roles table.
  */
-export async function discoverAllFacilityCriteria() {
-  console.log("🚀 Starting Multi-Sector Regulatory Knowledge Extraction Loop...");
-  const supabase = createAdminClient();
-
-  // 1. Query only the explicit columns visible in your schema, including sub_classification metadata
-  const { data: lawChunks, error: fetchError } = await supabase
-    .from('regulatory_knowledge')
-    .select('id, content, category, metadata');
-
-  if (fetchError || !lawChunks) {
-    console.error("❌ Failed to query regulatory knowledge vault:", fetchError?.message);
-    return;
-  }
-
-  console.log(`📑 Ingested Pool Analyzer: Processing ${lawChunks.length} targeted legal text chunks...`);
-
-  for (const chunk of lawChunks) {
-    try {
-      // Normalize our database category string to align with your application slugs
-      const normalizedFacilityType = chunk.category === 'childcare' ? 'childcare' : 'nursing_home';
-      
-      // Extract sub_classification from metadata if available
-      const subClassification = chunk.metadata?.sub_classification || null;
-
-      console.log(`🧠 Analyzing Chunk ID [${chunk.id}] under category [${normalizedFacilityType}] / sub-class [${subClassification || 'GENERAL'}]...`);
-
-      // 2. Pass the legal text block to the intelligence layer for checklist structuring
-      const response = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "system",
-            content: "You are an elite systems engineer and state regulatory draftsman. Analyze the provided state licensing rule block and extract any explicit document, record ledger, insurance card, log sheet, or certificate that the facility infrastructure is forced to maintain to pass state inspection."
-          },
-          {
-            role: "user",
-            content: `
-              Analyze this Arkansas state regulatory requirement block:
-              ---
-              Target Facility Profile: ${normalizedFacilityType}
-              Specific Sub-Classification: ${subClassification || 'General (applies to all)'}
-              Legal Content: ${chunk.content}
-              ---
-
-              Extract any explicit documentation requirements into structured JSON matching this format exactly:
-              {
-                "requirements": [
-                  {
-                    "requirement_name": "Clear, descriptive title of the tracked requirement (e.g., 'Commercial General Liability Insurance Certificate')",
-                    "required_document_type": "lowercase_snake_case_slug_for_system_keys",
-                    "severity": "critical" | "standard",
-                    "applies_to_subclass": "Indicate if this requirement is specific to the sub-classification mentioned above, or if it applies generally to all facilities of this type"
-                  }
-                ]
-              }
-              If the text describes general behavior and does not mandate a retrievable file asset, document or permit, return an empty array.
-            `
-          }
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.0 // Zero temperature for reproducible data normalization
-      });
-
-      const result = JSON.parse(response.choices[0].message.content || '{"requirements": []}');
-      
-      if (result.requirements && result.requirements.length > 0) {
-        for (const req of result.requirements) {
-          // Determine if this requirement should be tagged with the specific sub-classification
-          const requirementSubClass = subClassification && req.applies_to_subclass?.toLowerCase().includes('specific')
-            ? subClassification
-            : null;
-          
-          const displaySubClass = requirementSubClass || 'ALL';
-          console.log(`✨ Extracting Rule for [${normalizedFacilityType.toUpperCase()}/${displaySubClass}]: ${req.requirement_name}`);
-          
-          // 3. Insert the extracted requirement directly into your master tracking schema
-          const { error: insertError } = await supabase
-            .from('compliance_criteria')
-            .insert({
-              facility_type: normalizedFacilityType,
-              sub_classification: requirementSubClass,
-              requirement_name: req.requirement_name,
-              required_document_type: req.required_document_type,
-              severity: req.severity
-            });
-
-          if (insertError) {
-            // Ignore unique constraint exceptions if overlapping rules are extracted
-            if (insertError.code !== '23505') {
-              console.error(`⚠️ Database insertion failure:`, insertError.message);
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.error(`❌ Error parsing regulatory chunk ID ${chunk.id}:`, err);
+export async function getAvailableRoles(facilityId: string) {
+  try {
+    // 1. Authenticate user and get their organization context
+    const { orgId } = await getAuthenticatedUserContext();
+    
+    // 2. Verify facility belongs to user's organization and get classification
+    const supabase = createAdminClient();
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id, facility_type, sub_classification')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
     }
+    
+    const facilityType = facility.facility_type;
+    const subClassification = facility.sub_classification;
+    
+    // 3. Query regulatory_roles table for applicable roles
+    let rolesQuery = supabase
+      .from('regulatory_roles')
+      .select('role_name')
+      .eq('facility_type', facilityType);
+    
+    // Add sub-classification filter if available
+    if (subClassification) {
+      rolesQuery = rolesQuery.eq('sub_classification', subClassification);
+    }
+    
+    const { data: roles, error: rolesError } = await rolesQuery;
+    
+    if (rolesError) {
+      console.error('❌ Error querying regulatory_roles:', rolesError);
+      return { success: false, error: 'Failed to fetch available roles', roles: [] };
+    }
+    
+    // Extract unique role names
+    const roleNames = Array.from(new Set((roles || []).map(r => r.role_name))).sort();
+    
+    console.log(`✅ Found ${roleNames.length} applicable roles for ${facilityType}${subClassification ? ` (${subClassification})` : ''}`);
+    
+    return { success: true, roles: roleNames };
+  } catch (error) {
+    console.error("❌ Error fetching available roles:", error);
+    return { success: false, error: 'An unexpected error occurred', roles: [] };
   }
-
-  console.log("\n🏁 Discovery complete. Your master application checklists are completely synchronized with your ingested raw source data.");
 }
-</file>
-
-<file path="src/lib/reg-monitor.ts">
-// src/lib/reg-monitor.ts
-import { createAdminClient } from 'src/app/utils/supabase/admin';
-import { generatePrecisionEmbedding } from './ai-precision';
 
 /**
- * Core engine for Regulatory Ingestion.
- * Takes raw legal text, chunks it at natural sentence boundaries, and stores it in the Supabase vault.
+ * Add a new personnel member to a facility with attestation tracking.
  */
-export async function ingestRegulatoryText(rawText: string, metadata: any) {
-  const supabase = createAdminClient();
-
-  // --- CLEANUP BLOCK ---
-  // Ensures zero duplicate data if the sync is rerun for this specific sub-classification.
-  // Only delete entries matching BOTH source AND sub_classification to preserve other sub-classifications.
-  const subClassification = metadata.sub_classification || null;
-  console.log(`[Monitor] Clearing old vault entries for: ${metadata.source} (sub_classification: ${subClassification})...`);
-  
-  let deleteQuery = supabase
-    .from('regulatory_knowledge')
-    .delete()
-    .eq('metadata->>source', metadata.source);
-  
-  if (subClassification) {
-    deleteQuery = deleteQuery.eq('metadata->>sub_classification', subClassification);
-  } else {
-    deleteQuery = deleteQuery.is('metadata->>sub_classification', null);
+export async function addPersonnel(
+  facilityId: string,
+  personnelData: {
+    name: string;
+    role: string;
+    hire_date: string;
+    attestation_frequency: 'annual' | 'biannual' | 'quarterly' | 'monthly';
   }
-  
-  await deleteQuery;
-
-  const textLength = rawText?.trim().length || 0;
-  console.log(`[Monitor] Received ${textLength} characters for ${metadata.source}`);
-
-  if (textLength < 10) {
-    console.error(`❌ REJECTED: Content too short for ${metadata.source}`);
-    return false;
-  }
-
-  // 1. SURGICAL CLEAN: Strip non-printable control characters globally before breaking text
-  const cleanRawText = rawText.replace(/[^\x20-\x7E\s]/g, '');
-
-  // 2. SENTENCE BOUNDARY DETECTION: Split text by sentences cleanly (. ! or ? followed by space)
-  const sentences = cleanRawText.match(/[^.!?]+[.!?]+(\s|$)/g) || [cleanRawText];
-  
-  const chunks: string[] = [];
-  let currentChunk = "";
-  const targetChunkSize = 1000;
-
-  for (const sentence of sentences) {
-    const trimmedSentence = sentence.trim();
-    if (!trimmedSentence) continue;
-
-    // Check if adding this complete sentence exceeds our target size
-    if ((currentChunk + " " + trimmedSentence).length > targetChunkSize) {
-      const finalizedChunk = currentChunk.trim();
-      
-      // THE QUALITY GATE: Must contain letters, basic word count, and structure
-      const hasLetters = /[a-zA-Z]/.test(finalizedChunk);
-      const hasWordDensity = (finalizedChunk.match(/\s/g) || []).length >= 3;
-      const isSubstantial = finalizedChunk.length >= 40;
-
-      if (hasLetters && hasWordDensity && isSubstantial) {
-        chunks.push(finalizedChunk);
-      }
-
-      // Overlap: Start the next chunk with the current sentence to maintain semantic linkage
-      currentChunk = trimmedSentence;
-    } else {
-      currentChunk = currentChunk ? `${currentChunk} ${trimmedSentence}` : trimmedSentence;
+) {
+  try {
+    // 1. Authenticate user and verify facility ownership
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+    
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
     }
-  }
-
-  // Catch any remaining sentence aggregates left in the buffer
-  if (currentChunk.trim().length >= 40) {
-    const remainingChunk = currentChunk.trim();
-    if (/[a-zA-Z]/.test(remainingChunk) && (remainingChunk.match(/\s/g) || []).length >= 3) {
-      chunks.push(remainingChunk);
+    
+    // 2. Calculate next attestation date based on frequency
+    const hireDate = new Date(personnelData.hire_date);
+    const nextAttestationDate = new Date(hireDate);
+    
+    switch (personnelData.attestation_frequency) {
+      case 'monthly':
+        nextAttestationDate.setMonth(nextAttestationDate.getMonth() + 1);
+        break;
+      case 'quarterly':
+        nextAttestationDate.setMonth(nextAttestationDate.getMonth() + 3);
+        break;
+      case 'biannual':
+        nextAttestationDate.setMonth(nextAttestationDate.getMonth() + 6);
+        break;
+      case 'annual':
+        nextAttestationDate.setFullYear(nextAttestationDate.getFullYear() + 1);
+        break;
     }
+    
+    // 3. Insert personnel record with attestation tracking
+    const { data: newPersonnel, error: insertError } = await supabase
+      .from('personnel')
+      .insert({
+        facility_id: facilityId,
+        name: personnelData.name,
+        role: personnelData.role,
+        hire_date: personnelData.hire_date,
+        status: 'active',
+        clearance_status: 'pending',
+        attestation_frequency: personnelData.attestation_frequency,
+        next_attestation_date: nextAttestationDate.toISOString().split('T')[0],
+        last_attestation_date: null
+      })
+      .select()
+      .single();
+    
+    if (insertError) {
+      console.error('❌ Error inserting personnel:', insertError);
+      return { success: false, error: 'Failed to add personnel member' };
+    }
+    
+    console.log(`✅ Successfully added personnel: ${personnelData.name} (${personnelData.role})`);
+    
+    return { success: true, personnel: newPersonnel };
+  } catch (error) {
+    console.error("❌ Error adding personnel:", error);
+    return { success: false, error: 'An unexpected error occurred' };
   }
+}
 
-  console.log(`🚀 Vectorizing ${chunks.length} immaculate, full-sentence segments for ${metadata.source}...`);
-
-  for (let i = 0; i < chunks.length; i++) {
-    // Generate the 1536-dimension vector embedding
-    const embedding = await generatePrecisionEmbedding(chunks[i]);
-
-    // Insert cleanly structured content into the vault with explicit schema alignment
-    const { error } = await supabase.from('regulatory_knowledge').insert({
-      content: chunks[i],
-      embedding,
-      category: metadata.category,
+/**
+ * Sign a digital attestation for a compliance requirement.
+ * Creates a facility_documents record with digital_attestation metadata.
+ */
+export async function signAttestation(
+  facilityId: string,
+  requirementId: string,
+  userAttestation: boolean = false
+) {
+  try {
+    // 1. Authenticate user and verify facility ownership
+    const { userId, orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+    
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id, name')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+    
+    // 2. Fetch the requirement details
+    const { data: requirement, error: reqError } = await supabase
+      .from('compliance_criteria')
+      .select('requirement_name, required_document_type, frequency')
+      .eq('id', requirementId)
+      .single();
+    
+    if (reqError || !requirement) {
+      throw new Error('Requirement not found');
+    }
+    
+    // 3. Create a digital attestation record in facility_documents
+    const attestationDate = new Date().toISOString();
+    const { data: attestation, error: insertError } = await supabase
+      .from('facility_documents')
+      .insert({
+        facility_id: facilityId,
+        name: `${requirement.requirement_name} - Digital Attestation`,
+        document_type: requirement.required_document_type,
+        status: 'approved',
+        file_url: null, // No physical file for digital attestations
+        metadata: {
+          attestation_type: 'digital_attestation',
+          signed_at: attestationDate,
+          requirement_id: requirementId,
+          requirement_name: requirement.requirement_name,
+          frequency: requirement.frequency
+        }
+      })
+      .select()
+      .single();
+    
+    if (insertError) {
+      console.error('❌ Error creating attestation:', insertError);
+      return { success: false, error: 'Failed to create digital attestation' };
+    }
+    
+    // Create immutable audit log for digital attestation
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'digital_attestation',
       metadata: {
-        ...metadata,
-        chunk_index: i,
-        total_chunks: chunks.length,
-        ingested_at: new Date().toISOString()
+        requirement_id: requirementId,
+        requirement_name: requirement.requirement_name,
+        frequency: requirement.frequency,
+        attestation_id: attestation.id,
+        user_attestation: userAttestation,
+        attestation_text: userAttestation
+          ? 'I certify that this information is authentic, unaltered, and satisfies Arkansas DHS requirements.'
+          : null
       }
     });
-
-    if (error) {
-      console.error(`   [Error] Segment ${i}:`, error.message);
-      console.error(`   [Error Details]:`, error.details);
-      console.error(`   [Error Hint]:`, error.hint);
-      throw new Error(`Database Write Rejected: ${error.message} - Details: ${error.details || 'No additional details'}`);
-    }
     
-    if (i % 20 === 0 && i > 0) {
-      console.log(`   [Progress] ${i}/${chunks.length} segments secured...`);
-    }
-  }
-
-  console.log(`✅ SUCCESS: ${metadata.source} is cleanly secured.`);
-  return true;
-}
-
-/**
- * String normalization helper for resilient fuzzy matching.
- * Converts strings to lowercase, strips whitespace, and normalizes separators.
- */
-function normalizeDocumentKey(input: string | null | undefined): string {
-  if (!input) return '';
-  return input
-    .toLowerCase()
-    .trim()
-    .replace(/[\s\-]+/g, '_')  // Replace spaces and hyphens with underscores
-    .replace(/[^a-z0-9_]/g, ''); // Remove any non-alphanumeric characters except underscores
-}
-
-/**
- * Fuzzy token matching helper.
- * Checks if two normalized strings share significant token overlap or containment.
- */
-function tokensMatch(ruleKey: string, docKey: string): boolean {
-  const normalizedRule = normalizeDocumentKey(ruleKey);
-  const normalizedDoc = normalizeDocumentKey(docKey);
-  
-  // Direct match
-  if (normalizedRule === normalizedDoc) return true;
-  
-  // Containment check (either direction)
-  if (normalizedRule.includes(normalizedDoc) || normalizedDoc.includes(normalizedRule)) {
-    return true;
-  }
-  
-  // Token overlap check - split by underscore and check for shared meaningful tokens
-  const ruleTokens = normalizedRule.split('_').filter(t => t.length > 2); // Filter out short tokens
-  const docTokens = normalizedDoc.split('_').filter(t => t.length > 2);
-  
-  // If at least 2 significant tokens match, consider it a match
-  const sharedTokens = ruleTokens.filter(token => docTokens.includes(token));
-  if (sharedTokens.length >= 2) return true;
-  
-  return false;
-}
-
-/**
- * Reads from our database layers to calculate the real-time metrics
- * for the UI Dashboard using fully dynamic schema-driven token normalization.
- */
-export async function getRegulatoryStatus(facilityId: string) {
-  const supabase = createAdminClient();
-
-  try {
-    // 1. Fetch the facility profile with capacity and sub_classification for staffing calculations
-    const { data: facility } = await supabase
-      .from('facilities')
-      .select('facility_type, capacity, sub_classification')
-      .eq('id', facilityId)
-      .single();
-
-    const currentType = facility?.facility_type || 'childcare';
-    const capacity = facility?.capacity || 0;
-    const subClassification = facility?.sub_classification;
-
-    // 2. Gather the active target requirements for this facility type AND specific sub-classification
-    // This ensures we only pull rules that match the exact facility classification scope
-    let rulesQuery = supabase
-      .from('compliance_criteria')
-      .select('*')
-      .eq('facility_type', currentType);
+    console.log(`✅ Digital attestation signed for: ${requirement.requirement_name}`);
     
-    // Add sub-classification filter if available to narrow down regulatory scope
-    if (subClassification) {
-      rulesQuery = rulesQuery.eq('sub_classification', subClassification);
-    }
-    
-    const { data: activeRules } = await rulesQuery;
-
-    // 3. Gather what files the facility has already successfully verified
-    const { data: uploadedDocs } = await supabase
-      .from('facility_documents')
-      .select('document_type, status')
-      .eq('facility_id', facilityId)
-      .eq('status', 'approved');
-
-    // 4. Dynamic Schema-Driven Fuzzy Metric Intersection
-    // Build a set of satisfied requirements using resilient token matching
-    const satisfiedRuleIds = new Set<string>();
-    const uploadedDocTypes = (uploadedDocs || []).map(d => d.document_type).filter(Boolean);
-    
-    console.log(`📊 Compliance Calculation: Evaluating ${activeRules?.length || 0} requirements against ${uploadedDocTypes.length} approved documents`);
-    
-    for (const rule of activeRules || []) {
-      const ruleKey = rule.required_document_type;
-      
-      // Check if any uploaded document matches this rule using fuzzy token matching
-      const isMatched = uploadedDocTypes.some(docType => tokensMatch(ruleKey, docType));
-      
-      if (isMatched) {
-        satisfiedRuleIds.add(rule.id);
-        console.log(`✅ Requirement satisfied: ${rule.requirement_name} (${ruleKey})`);
-      }
-    }
-    
-    const ruleCount = activeRules?.length || 0;
-    const verifiedCount = satisfiedRuleIds.size;
-    
-    // Compute base document compliance score as direct percentage of dynamic matches
-    let calculatedScore = ruleCount > 0 ? Math.round((verifiedCount / ruleCount) * 100) : 0;
-
-    // Filter down to map the current active gaps for the UI
-    const identifiedGaps = (activeRules || [])
-      .filter(rule => !satisfiedRuleIds.has(rule.id))
-      .map(rule => ({
-        id: rule.id,
-        title: rule.requirement_name,
-        systemSlug: rule.required_document_type,
-        isCritical: rule.severity === 'critical'
-      }));
-    
-    console.log(`📈 Compliance Score: ${calculatedScore}% (${verifiedCount}/${ruleCount} requirements met)`);
-
-    // 4. Fetch actual active personnel count from the database
-    const { count: personnelCount } = await supabase
-      .from('personnel')
-      .select('*', { count: 'exact', head: true })
-      .eq('facility_id', facilityId)
-      .eq('status', 'active');
-
-    const activeStaffCount = personnelCount ?? 0;
-
-    // 5. Calculate required staff threshold based on regulatory sector rules
-    // Defensive check: only calculate if capacity is valid (not null, undefined, or 0)
-    let requiredStaff = 0;
-    if (capacity && capacity > 0) {
-      if (currentType === 'childcare') {
-        requiredStaff = Math.ceil(capacity / 10);
-      } else if (currentType === 'nursing_home') {
-        requiredStaff = Math.ceil(capacity / 15);
-      }
-    } else {
-      console.log(`⚠️ Facility ${facilityId} has invalid or missing capacity (${capacity}). Skipping staffing ratio calculations.`);
-    }
-
-    // 6. Apply staffing ratio deficit penalty if understaffed
-    if (requiredStaff > 0 && activeStaffCount < requiredStaff) {
-      // Deduct strict 25-point penalty for staffing violations
-      calculatedScore = Math.max(0, calculatedScore - 25);
-      
-      // Add critical staffing gap to the violations list
-      identifiedGaps.push({
-        id: 'staffing-ratio-deficit',
-        title: `CRITICAL: Regulatory Staffing Ratio Deficit (Required: ${requiredStaff}, Active: ${activeStaffCount})`,
-        systemSlug: 'staffing_ratio_deficit',
-        isCritical: true
-      });
-
-      console.log(`⚠️ STAFFING VIOLATION: Facility ${facilityId} requires ${requiredStaff} staff but only has ${activeStaffCount} active. Score penalized by 25 points.`);
-    }
-
     return {
-      calculatedScore,
-      identifiedGaps,
-      staffCount: activeStaffCount
+      success: true,
+      attestation,
+      message: `Successfully signed attestation for ${requirement.requirement_name}`
     };
   } catch (error) {
-    console.error("❌ Failed to query metrics inside getRegulatoryStatus:", error);
-    return {
-      calculatedScore: 0,
-      identifiedGaps: [],
-      staffCount: 0
-    };
+    console.error("❌ Error signing attestation:", error);
+    return { success: false, error: 'An unexpected error occurred' };
   }
 }
-</file>
 
-<file path="package.json">
-{
-  "name": "ar-compliance-pro",
-  "version": "0.1.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint",
-    "ingest": "tsx run-ingestion.ts",
-    "discover": "tsx run-discovery.ts"
-  },
-  "dependencies": {
-    "@supabase/ssr": "^0.10.3",
-    "@supabase/supabase-js": "^2.105.4",
-    "next": "16.2.6",
-    "openai": "^6.37.0",
-    "pdf-parse": "^2.4.5",
-    "pdf-to-text": "^0.0.7",
-    "pdf2json": "^4.0.3",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
-    "zod": "^4.4.3"
-  },
-  "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.0",
-    "@types/node": "^20.19.41",
-    "@types/pdf-parse": "^1.1.5",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.2.6",
-    "tailwindcss": "^4",
-    "typescript": "^5"
-  }
-}
-</file>
-
-<file path="src/lib/document-processor.ts">
-// src/lib/document-processor.ts
-
-export async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<string> {
-  const extension = fileName.split('.').pop()?.toLowerCase();
-  
-  console.log(`[Parser] Analyzing ${fileName}`);
-
-  // 1. TEXT FILES (.txt) - Verified Success
-  if (extension === 'txt') {
-    return buffer.toString('utf-8').trim();
-  }
-
-  // 2. PDF FILES - Native JavaScript Parser (Serverless-Compatible)
-  if (extension === 'pdf') {
-    try {
-      const PDFParser = require('pdf2json');
-      
-      return await new Promise<string>((resolve, reject) => {
-        // Initialize with '1' as the second argument to enable raw text extraction mode (skips heavy UI rendering)
-        const pdfParser = new PDFParser(null, 1);
-        
-        pdfParser.on("pdfParser_dataError", (errData: any) => {
-          reject(new Error(errData.parserError));
-        });
-        
-        pdfParser.on("pdfParser_dataReady", () => {
-          const text = pdfParser.getRawTextContent();
-          resolve(text || "");
-        });
-        
-        pdfParser.parseBuffer(buffer);
-      });
-    } catch (err: any) {
-      console.error(`❌ System PDF Extraction Failure for ${fileName}:`, err.message);
-      throw new Error(`Cloud Document Parser Interrupted: ${err.message}`);
+/**
+ * Mark a compliance requirement as Not Applicable.
+ * Creates a facility_documents record indicating the requirement doesn't apply to this facility.
+ */
+export async function markNotApplicable(
+  facilityId: string,
+  requirementId: string,
+  reason: string,
+  userAttestation: boolean = false
+) {
+  try {
+    // 1. Authenticate user and verify facility ownership
+    const { userId, orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+    
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id, name')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
     }
+    
+    // 2. Fetch the requirement details
+    const { data: requirement, error: reqError } = await supabase
+      .from('compliance_criteria')
+      .select('requirement_name, required_document_type')
+      .eq('id', requirementId)
+      .single();
+    
+    if (reqError || !requirement) {
+      throw new Error('Requirement not found');
+    }
+    
+    // 3. Create a N/A record in facility_documents
+    const naDate = new Date().toISOString();
+    const { data: naRecord, error: insertError } = await supabase
+      .from('facility_documents')
+      .insert({
+        facility_id: facilityId,
+        name: `${requirement.requirement_name} - Marked N/A`,
+        document_type: requirement.required_document_type,
+        status: 'approved',
+        file_url: null,
+        metadata: {
+          is_not_applicable: true,
+          marked_at: naDate,
+          requirement_id: requirementId,
+          requirement_name: requirement.requirement_name,
+          reason: reason,
+          attestation: 'User swore under penalty of perjury this does not apply.'
+        }
+      })
+      .select()
+      .single();
+    
+    if (insertError) {
+      console.error('❌ Error marking N/A:', insertError);
+      return { success: false, error: 'Failed to mark requirement as N/A' };
+    }
+    
+    // Create immutable audit log for N/A marking
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'digital_attestation',
+      metadata: {
+        requirement_id: requirementId,
+        requirement_name: requirement.requirement_name,
+        na_record_id: naRecord.id,
+        is_not_applicable: true,
+        reason: reason,
+        user_attestation: userAttestation,
+        attestation_text: userAttestation
+          ? 'I certify that this information is authentic, unaltered, and satisfies Arkansas DHS requirements.'
+          : null
+      }
+    });
+    
+    console.log(`✅ Requirement marked N/A: ${requirement.requirement_name}`);
+    
+    return {
+      success: true,
+      naRecord,
+      message: `Successfully marked ${requirement.requirement_name} as Not Applicable`
+    };
+  } catch (error) {
+    console.error("❌ Error marking N/A:", error);
+    return { success: false, error: 'An unexpected error occurred' };
   }
+}
 
-  return "";
+/**
+ * Update facility's active enrollment/attendance count.
+ */
+export async function updateEnrollment(facilityId: string, activeEnrollment: number) {
+  try {
+    // 1. Authenticate user and verify facility ownership
+    const { userId, orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+    
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id, active_enrollment')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+    
+    // Store previous enrollment for audit log
+    const previousEnrollment = facility.active_enrollment;
+    
+    // 2. Update active_enrollment
+    const { error: updateError } = await supabase
+      .from('facilities')
+      .update({ active_enrollment: activeEnrollment })
+      .eq('id', facilityId);
+    
+    if (updateError) {
+      console.error('❌ Error updating enrollment:', updateError);
+      return { success: false, error: 'Failed to update enrollment' };
+    }
+    
+    // 3. Create audit log for enrollment change
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'enrollment_update',
+      metadata: {
+        previous_enrollment: previousEnrollment,
+        new_enrollment: activeEnrollment,
+        updated_by: userId
+      }
+    });
+    
+    console.log(`✅ Updated enrollment for facility ${facilityId}: ${previousEnrollment} → ${activeEnrollment}`);
+    
+    return { success: true, activeEnrollment };
+  } catch (error) {
+    console.error("❌ Error updating enrollment:", error);
+    return { success: false, error: 'An unexpected error occurred' };
+  }
 }
 </file>
 
