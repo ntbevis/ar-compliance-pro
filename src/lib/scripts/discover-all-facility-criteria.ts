@@ -18,8 +18,7 @@ export async function discoverAllFacilityCriteria() {
   // 1. Query only the explicit columns visible in your schema, including sub_classification metadata
   const { data: lawChunks, error: fetchError } = await supabase
     .from('regulatory_knowledge')
-    .select('id, content, category, metadata')
-    .or('content.ilike.%shall maintain%,content.ilike.%must retain%,content.ilike.%required to document%,content.ilike.%must provide proof%');
+    .select('id, content, category, metadata');
 
   if (fetchError || !lawChunks) {
     console.error("❌ Failed to query regulatory knowledge vault:", fetchError?.message);
