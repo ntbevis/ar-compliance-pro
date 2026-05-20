@@ -19,8 +19,7 @@ export async function discoverAllFacilityCriteria() {
   const { data: lawChunks, error: fetchError } = await supabase
     .from('regulatory_knowledge')
     .select('id, content, category, metadata')
-    .or('content.ilike.%shall maintain%,content.ilike.%must retain%,content.ilike.%required to document%,content.ilike.%must provide proof%')
-    .limit(40); // Processed in managed testing blocks
+    .or('content.ilike.%shall maintain%,content.ilike.%must retain%,content.ilike.%required to document%,content.ilike.%must provide proof%');
 
   if (fetchError || !lawChunks) {
     console.error("❌ Failed to query regulatory knowledge vault:", fetchError?.message);
