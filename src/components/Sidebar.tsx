@@ -17,14 +17,20 @@ export default function Sidebar() {
     fetchFacilities();
   }, []);
 
+  // Check if user is in Master View
+  const isMasterView = selectedFacilityId === 'all' || !selectedFacilityId;
+
   // Structural helper for clean tab rendering
-  const navItem = (label: string, view: ViewType) => {
+  const navItem = (label: string, view: ViewType, disabled: boolean = false) => {
     const isActive = currentView === view;
     return (
       <button
-        onClick={() => setCurrentView(view)}
+        onClick={() => !disabled && setCurrentView(view)}
+        disabled={disabled}
         className={`w-full text-left p-3 rounded-xl font-bold transition-all border ${
-          isActive
+          disabled
+            ? 'opacity-50 cursor-not-allowed text-gray-600 border-transparent'
+            : isActive
             ? 'bg-blue-600/10 text-blue-500 border-blue-600/20'
             : 'text-gray-500 border-transparent hover:bg-gray-900'
         }`}
@@ -43,14 +49,17 @@ export default function Sidebar() {
       <FacilitySelector
         facilities={facilities}
         selectedFacilityId={selectedFacilityId}
-        onSelect={(id) => setSelectedFacilityId(id)}
+        onSelect={(id) => {
+          setSelectedFacilityId(id);
+          if (id === 'all') setCurrentView('overview');
+        }}
       />
 
       <nav className="flex-1 p-4 space-y-2 mt-4">
         <div className="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-4 px-2">Navigation</div>
         {navItem('Executive Overview', 'overview')}
-        {navItem('Personnel Vault', 'personnel')}
-        {navItem('Document Center', 'documents')}
+        {navItem('Personnel Vault', 'personnel', isMasterView)}
+        {navItem('Document Center', 'documents', isMasterView)}
       </nav>
 
       <div className="p-4 border-t border-gray-800">
