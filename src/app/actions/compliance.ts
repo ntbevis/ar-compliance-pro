@@ -112,7 +112,7 @@ export async function getFacilityComplianceData(facilityId: string) {
     const supabase = createAdminClient();
     const { data: facility, error: facilityError } = await supabase
       .from('facilities')
-      .select('id, org_id')
+      .select('id, org_id, capacity, active_enrollment, enrollment_updated_at')
       .eq('id', facilityId)
       .eq('org_id', orgId)
       .single();
@@ -133,7 +133,10 @@ export async function getFacilityComplianceData(facilityId: string) {
         typeKey: gap.systemSlug,     // e.g., "dccece_background_check"
         severity: gap.isCritical ? 'critical' : 'standard'
       })),
-      totalPersonnel: rawStatus?.staffCount ?? 0
+      totalPersonnel: rawStatus?.staffCount ?? 0,
+      capacity: facility.capacity,
+      activeEnrollment: facility.active_enrollment,
+      enrollmentUpdatedAt: facility.enrollment_updated_at
     };
   } catch (error) {
     console.error("❌ Error bridging UI to Compliance Engine:", error);
@@ -680,7 +683,7 @@ export async function getAllFacilitiesOverview() {
     // 2. Fetch all facilities belonging to user's organization
     const { data: facilities, error } = await supabase
       .from('facilities')
-      .select('id, name, facility_type, sub_classification, capacity')
+      .select('id, name, facility_type, sub_classification, capacity, active_enrollment, enrollment_updated_at')
       .eq('org_id', orgId) // Multi-tenant isolation filter
       .order('name', { ascending: true });
 
@@ -703,7 +706,9 @@ export async function getAllFacilitiesOverview() {
             ...facility,
             complianceScore: complianceData.score,
             totalPersonnel: complianceData.totalPersonnel,
-            gapsCount: complianceData.gaps.length
+            gapsCount: complianceData.gaps.length,
+            active_enrollment: facility.active_enrollment,
+            enrollment_updated_at: facility.enrollment_updated_at
           };
         } catch (error) {
           console.error(`❌ Error fetching compliance for facility ${facility.id}:`, error);
@@ -711,7 +716,9 @@ export async function getAllFacilitiesOverview() {
             ...facility,
             complianceScore: 0,
             totalPersonnel: 0,
-            gapsCount: 0
+            gapsCount: 0,
+            active_enrollment: facility.active_enrollment,
+            enrollment_updated_at: facility.enrollment_updated_at
           };
         }
       })
@@ -1132,7 +1139,7 @@ export async function updateEnrollment(facilityId: string, activeEnrollment: num
     
     const { data: facility, error: facilityError } = await supabase
       .from('facilities')
-      .select('id, org_id, active_enrollment')
+      .select('id, org_id, active_enrollment, capacity')
       .eq('id', facilityId)
       .eq('org_id', orgId)
       .single();
@@ -1141,13 +1148,24 @@ export async function updateEnrollment(facilityId: string, activeEnrollment: num
       throw new Error('Unauthorized: Facility not found or does not belong to your organization');
     }
     
+    // Validate enrollment doesn't exceed licensed capacity
+    if (activeEnrollment > facility.capacity) {
+      return {
+        success: false,
+        error: `Enrollment cannot exceed licensed capacity of ${facility.capacity}`
+      };
+    }
+    
     // Store previous enrollment for audit log
     const previousEnrollment = facility.active_enrollment;
     
-    // 2. Update active_enrollment
+    // 2. Update active_enrollment with timestamp
     const { error: updateError } = await supabase
       .from('facilities')
-      .update({ active_enrollment: activeEnrollment })
+      .update({
+        active_enrollment: activeEnrollment,
+        enrollment_updated_at: new Date().toISOString()
+      })
       .eq('id', facilityId);
     
     if (updateError) {

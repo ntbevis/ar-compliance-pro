@@ -329,6 +329,11 @@ export default function ExecutiveOverview() {
         setPersonnelData(personnel);
         setSeparatedPersonnelData(separatedPersonnel);
         setDocumentsData(documents);
+        
+        // Pre-fill enrollment input if data exists
+        if (stats?.activeEnrollment) {
+          setEnrollmentInput(stats.activeEnrollment.toString());
+        }
       } catch (error) {
         console.error("Dashboard Load Error:", error);
       } finally {
@@ -416,6 +421,16 @@ export default function ExecutiveOverview() {
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-slate-600 font-medium">Capacity:</span>
                     <span className="text-slate-900 font-bold">{facility.capacity || 'N/A'}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-slate-600 font-medium">Active Enrollment:</span>
+                    <span className="text-slate-900 font-bold">{facility.active_enrollment || 'Not Set'}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-slate-600 font-medium">Enrollment Updated:</span>
+                    <span className="text-slate-500 text-xs font-mono">
+                      {facility.enrollment_updated_at ? new Date(facility.enrollment_updated_at).toLocaleDateString() : 'Never'}
+                    </span>
                   </div>
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-slate-600 font-medium">Active Staff:</span>
@@ -519,35 +534,42 @@ export default function ExecutiveOverview() {
                 <p className="text-xs text-slate-500 mb-3">
                   Set your baseline enrolled headcount. You only need to update this when a child/resident officially enrolls or withdraws. The system uses this baseline to calculate your required minimum staff in the Personnel Vault.
                 </p>
-                <div className="flex items-center gap-3">
-                  <input
-                    id="enrollment-input"
-                    type="number"
-                    min="0"
-                    value={enrollmentInput}
-                    onChange={(e) => setEnrollmentInput(e.target.value)}
-                    placeholder="e.g., 45"
-                    className="px-4 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-32"
-                    disabled={updatingEnrollment}
-                  />
-                  <button
-                    onClick={handleUpdateEnrollment}
-                    disabled={updatingEnrollment || !enrollmentInput}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                      updatingEnrollment || !enrollmentInput
-                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                        : 'bg-blue-600 text-white hover:bg-blue-700'
-                    }`}
-                  >
-                    {updatingEnrollment ? (
-                      <span className="flex items-center gap-2">
-                        <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
-                        Updating...
-                      </span>
-                    ) : (
-                      'Update Enrollment'
-                    )}
-                  </button>
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-3">
+                    <input
+                      id="enrollment-input"
+                      type="number"
+                      min="0"
+                      max={data?.capacity || undefined}
+                      value={enrollmentInput}
+                      onChange={(e) => setEnrollmentInput(e.target.value)}
+                      placeholder="e.g., 45"
+                      className="px-4 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-32"
+                      disabled={updatingEnrollment}
+                    />
+                    <button
+                      onClick={handleUpdateEnrollment}
+                      disabled={updatingEnrollment || !enrollmentInput}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                        updatingEnrollment || !enrollmentInput
+                          ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                          : 'bg-blue-600 text-white hover:bg-blue-700'
+                      }`}
+                    >
+                      {updatingEnrollment ? (
+                        <span className="flex items-center gap-2">
+                          <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                          Updating...
+                        </span>
+                      ) : (
+                        'Update Enrollment'
+                      )}
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-400 font-mono">
+                    Licensed Capacity Limit: {data?.capacity || 'N/A'}
+                    {data?.enrollmentUpdatedAt && ` | Last Updated: ${new Date(data.enrollmentUpdatedAt).toLocaleDateString()}`}
+                  </p>
                 </div>
               </div>
             </div>
