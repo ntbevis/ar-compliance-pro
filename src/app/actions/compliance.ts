@@ -8,6 +8,7 @@ import { routeAndExtract } from '@/lib/llm-router';
 import { extractTextFromBuffer } from 'src/lib/document-processor';
 import { createHash } from 'crypto';
 import { headers } from 'next/headers';
+import { revalidatePath } from 'next/cache';
 
 /**
  * Multi-Tenant Security Helper
@@ -62,7 +63,7 @@ async function getAuthenticatedUserContext() {
 async function createAuditLog(params: {
   facilityId: string;
   userId: string;
-  actionType: 'document_upload' | 'digital_attestation' | 'document_approval' | 'document_rejection' | 'enrollment_update';
+  actionType: 'document_upload' | 'digital_attestation' | 'document_approval' | 'document_rejection' | 'enrollment_update' | 'document_deletion';
   fileHash?: string;
   metadata: Record<string, any>;
 }) {
@@ -1022,6 +1023,8 @@ export async function signAttestation(
     
     console.log(`✅ Digital attestation signed for: ${requirement.requirement_name}`);
     
+    revalidatePath('/dashboard');
+    
     return {
       success: true,
       attestation,
@@ -1117,6 +1120,8 @@ export async function markNotApplicable(
     
     console.log(`✅ Requirement marked N/A: ${requirement.requirement_name}`);
     
+    revalidatePath('/dashboard');
+    
     return {
       success: true,
       naRecord,
@@ -1190,6 +1195,76 @@ export async function updateEnrollment(facilityId: string, activeEnrollment: num
     return { success: true, activeEnrollment };
   } catch (error) {
     console.error("❌ Error updating enrollment:", error);
+    return { success: false, error: 'An unexpected error occurred' };
+  }
+}
+
+/**
+ * Delete a document record from facility_documents.
+ * Verifies ownership and creates an audit log.
+ */
+export async function deleteDocumentRecord(documentId: string) {
+  try {
+    // 1. Authenticate user
+    const { userId, orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+    
+    // 2. Fetch the document and verify ownership
+    const { data: document, error: docError } = await supabase
+      .from('facility_documents')
+      .select('id, facility_id, name, document_type')
+      .eq('id', documentId)
+      .single();
+    
+    if (docError || !document) {
+      return { success: false, error: 'Document not found' };
+    }
+    
+    // 3. Verify the facility belongs to the user's organization
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('org_id')
+      .eq('id', document.facility_id)
+      .single();
+    
+    if (facilityError || !facility || facility.org_id !== orgId) {
+      return { success: false, error: 'Unauthorized: Document does not belong to your organization' };
+    }
+    
+    // 4. Create audit log before deletion
+    await createAuditLog({
+      facilityId: document.facility_id,
+      userId,
+      actionType: 'document_deletion',
+      metadata: {
+        document_id: documentId,
+        document_name: document.name,
+        document_type: document.document_type,
+        deleted_by: userId
+      }
+    });
+    
+    // 5. Delete the document
+    const { error: deleteError } = await supabase
+      .from('facility_documents')
+      .delete()
+      .eq('id', documentId);
+    
+    if (deleteError) {
+      console.error('❌ Error deleting document:', deleteError);
+      return { success: false, error: 'Failed to delete document' };
+    }
+    
+    console.log(`✅ Document deleted: ${document.name}`);
+    
+    revalidatePath('/dashboard');
+    
+    return {
+      success: true,
+      message: `Successfully deleted ${document.name}`
+    };
+  } catch (error) {
+    console.error("❌ Error deleting document:", error);
     return { success: false, error: 'An unexpected error occurred' };
   }
 }

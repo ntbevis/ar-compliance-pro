@@ -180,10 +180,12 @@ export async function getRegulatoryStatus(facilityId: string) {
 
     // 2. Gather the active target requirements for this facility type AND specific sub-classification
     // This ensures we only pull rules that match the exact facility classification scope
+    // Exclude personnel requirements as they are handled separately in the Personnel Vault
     let rulesQuery = supabase
       .from('compliance_criteria')
       .select('*')
-      .eq('facility_type', currentType);
+      .eq('facility_type', currentType)
+      .eq('is_personnel_requirement', false);
     
     // Add sub-classification filter if available to narrow down regulatory scope
     if (subClassification) {
@@ -229,8 +231,14 @@ export async function getRegulatoryStatus(facilityId: string) {
       : 100; // Default to 100 if no critical rules exist
 
     // Filter down to map the current active gaps for the UI, passing through severity and frequency
+    // Exclude staffing ratio rules as they are handled by the dynamic staffing-ratio-deficit logic
     const identifiedGaps = (activeRules || [])
       .filter(rule => !satisfiedRuleIds.has(rule.id))
+      .filter(rule => {
+        const typeKey = rule.required_document_type?.toLowerCase() || '';
+        const name = rule.requirement_name?.toLowerCase() || '';
+        return !typeKey.includes('ratio') && !name.includes('ratio');
+      })
       .map(rule => ({
         id: rule.id,
         title: rule.requirement_name,

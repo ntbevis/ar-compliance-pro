@@ -33,6 +33,7 @@ export default function ComplianceDashboardClient({
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   const [signingAttestationId, setSigningAttestationId] = useState<string | null>(null);
   const [markingNAId, setMarkingNAId] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState<boolean>(false);
   const [userAttestation, setUserAttestation] = useState<boolean>(false);
   const [auditFeedback, setAuditFeedback] = useState<{
     status: string;
@@ -44,7 +45,8 @@ export default function ComplianceDashboardClient({
   const criticalGaps = gaps.filter(g => g.severity === 'critical' || g.id === 'staffing-ratio-deficit');
   const standardGaps = gaps.filter(g => g.severity === 'standard' && g.id !== 'staffing-ratio-deficit');
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, gap: Gap) => {
+  // Universal Dropzone handler - AI will classify the document
+  const handleUniversalDropzone = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -56,9 +58,9 @@ export default function ComplianceDashboardClient({
     }
 
     try {
-      setUploadingId(gap.id);
+      setIsUploading(true);
       setAuditFeedback(null);
-      console.log(`🎬 Upload triggered for checklist element: ${gap.name}`);
+      console.log(`🎬 Universal Dropzone upload triggered: ${file.name}`);
 
       // 1. Generate a standardized unique ID for the document record
       const documentId = crypto.randomUUID();
@@ -72,22 +74,22 @@ export default function ComplianceDashboardClient({
 
       if (storageError) throw storageError;
 
-      // 3. Insert the tracking row into facility_documents matching your schema columns
+      // 3. Insert with general_compliance_upload - AI will classify it
       const { error: insertError } = await supabase
         .from('facility_documents')
         .insert({
           id: documentId,
           facility_id: facilityId,
-          document_type: gap.typeKey,
+          document_type: 'general_compliance_upload',
           status: 'pending',
           file_url: storagePath,
           name: file.name,
-          metadata: { original_upload_method: 'dashboard_ui' }
+          metadata: { original_upload_method: 'universal_dropzone' }
         });
 
       if (insertError) throw insertError;
 
-      console.log(`🧠 Invoking real-time AI compliance verification...`);
+      console.log(`🧠 Invoking AI classification and compliance verification...`);
       
       // 4. Trigger the Server Action loop with user attestation
       const response = await handleDocumentUploadSuccess(facilityId, documentId, userAttestation);
@@ -105,14 +107,18 @@ export default function ComplianceDashboardClient({
         // Trigger an operational refresh to sync database states across server views
         router.refresh();
         
-        // Optimistically clear passing items out of the list view immediately
-        if (report.compliance_status === 'Compliant') {
-          setGaps((prev) => prev.filter((g) => g.id !== gap.id));
+        // Optimistically clear matching gap if AI classified it correctly
+        if (report.compliance_status === 'Compliant' && report.extracted_document_type) {
+          const matchingGap = gaps.find(g => g.typeKey === report.extracted_document_type);
           
-          // Only update score if this was a critical gap
-          if (gap.severity === 'critical') {
-            const initialCriticalCount = initialGaps.filter(g => g.severity === 'critical' || g.id === 'staffing-ratio-deficit').length;
-            setScore((prev) => Math.min(100, prev + Math.round(100 / (initialCriticalCount || 1))));
+          if (matchingGap) {
+            setGaps((prev) => prev.filter((g) => g.id !== matchingGap.id));
+            
+            // Only update score if this was a critical gap
+            if (matchingGap.severity === 'critical') {
+              const initialCriticalCount = initialGaps.filter(g => g.severity === 'critical' || g.id === 'staffing-ratio-deficit').length;
+              setScore((prev) => Math.min(100, prev + Math.round(100 / (initialCriticalCount || 1))));
+            }
           }
         }
       } else {
@@ -120,10 +126,11 @@ export default function ComplianceDashboardClient({
       }
 
     } catch (error: any) {
-      console.error("❌ UI Upload Flow Exception:", error);
+      console.error("❌ Universal Dropzone Exception:", error);
       alert(`Processing failed: ${error.message || error}`);
     } finally {
-      setUploadingId(null);
+      setIsUploading(false);
+      e.target.value = ''; // Reset file input
     }
   };
 
@@ -231,30 +238,58 @@ export default function ComplianceDashboardClient({
           <p className="text-xs text-slate-400 mt-3">Calculated against Arkansas Licensing requirements.</p>
         </div>
 
-        {/* Live Audit Desk Interface */}
+        {/* Universal Dropzone - AI Classification */}
         <div className="md:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col justify-between">
           <div>
-            <h3 className="text-base font-bold text-slate-800 mb-1">AR_Compliance_Guard Audit Desk</h3>
-            <p className="text-xs text-slate-400 mb-4">Upload facility files below. The system converts layouts natively via multimodal AI to run precise vector-law evaluations.</p>
+            <h3 className="text-base font-bold text-slate-800 mb-1">🎯 Universal Document Dropzone</h3>
+            <p className="text-xs text-slate-400 mb-4">Drop any compliance document here. AI will automatically classify and match it to requirements.</p>
           </div>
           
           {auditFeedback ? (
             <div className={`p-4 rounded-lg border text-xs space-y-1.5 ${
-              auditFeedback.status === 'Compliant' 
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-900' 
+              auditFeedback.status === 'Compliant'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
                 : 'bg-rose-50 border-rose-200 text-rose-900'
             }`}>
               <div className="flex items-center justify-between font-bold text-sm">
                 <span>Result: {auditFeedback.status.toUpperCase()}</span>
-                <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-white border border-slate-200 font-mono shadow-sm">Pristine Verification</span>
+                <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-white border border-slate-200 font-mono shadow-sm">AI Classified</span>
               </div>
               <p><span className="font-semibold">Code Section:</span> {auditFeedback.code}</p>
               <p><span className="font-semibold">Remediation Action:</span> {auditFeedback.action}</p>
             </div>
           ) : (
-            <div className="border-2 border-dashed border-slate-200 bg-slate-50 rounded-lg p-5 text-center text-xs text-slate-400 italic">
-              Awaiting real-time ingestion triggers...
-            </div>
+            <label className={`border-2 border-dashed rounded-lg p-8 text-center transition-all cursor-pointer ${
+              isUploading
+                ? 'border-indigo-400 bg-indigo-50'
+                : userAttestation
+                ? 'border-slate-300 bg-slate-50 hover:border-indigo-500 hover:bg-indigo-50'
+                : 'border-slate-200 bg-slate-50 cursor-not-allowed opacity-60'
+            }`}>
+              <input
+                type="file"
+                accept=".txt,.pdf,.png,.jpg,.jpeg"
+                className="hidden"
+                onChange={handleUniversalDropzone}
+                disabled={!userAttestation || isUploading}
+              />
+              {isUploading ? (
+                <div className="flex flex-col items-center gap-2">
+                  <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                  <p className="text-sm font-bold text-indigo-600">AI Processing...</p>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center gap-2">
+                  <svg className="w-12 h-12 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                  <p className="text-sm font-bold text-slate-700">
+                    {userAttestation ? 'Click or Drop Document Here' : 'Check attestation box first'}
+                  </p>
+                  <p className="text-xs text-slate-400">PDF, TXT, PNG, JPG accepted</p>
+                </div>
+              )}
+            </label>
           )}
         </div>
       </div>
@@ -358,24 +393,7 @@ export default function ComplianceDashboardClient({
                         >
                           ✓ Sign Digital Attestation
                         </button>
-                      ) : (
-                        <label className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all block text-center min-w-[120px] ${
-                          userAttestation
-                            ? 'cursor-pointer bg-white border border-slate-300 text-slate-800 hover:border-indigo-500 hover:text-indigo-600'
-                            : 'cursor-not-allowed bg-slate-100 border border-slate-300 text-slate-400'
-                        }`}
-                        title={!userAttestation ? 'Please check the legal certification box above' : ''}
-                        >
-                          Upload Document
-                          <input
-                            type="file"
-                            accept=".txt,.pdf,.png,.jpg,.jpeg"
-                            className="hidden"
-                            onChange={(e) => handleFileChange(e, gap)}
-                            disabled={!userAttestation}
-                          />
-                        </label>
-                      )}
+                      ) : null}
                       
                       {/* Mark N/A button - not available for staffing deficit */}
                       {gap.id !== 'staffing-ratio-deficit' && (
@@ -458,24 +476,7 @@ export default function ComplianceDashboardClient({
                         >
                           ✓ Sign Digital Attestation
                         </button>
-                      ) : (
-                        <label className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all block text-center min-w-[120px] ${
-                          userAttestation
-                            ? 'cursor-pointer bg-white border border-slate-300 text-slate-700 hover:border-slate-500 hover:text-slate-900'
-                            : 'cursor-not-allowed bg-slate-200 border border-slate-300 text-slate-400'
-                        }`}
-                        title={!userAttestation ? 'Please check the legal certification box above' : ''}
-                        >
-                          Upload Document
-                          <input
-                            type="file"
-                            accept=".txt,.pdf,.png,.jpg,.jpeg"
-                            className="hidden"
-                            onChange={(e) => handleFileChange(e, gap)}
-                            disabled={!userAttestation}
-                          />
-                        </label>
-                      )}
+                      ) : null}
                       
                       {/* Mark N/A button */}
                       <button

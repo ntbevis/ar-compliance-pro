@@ -3,7 +3,7 @@
 import { useFacility } from 'src/context/FacilityContext';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { getFacilityComplianceData, getPersonnelData, getDocumentsData, markEmployeeSeparated, handleDocumentUploadSuccess, getSeparatedPersonnelData, getAllFacilitiesOverview, getAvailableRoles, addPersonnel, updateEnrollment } from 'src/app/actions/compliance';
+import { getFacilityComplianceData, getPersonnelData, getDocumentsData, markEmployeeSeparated, handleDocumentUploadSuccess, getSeparatedPersonnelData, getAllFacilitiesOverview, getAvailableRoles, addPersonnel, updateEnrollment, deleteDocumentRecord } from 'src/app/actions/compliance';
 import { createClient } from 'src/app/utils/supabase/client';
 import ComplianceDashboardClient from 'src/components/ComplianceDashboardClient';
 
@@ -41,6 +41,7 @@ export default function ExecutiveOverview() {
   const [facilitiesData, setFacilitiesData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [separatingId, setSeparatingId] = useState<string | null>(null);
+  const [deletingDocId, setDeletingDocId] = useState<string | null>(null);
   const [uploadingDocument, setUploadingDocument] = useState(false);
   const [uploadFeedback, setUploadFeedback] = useState<{
     status: string;
@@ -191,6 +192,32 @@ export default function ExecutiveOverview() {
       alert(`❌ Error: ${error.message}`);
     } finally {
       setSeparatingId(null);
+    }
+  };
+
+  const handleDeleteDocument = async (documentId: string, documentName: string) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${documentName}"?\n\nThis action cannot be undone.`
+    );
+
+    if (!confirmed) return;
+
+    setDeletingDocId(documentId);
+    try {
+      const result = await deleteDocumentRecord(documentId);
+      
+      if (result.success) {
+        // Remove from local state immediately for instant UI feedback
+        setDocumentsData(prev => prev.filter(d => d.id !== documentId));
+        alert(`✅ ${documentName} has been deleted.`);
+      } else {
+        alert(`❌ Failed to delete document: ${result.error}`);
+      }
+    } catch (error: any) {
+      console.error('Error deleting document:', error);
+      alert(`❌ Error: ${error.message}`);
+    } finally {
+      setDeletingDocId(null);
     }
   };
 
@@ -915,6 +942,7 @@ export default function ExecutiveOverview() {
                     <th className="text-left py-3 px-4 font-semibold text-slate-700">Type</th>
                     <th className="text-left py-3 px-4 font-semibold text-slate-700">Status</th>
                     <th className="text-left py-3 px-4 font-semibold text-slate-700">Upload Date</th>
+                    <th className="text-right py-3 px-4 font-semibold text-slate-700">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -962,6 +990,26 @@ export default function ExecutiveOverview() {
                           hour: '2-digit',
                           minute: '2-digit'
                         })}
+                      </td>
+                      <td className="py-3 px-4 text-right">
+                        <button
+                          onClick={() => handleDeleteDocument(doc.id, doc.name)}
+                          disabled={deletingDocId === doc.id}
+                          className="text-rose-600 hover:text-rose-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm font-medium"
+                          title="Delete document"
+                        >
+                          {deletingDocId === doc.id ? (
+                            <span className="flex items-center gap-1">
+                              <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                              Deleting...
+                            </span>
+                          ) : (
+                            'Delete'
+                          )}
+                        </button>
                       </td>
                     </tr>
                   ))}

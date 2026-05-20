@@ -123,7 +123,8 @@ export async function discoverAllFacilityCriteria() {
               requirement_name: req.requirement_name,
               required_document_type: req.required_document_type,
               severity: req.severity,
-              frequency: req.frequency || 'annual' // Default to annual if not specified
+              frequency: req.frequency || 'annual', // Default to annual if not specified
+              is_personnel_requirement: req.is_personnel_requirement || false
             });
 
           if (insertError) {
