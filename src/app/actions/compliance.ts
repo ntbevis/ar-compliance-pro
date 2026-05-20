@@ -5,6 +5,9 @@ import { getRegulatoryStatus } from '@/lib/reg-monitor';
 import { createAdminClient } from 'src/app/utils/supabase/admin';
 import { createClient } from 'src/app/utils/supabase/server';
 import { routeAndExtract } from '@/lib/llm-router';
+import { extractTextFromBuffer } from 'src/lib/document-processor';
+import { createHash } from 'crypto';
+import { headers } from 'next/headers';
 
 /**
  * Multi-Tenant Security Helper
@@ -52,6 +55,41 @@ async function getAuthenticatedUserContext() {
 }
 
 // Helper to determine content type from file name extensions
+/**
+ * Create an immutable audit log entry for compliance actions.
+ * Provides legal protection and DHS compliance trail.
+ */
+async function createAuditLog(params: {
+  facilityId: string;
+  userId: string;
+  actionType: 'document_upload' | 'digital_attestation' | 'document_approval' | 'document_rejection';
+  fileHash?: string;
+  metadata: Record<string, any>;
+}) {
+  const supabase = createAdminClient();
+  
+  // Get IP address from headers
+  const headersList = await headers();
+  const ipAddress = headersList.get('x-forwarded-for') || headersList.get('x-real-ip') || 'unknown';
+  
+  const { error } = await supabase
+    .from('audit_logs')
+    .insert({
+      facility_id: params.facilityId,
+      user_id: params.userId,
+      action_type: params.actionType,
+      ip_address: ipAddress,
+      file_hash: params.fileHash || null,
+      metadata: params.metadata
+    });
+  
+  if (error) {
+    console.error('❌ Failed to create audit log:', error);
+  } else {
+    console.log(`✅ Audit log created: ${params.actionType} for facility ${params.facilityId}`);
+  }
+}
+
 function getMimeType(fileName: string): string {
   const ext = fileName.split('.').pop()?.toLowerCase();
   if (ext === 'png') return 'image/png';
@@ -114,12 +152,16 @@ export async function getFacilityComplianceData(facilityId: string) {
  * and passes the raw content stream to the AI routing engine for flawless conversion.
  * SECURITY: Verifies facility belongs to authenticated user's organization.
  */
-export async function handleDocumentUploadSuccess(facilityId: string, documentId: string) {
+export async function handleDocumentUploadSuccess(
+  facilityId: string,
+  documentId: string,
+  userAttestation: boolean = false
+) {
   console.log(`🔄 Processing upload action for facility ${facilityId}, document ${documentId}`);
   
   try {
     // 1. Authenticate user and verify facility ownership + fetch facility classification scope
-    const { orgId } = await getAuthenticatedUserContext();
+    const { userId, orgId } = await getAuthenticatedUserContext();
     const supabase = createAdminClient();
     
     const { data: facility, error: facilityError } = await supabase
@@ -204,6 +246,28 @@ export async function handleDocumentUploadSuccess(facilityId: string, documentId
       const arrayBuffer = await storageBlob.arrayBuffer();
       buffer = Buffer.from(arrayBuffer);
     }
+
+    // Calculate SHA-256 hash for audit trail and non-repudiation
+    const fileHash = createHash('sha256').update(buffer).digest('hex');
+    console.log(`🔐 File hash calculated: ${fileHash.substring(0, 16)}...`);
+
+    // Create immutable audit log for document upload
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'document_upload',
+      fileHash,
+      metadata: {
+        filename: fileName,
+        document_id: documentId,
+        file_size: buffer.length,
+        mime_type: mimeType,
+        user_attestation: userAttestation,
+        attestation_text: userAttestation
+          ? 'I certify that this information is authentic, unaltered, and satisfies Arkansas DHS requirements.'
+          : null
+      }
+    });
 
     // 5. Pre-Validation Interceptor Layer - Scan for problematic keywords
     console.log(`🔍 Running pre-validation keyword scan on document: ${fileName}`);
@@ -874,10 +938,14 @@ export async function addPersonnel(
  * Sign a digital attestation for a compliance requirement.
  * Creates a facility_documents record with digital_attestation metadata.
  */
-export async function signAttestation(facilityId: string, requirementId: string) {
+export async function signAttestation(
+  facilityId: string,
+  requirementId: string,
+  userAttestation: boolean = false
+) {
   try {
     // 1. Authenticate user and verify facility ownership
-    const { orgId } = await getAuthenticatedUserContext();
+    const { userId, orgId } = await getAuthenticatedUserContext();
     const supabase = createAdminClient();
     
     const { data: facility, error: facilityError } = await supabase
@@ -927,6 +995,23 @@ export async function signAttestation(facilityId: string, requirementId: string)
       console.error('❌ Error creating attestation:', insertError);
       return { success: false, error: 'Failed to create digital attestation' };
     }
+    
+    // Create immutable audit log for digital attestation
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'digital_attestation',
+      metadata: {
+        requirement_id: requirementId,
+        requirement_name: requirement.requirement_name,
+        frequency: requirement.frequency,
+        attestation_id: attestation.id,
+        user_attestation: userAttestation,
+        attestation_text: userAttestation
+          ? 'I certify that this information is authentic, unaltered, and satisfies Arkansas DHS requirements.'
+          : null
+      }
+    });
     
     console.log(`✅ Digital attestation signed for: ${requirement.requirement_name}`);
     

@@ -31,6 +31,7 @@ export default function ComplianceDashboardClient({
   const [score, setScore] = useState<number>(initialScore);
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   const [signingAttestationId, setSigningAttestationId] = useState<string | null>(null);
+  const [userAttestation, setUserAttestation] = useState<boolean>(false);
   const [auditFeedback, setAuditFeedback] = useState<{
     status: string;
     code?: string;
@@ -40,6 +41,13 @@ export default function ComplianceDashboardClient({
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, gap: Gap) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // Require user attestation before upload
+    if (!userAttestation) {
+      alert('⚠️ You must certify the authenticity of this document before uploading.');
+      e.target.value = ''; // Reset file input
+      return;
+    }
 
     try {
       setUploadingId(gap.id);
@@ -75,8 +83,8 @@ export default function ComplianceDashboardClient({
 
       console.log(`🧠 Invoking real-time AI compliance verification...`);
       
-      // 4. Trigger the Server Action loop
-      const response = await handleDocumentUploadSuccess(facilityId, documentId);
+      // 4. Trigger the Server Action loop with user attestation
+      const response = await handleDocumentUploadSuccess(facilityId, documentId, userAttestation);
 
       if (response.success && response.report) {
         const report = response.report;
@@ -109,13 +117,19 @@ export default function ComplianceDashboardClient({
   };
 
   const handleSignAttestation = async (gap: Gap) => {
+    // Require user attestation before signing
+    if (!userAttestation) {
+      alert('⚠️ You must certify the authenticity of this attestation before signing.');
+      return;
+    }
+
     if (!confirm(`Sign digital attestation for: ${gap.name}?\n\nThis will mark the requirement as satisfied without uploading a physical document.`)) {
       return;
     }
 
     setSigningAttestationId(gap.id);
     try {
-      const result = await signAttestation(facilityId, gap.id);
+      const result = await signAttestation(facilityId, gap.id, userAttestation);
       
       if (result.success) {
         alert(`✅ ${result.message}`);
@@ -184,6 +198,34 @@ export default function ComplianceDashboardClient({
         </div>
       </div>
 
+      {/* Legal Attestation Checkbox - Penalty of Perjury */}
+      <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-6 shadow-sm">
+        <div className="flex items-start gap-4">
+          <input
+            type="checkbox"
+            id="user-attestation"
+            checked={userAttestation}
+            onChange={(e) => setUserAttestation(e.target.checked)}
+            className="mt-1 w-5 h-5 text-blue-600 border-amber-400 rounded focus:ring-2 focus:ring-blue-500 cursor-pointer"
+          />
+          <label htmlFor="user-attestation" className="flex-1 cursor-pointer">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-sm font-bold text-amber-900">⚖️ Legal Certification Required</span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+                MANDATORY
+              </span>
+            </div>
+            <p className="text-sm text-amber-900 leading-relaxed">
+              I certify that this information is authentic, unaltered, and satisfies Arkansas DHS requirements.
+              I understand that providing false information may result in penalties under state and federal law.
+            </p>
+            <p className="text-xs text-amber-700 mt-2 italic">
+              By checking this box, you acknowledge that all documents and attestations are subject to audit and legal review.
+            </p>
+          </label>
+        </div>
+      </div>
+
       {/* Checklist View Panel */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="bg-slate-900 px-6 py-3">
@@ -232,18 +274,31 @@ export default function ComplianceDashboardClient({
                       {gap.frequency && ['daily', 'weekly', 'monthly'].includes(gap.frequency) ? (
                         <button
                           onClick={() => handleSignAttestation(gap)}
-                          className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-w-[140px]"
+                          disabled={!userAttestation}
+                          className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-w-[140px] ${
+                            userAttestation
+                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                              : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                          }`}
+                          title={!userAttestation ? 'Please check the legal certification box above' : ''}
                         >
                           ✓ Sign Digital Attestation
                         </button>
                       ) : (
-                        <label className="cursor-pointer bg-white border border-slate-300 text-slate-800 hover:border-indigo-500 hover:text-indigo-600 px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all block text-center min-w-[120px]">
+                        <label className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all block text-center min-w-[120px] ${
+                          userAttestation
+                            ? 'cursor-pointer bg-white border border-slate-300 text-slate-800 hover:border-indigo-500 hover:text-indigo-600'
+                            : 'cursor-not-allowed bg-slate-100 border border-slate-300 text-slate-400'
+                        }`}
+                        title={!userAttestation ? 'Please check the legal certification box above' : ''}
+                        >
                           Upload Document
                           <input
                             type="file"
                             accept=".txt,.pdf,.png,.jpg,.jpeg"
                             className="hidden"
                             onChange={(e) => handleFileChange(e, gap)}
+                            disabled={!userAttestation}
                           />
                         </label>
                       )}
