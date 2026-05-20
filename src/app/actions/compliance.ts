@@ -1025,3 +1025,138 @@ export async function signAttestation(
     return { success: false, error: 'An unexpected error occurred' };
   }
 }
+
+/**
+ * Mark a compliance requirement as Not Applicable.
+ * Creates a facility_documents record indicating the requirement doesn't apply to this facility.
+ */
+export async function markNotApplicable(
+  facilityId: string,
+  requirementId: string,
+  reason: string,
+  userAttestation: boolean = false
+) {
+  try {
+    // 1. Authenticate user and verify facility ownership
+    const { userId, orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+    
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id, name')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+    
+    // 2. Fetch the requirement details
+    const { data: requirement, error: reqError } = await supabase
+      .from('compliance_criteria')
+      .select('requirement_name, required_document_type')
+      .eq('id', requirementId)
+      .single();
+    
+    if (reqError || !requirement) {
+      throw new Error('Requirement not found');
+    }
+    
+    // 3. Create a N/A record in facility_documents
+    const naDate = new Date().toISOString();
+    const { data: naRecord, error: insertError } = await supabase
+      .from('facility_documents')
+      .insert({
+        facility_id: facilityId,
+        name: `${requirement.requirement_name} - Marked N/A`,
+        document_type: requirement.required_document_type,
+        status: 'approved',
+        file_url: null,
+        metadata: {
+          is_not_applicable: true,
+          marked_at: naDate,
+          requirement_id: requirementId,
+          requirement_name: requirement.requirement_name,
+          reason: reason,
+          attestation: 'User swore under penalty of perjury this does not apply.'
+        }
+      })
+      .select()
+      .single();
+    
+    if (insertError) {
+      console.error('❌ Error marking N/A:', insertError);
+      return { success: false, error: 'Failed to mark requirement as N/A' };
+    }
+    
+    // Create immutable audit log for N/A marking
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'digital_attestation',
+      metadata: {
+        requirement_id: requirementId,
+        requirement_name: requirement.requirement_name,
+        na_record_id: naRecord.id,
+        is_not_applicable: true,
+        reason: reason,
+        user_attestation: userAttestation,
+        attestation_text: userAttestation
+          ? 'I certify that this information is authentic, unaltered, and satisfies Arkansas DHS requirements.'
+          : null
+      }
+    });
+    
+    console.log(`✅ Requirement marked N/A: ${requirement.requirement_name}`);
+    
+    return {
+      success: true,
+      naRecord,
+      message: `Successfully marked ${requirement.requirement_name} as Not Applicable`
+    };
+  } catch (error) {
+    console.error("❌ Error marking N/A:", error);
+    return { success: false, error: 'An unexpected error occurred' };
+  }
+}
+
+/**
+ * Update facility's active enrollment/attendance count.
+ */
+export async function updateEnrollment(facilityId: string, activeEnrollment: number) {
+  try {
+    // 1. Authenticate user and verify facility ownership
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+    
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+    
+    // 2. Update active_enrollment
+    const { error: updateError } = await supabase
+      .from('facilities')
+      .update({ active_enrollment: activeEnrollment })
+      .eq('id', facilityId);
+    
+    if (updateError) {
+      console.error('❌ Error updating enrollment:', updateError);
+      return { success: false, error: 'Failed to update enrollment' };
+    }
+    
+    console.log(`✅ Updated enrollment for facility ${facilityId}: ${activeEnrollment}`);
+    
+    return { success: true, activeEnrollment };
+  } catch (error) {
+    console.error("❌ Error updating enrollment:", error);
+    return { success: false, error: 'An unexpected error occurred' };
+  }
+}

@@ -161,16 +161,22 @@ export async function getRegulatoryStatus(facilityId: string) {
   const supabase = createAdminClient();
 
   try {
-    // 1. Fetch the facility profile with capacity and sub_classification for staffing calculations
+    // 1. Fetch the facility profile with capacity, active_enrollment, and sub_classification for staffing calculations
     const { data: facility } = await supabase
       .from('facilities')
-      .select('facility_type, capacity, sub_classification')
+      .select('facility_type, capacity, active_enrollment, sub_classification')
       .eq('id', facilityId)
       .single();
 
     const currentType = facility?.facility_type || 'childcare';
-    const capacity = facility?.capacity || 0;
     const subClassification = facility?.sub_classification;
+    
+    // Use active_enrollment if available and > 0, otherwise fall back to capacity
+    const enrollmentCount = facility?.active_enrollment && facility.active_enrollment > 0
+      ? facility.active_enrollment
+      : (facility?.capacity || 0);
+    
+    console.log(`📊 Enrollment: ${enrollmentCount} (active: ${facility?.active_enrollment || 'N/A'}, capacity: ${facility?.capacity || 0})`);
 
     // 2. Gather the active target requirements for this facility type AND specific sub-classification
     // This ensures we only pull rules that match the exact facility classification scope
@@ -240,16 +246,16 @@ export async function getRegulatoryStatus(facilityId: string) {
     const activeStaffCount = personnelCount ?? 0;
 
     // 5. Calculate required staff threshold based on regulatory sector rules
-    // Defensive check: only calculate if capacity is valid (not null, undefined, or 0)
+    // Defensive check: only calculate if enrollment count is valid (not null, undefined, or 0)
     let requiredStaff = 0;
-    if (capacity && capacity > 0) {
+    if (enrollmentCount && enrollmentCount > 0) {
       if (currentType === 'childcare') {
-        requiredStaff = Math.ceil(capacity / 10);
+        requiredStaff = Math.ceil(enrollmentCount / 10);
       } else if (currentType === 'nursing_home') {
-        requiredStaff = Math.ceil(capacity / 15);
+        requiredStaff = Math.ceil(enrollmentCount / 15);
       }
     } else {
-      console.log(`⚠️ Facility ${facilityId} has invalid or missing capacity (${capacity}). Skipping staffing ratio calculations.`);
+      console.log(`⚠️ Facility ${facilityId} has invalid or missing enrollment count (${enrollmentCount}). Skipping staffing ratio calculations.`);
     }
 
     // 6. Apply staffing ratio deficit penalty if understaffed

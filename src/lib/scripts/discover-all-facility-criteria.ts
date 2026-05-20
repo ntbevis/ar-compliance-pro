@@ -43,7 +43,7 @@ export async function discoverAllFacilityCriteria() {
         messages: [
           {
             role: "system",
-            content: "You are an elite systems engineer and state regulatory draftsman. Analyze the provided state licensing rule block and extract any explicit document, record ledger, insurance card, log sheet, or certificate that the facility infrastructure is forced to maintain to pass state inspection."
+            content: "You are an elite systems engineer and state regulatory draftsman. Analyze the provided state licensing rule block and extract any explicit document, record ledger, insurance card, log sheet, certificate, OR personnel/staffing requirement that the facility infrastructure is forced to maintain to pass state inspection."
           },
           {
             role: "user",
@@ -55,15 +55,16 @@ export async function discoverAllFacilityCriteria() {
               Legal Content: ${chunk.content}
               ---
 
-              Extract any explicit documentation requirements into structured JSON matching this format exactly:
+              Extract any explicit documentation OR personnel requirements into structured JSON matching this format exactly:
               {
                 "requirements": [
                   {
-                    "requirement_name": "Clear, descriptive title of the tracked requirement (e.g., 'Commercial General Liability Insurance Certificate')",
+                    "requirement_name": "Clear, descriptive title of the tracked requirement (e.g., 'Commercial General Liability Insurance Certificate' or 'Minimum Staff-to-Child Ratio')",
                     "required_document_type": "lowercase_snake_case_slug_for_system_keys",
                     "severity": "critical" | "standard",
                     "frequency": "string (see guidelines below)",
-                    "applies_to_subclass": "Indicate if this requirement is specific to the sub-classification mentioned above, or if it applies generally to all facilities of this type"
+                    "applies_to_subclass": "Indicate if this requirement is specific to the sub-classification mentioned above, or if it applies generally to all facilities of this type",
+                    "is_personnel_requirement": boolean (true if this is a staffing/personnel requirement, false for documents)
                   }
                 ]
               }
@@ -85,7 +86,15 @@ export async function discoverAllFacilityCriteria() {
               If the text implies an initial setup document that never expires, use "one-time".
               If the renewal period is unspecified, default to "annual".
               
-              If the text describes general behavior and does not mandate a retrievable file asset, document or permit, return an empty array.
+              PERSONNEL REQUIREMENT EXTRACTION:
+              If the text specifies staffing ratios (e.g., "one staff member per 10 children" or "minimum of 3 nurses per 50 residents"), extract this as a personnel requirement with:
+              - requirement_name: Descriptive title like "Minimum Staff-to-Child Ratio (1:10)"
+              - required_document_type: Use format "staffing_ratio_{facility_type}" (e.g., "staffing_ratio_childcare")
+              - severity: "critical" (staffing requirements are always critical)
+              - frequency: "ongoing" (staffing is continuously monitored)
+              - is_personnel_requirement: true
+              
+              If the text describes general behavior and does not mandate a retrievable file asset, document, permit, or staffing requirement, return an empty array.
             `
           }
         ],
