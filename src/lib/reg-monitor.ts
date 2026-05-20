@@ -10,12 +10,23 @@ export async function ingestRegulatoryText(rawText: string, metadata: any) {
   const supabase = createAdminClient();
 
   // --- CLEANUP BLOCK ---
-  // Ensures zero duplicate data if the sync is rerun.
-  console.log(`[Monitor] Clearing old vault entries for: ${metadata.source}...`);
-  await supabase
+  // Ensures zero duplicate data if the sync is rerun for this specific sub-classification.
+  // Only delete entries matching BOTH source AND sub_classification to preserve other sub-classifications.
+  const subClassification = metadata.sub_classification || null;
+  console.log(`[Monitor] Clearing old vault entries for: ${metadata.source} (sub_classification: ${subClassification})...`);
+  
+  let deleteQuery = supabase
     .from('regulatory_knowledge')
     .delete()
     .eq('metadata->>source', metadata.source);
+  
+  if (subClassification) {
+    deleteQuery = deleteQuery.eq('metadata->>sub_classification', subClassification);
+  } else {
+    deleteQuery = deleteQuery.is('metadata->>sub_classification', null);
+  }
+  
+  await deleteQuery;
 
   const textLength = rawText?.trim().length || 0;
   console.log(`[Monitor] Received ${textLength} characters for ${metadata.source}`);
