@@ -62,7 +62,7 @@ async function getAuthenticatedUserContext() {
 async function createAuditLog(params: {
   facilityId: string;
   userId: string;
-  actionType: 'document_upload' | 'digital_attestation' | 'document_approval' | 'document_rejection';
+  actionType: 'document_upload' | 'digital_attestation' | 'document_approval' | 'document_rejection' | 'enrollment_update';
   fileHash?: string;
   metadata: Record<string, any>;
 }) {
@@ -1127,12 +1127,12 @@ export async function markNotApplicable(
 export async function updateEnrollment(facilityId: string, activeEnrollment: number) {
   try {
     // 1. Authenticate user and verify facility ownership
-    const { orgId } = await getAuthenticatedUserContext();
+    const { userId, orgId } = await getAuthenticatedUserContext();
     const supabase = createAdminClient();
     
     const { data: facility, error: facilityError } = await supabase
       .from('facilities')
-      .select('id, org_id')
+      .select('id, org_id, active_enrollment')
       .eq('id', facilityId)
       .eq('org_id', orgId)
       .single();
@@ -1140,6 +1140,9 @@ export async function updateEnrollment(facilityId: string, activeEnrollment: num
     if (facilityError || !facility) {
       throw new Error('Unauthorized: Facility not found or does not belong to your organization');
     }
+    
+    // Store previous enrollment for audit log
+    const previousEnrollment = facility.active_enrollment;
     
     // 2. Update active_enrollment
     const { error: updateError } = await supabase
@@ -1152,7 +1155,19 @@ export async function updateEnrollment(facilityId: string, activeEnrollment: num
       return { success: false, error: 'Failed to update enrollment' };
     }
     
-    console.log(`✅ Updated enrollment for facility ${facilityId}: ${activeEnrollment}`);
+    // 3. Create audit log for enrollment change
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'enrollment_update',
+      metadata: {
+        previous_enrollment: previousEnrollment,
+        new_enrollment: activeEnrollment,
+        updated_by: userId
+      }
+    });
+    
+    console.log(`✅ Updated enrollment for facility ${facilityId}: ${previousEnrollment} → ${activeEnrollment}`);
     
     return { success: true, activeEnrollment };
   } catch (error) {

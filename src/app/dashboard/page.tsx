@@ -514,10 +514,10 @@ export default function ExecutiveOverview() {
             <div className="flex items-center gap-4">
               <div className="flex-1">
                 <label htmlFor="enrollment-input" className="block text-sm font-bold text-slate-800 mb-2">
-                  Update Active Enrollment/Attendance
+                  Baseline Active Enrollment
                 </label>
                 <p className="text-xs text-slate-500 mb-3">
-                  Enter the current number of children/residents actively enrolled. This affects staffing ratio calculations.
+                  Set your baseline enrolled headcount. You only need to update this when a child/resident officially enrolls or withdraws. The system uses this baseline to calculate your required minimum staff in the Personnel Vault.
                 </p>
                 <div className="flex items-center gap-3">
                   <input
@@ -527,7 +527,7 @@ export default function ExecutiveOverview() {
                     value={enrollmentInput}
                     onChange={(e) => setEnrollmentInput(e.target.value)}
                     placeholder="e.g., 45"
-                    className="px-4 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-32"
+                    className="px-4 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-32"
                     disabled={updatingEnrollment}
                   />
                   <button
