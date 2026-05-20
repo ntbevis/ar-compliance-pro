@@ -272,7 +272,7 @@ export default function OnboardingPage() {
           <div className="animate-in fade-in zoom-in-95 duration-700">
             <h1 className="text-5xl font-bold mb-4 tracking-tight">Audit Checklist.</h1>
             <p className="text-gray-400 mb-10 text-lg leading-relaxed">
-              We've cross-referenced Arkansas rulesets and structured your compliance pipeline criteria.
+              We&apos;ve cross-referenced Arkansas rulesets and structured your compliance pipeline criteria.
             </p>
 
             <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar divide-y divide-gray-900">

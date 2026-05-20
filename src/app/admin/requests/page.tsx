@@ -25,10 +25,6 @@ export default function AdminRequestsPage() {
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadRequests();
-  }, []);
-
   const loadRequests = async () => {
     setLoading(true);
     setError(null);
@@ -52,6 +48,10 @@ export default function AdminRequestsPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    loadRequests();
+  }, []);
 
   const handleApprove = async (requestId: string, businessName: string) => {
     if (!confirm(`Approve ${businessName} and send invitation email?`)) {

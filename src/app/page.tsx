@@ -209,7 +209,7 @@ export default function LandingPage() {
 
             <div className="mt-8 pt-6 border-t border-slate-200">
               <p className="text-center text-sm text-slate-600">
-                Don't have an account?{' '}
+                Don&apos;t have an account?{' '}
                 <Link href="/request-access" className="text-blue-600 hover:text-blue-700 font-semibold">
                   Request Access
                 </Link>

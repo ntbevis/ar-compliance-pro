@@ -1,5 +1,4 @@
 'use client';
-import { useState, useEffect } from 'react';
 
 // 1. Define the blueprint for what a Facility and the Props look like
 interface Facility {

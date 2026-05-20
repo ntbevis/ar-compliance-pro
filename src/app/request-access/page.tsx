@@ -1,12 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { submitRegistrationRequest } from 'src/app/actions/registration';
 import Link from 'next/link';
 
 export default function RequestAccessPage() {
-  const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -117,7 +115,7 @@ export default function RequestAccessPage() {
           </Link>
           <h1 className="text-4xl font-bold text-white mb-3">Request Platform Access</h1>
           <p className="text-blue-200 text-lg">
-            Join Arkansas's premier compliance management system
+            Join Arkansas&apos;s premier compliance management system
           </p>
         </div>
 

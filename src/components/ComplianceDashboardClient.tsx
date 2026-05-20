@@ -16,14 +16,12 @@ interface DashboardProps {
   facilityId: string;
   initialScore: number;
   initialGaps: Gap[];
-  totalPersonnel: number;
 }
 
 export default function ComplianceDashboardClient({
   facilityId,
   initialScore,
-  initialGaps,
-  totalPersonnel
+  initialGaps
 }: DashboardProps) {
   const router = useRouter();
   const supabase = createClient();

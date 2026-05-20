@@ -391,7 +391,6 @@ export default function ExecutiveOverview() {
           facilityId={selectedFacilityId}
           initialScore={data.score}
           initialGaps={data.gaps}
-          totalPersonnel={data.totalPersonnel}
         />
       )}
 

@@ -308,7 +308,7 @@ export async function handleDocumentUploadSuccess(facilityId: string, documentId
       const fullName = auditReport.extracted_personnel_name?.trim();
       
       // Build fuzzy matching query
-      let personnelQuery = supabase
+      const personnelQuery = supabase
         .from('personnel')
         .select('id, name')
         .eq('facility_id', facilityId)
@@ -489,7 +489,7 @@ export async function markEmployeeSeparated(personnelId: string) {
       return { success: false, error: 'Personnel record not found' };
     }
     
-    // @ts-ignore - Supabase join syntax
+    // @ts-expect-error - Supabase join syntax
     if (personnel.facilities?.org_id !== orgId) {
       console.error('❌ Unauthorized personnel access attempt');
       return { success: false, error: 'Unauthorized: Personnel does not belong to your organization' };
