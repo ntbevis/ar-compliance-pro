@@ -62,17 +62,28 @@ export async function discoverAllFacilityCriteria() {
                     "requirement_name": "Clear, descriptive title of the tracked requirement (e.g., 'Commercial General Liability Insurance Certificate')",
                     "required_document_type": "lowercase_snake_case_slug_for_system_keys",
                     "severity": "critical" | "standard",
-                    "frequency": "annual" | "monthly" | "weekly" | "daily",
+                    "frequency": "string (see guidelines below)",
                     "applies_to_subclass": "Indicate if this requirement is specific to the sub-classification mentioned above, or if it applies generally to all facilities of this type"
                   }
                 ]
               }
               
-              FREQUENCY GUIDELINES:
-              - "annual": Documents renewed yearly (licenses, certifications, insurance policies)
-              - "monthly": Monthly reports, logs, or attestations
+              FREQUENCY EXTRACTION GUIDELINES:
+              Determine the exact renewal frequency stated in the regulatory text. Standardize the output to strings like:
+              - "one-time": Initial setup documents that never expire (floor plans, facility layouts, initial certifications)
+              - "daily": Daily logs, attendance records, operational checklists
               - "weekly": Weekly inspections, checklists, or logs
-              - "daily": Daily logs, attendance records, or operational checklists
+              - "monthly": Monthly reports, logs, or attestations
+              - "quarterly": Quarterly reports or reviews
+              - "biannual": Every 6 months
+              - "annual": Documents renewed yearly (licenses, certifications, insurance policies)
+              - "2_years": Documents renewed every 2 years
+              - "3_years": Documents renewed every 3 years
+              - "5_years": Documents renewed every 5 years
+              - "10_years": Documents renewed every 10 years
+              
+              If the text implies an initial setup document that never expires, use "one-time".
+              If the renewal period is unspecified, default to "annual".
               
               If the text describes general behavior and does not mandate a retrievable file asset, document or permit, return an empty array.
             `

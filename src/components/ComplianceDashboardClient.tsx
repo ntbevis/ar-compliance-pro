@@ -10,7 +10,7 @@ interface Gap {
   name: string;
   typeKey: string;
   severity: 'critical' | 'standard';
-  frequency?: 'annual' | 'monthly' | 'weekly' | 'daily';
+  frequency?: string; // Dynamic frequency: 'one-time', 'daily', 'weekly', 'monthly', 'annual', '2_years', '5_years', etc.
 }
 
 interface DashboardProps {
@@ -199,13 +199,18 @@ export default function ComplianceDashboardClient({
             {gaps.map((gap) => (
               <div key={gap.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 hover:bg-slate-50/50 transition-colors">
                 <div className="space-y-0.5">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-semibold text-slate-800 text-sm">{gap.name}</span>
                     <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
                       gap.severity === 'critical' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'
                     }`}>
                       {gap.severity.toUpperCase()}
                     </span>
+                    {gap.frequency && (
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                        {gap.frequency.replace(/_/g, ' ').toUpperCase()}
+                      </span>
+                    )}
                   </div>
                   <p className="text-[11px] text-slate-400 font-mono">Requirement Key: {gap.typeKey}</p>
                 </div>
