@@ -58,12 +58,12 @@ export async function syncLiveStateRegulations(targetSubClassification?: string)
     try {
       console.log(`📂 Ingesting local regulatory document: ${repo.name}...`);
       
-      // 1. Read the local file from the seed-laws directory
-      const localFilePath = path.join(process.cwd(), 'src/app/admin/seed-laws', repo.fileName);
+      // 1. Read the local file from the regulatory-docs directory
+      const localFilePath = path.join(process.cwd(), 'regulatory-docs', repo.fileName);
       console.log(`📂 Loading file from: ${localFilePath}`);
 
       if (!fs.existsSync(localFilePath)) {
-        throw new Error(`File missing locally: ${localFilePath}. Please ensure the PDF is placed in src/app/admin/seed-laws/`);
+        throw new Error(`File missing locally: ${localFilePath}. Please ensure the PDF is placed in regulatory-docs/`);
       }
 
       // 2. Load the file buffer
