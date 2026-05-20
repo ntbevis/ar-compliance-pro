@@ -736,3 +736,136 @@ export async function toggleUserStatus(
     };
   }
 }
+
+/**
+ * Get available personnel roles for a facility based on its classification.
+ * Pulls from AI-discovered regulatory_roles table.
+ */
+export async function getAvailableRoles(facilityId: string) {
+  try {
+    // 1. Authenticate user and get their organization context
+    const { orgId } = await getAuthenticatedUserContext();
+    
+    // 2. Verify facility belongs to user's organization and get classification
+    const supabase = createAdminClient();
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id, facility_type, sub_classification')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+    
+    const facilityType = facility.facility_type;
+    const subClassification = facility.sub_classification;
+    
+    // 3. Query regulatory_roles table for applicable roles
+    let rolesQuery = supabase
+      .from('regulatory_roles')
+      .select('role_name')
+      .eq('facility_type', facilityType);
+    
+    // Add sub-classification filter if available
+    if (subClassification) {
+      rolesQuery = rolesQuery.eq('sub_classification', subClassification);
+    }
+    
+    const { data: roles, error: rolesError } = await rolesQuery;
+    
+    if (rolesError) {
+      console.error('❌ Error querying regulatory_roles:', rolesError);
+      return { success: false, error: 'Failed to fetch available roles', roles: [] };
+    }
+    
+    // Extract unique role names
+    const roleNames = Array.from(new Set((roles || []).map(r => r.role_name))).sort();
+    
+    console.log(`✅ Found ${roleNames.length} applicable roles for ${facilityType}${subClassification ? ` (${subClassification})` : ''}`);
+    
+    return { success: true, roles: roleNames };
+  } catch (error) {
+    console.error("❌ Error fetching available roles:", error);
+    return { success: false, error: 'An unexpected error occurred', roles: [] };
+  }
+}
+
+/**
+ * Add a new personnel member to a facility with attestation tracking.
+ */
+export async function addPersonnel(
+  facilityId: string,
+  personnelData: {
+    name: string;
+    role: string;
+    hire_date: string;
+    attestation_frequency: 'annual' | 'biannual' | 'quarterly' | 'monthly';
+  }
+) {
+  try {
+    // 1. Authenticate user and verify facility ownership
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+    
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+    
+    // 2. Calculate next attestation date based on frequency
+    const hireDate = new Date(personnelData.hire_date);
+    const nextAttestationDate = new Date(hireDate);
+    
+    switch (personnelData.attestation_frequency) {
+      case 'monthly':
+        nextAttestationDate.setMonth(nextAttestationDate.getMonth() + 1);
+        break;
+      case 'quarterly':
+        nextAttestationDate.setMonth(nextAttestationDate.getMonth() + 3);
+        break;
+      case 'biannual':
+        nextAttestationDate.setMonth(nextAttestationDate.getMonth() + 6);
+        break;
+      case 'annual':
+        nextAttestationDate.setFullYear(nextAttestationDate.getFullYear() + 1);
+        break;
+    }
+    
+    // 3. Insert personnel record with attestation tracking
+    const { data: newPersonnel, error: insertError } = await supabase
+      .from('personnel')
+      .insert({
+        facility_id: facilityId,
+        name: personnelData.name,
+        role: personnelData.role,
+        hire_date: personnelData.hire_date,
+        status: 'active',
+        clearance_status: 'pending',
+        attestation_frequency: personnelData.attestation_frequency,
+        next_attestation_date: nextAttestationDate.toISOString().split('T')[0],
+        last_attestation_date: null
+      })
+      .select()
+      .single();
+    
+    if (insertError) {
+      console.error('❌ Error inserting personnel:', insertError);
+      return { success: false, error: 'Failed to add personnel member' };
+    }
+    
+    console.log(`✅ Successfully added personnel: ${personnelData.name} (${personnelData.role})`);
+    
+    return { success: true, personnel: newPersonnel };
+  } catch (error) {
+    console.error("❌ Error adding personnel:", error);
+    return { success: false, error: 'An unexpected error occurred' };
+  }
+}

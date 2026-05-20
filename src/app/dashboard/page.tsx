@@ -3,7 +3,7 @@
 import { useFacility } from 'src/context/FacilityContext';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { getFacilityComplianceData, getPersonnelData, getDocumentsData, markEmployeeSeparated, handleDocumentUploadSuccess, getSeparatedPersonnelData, getAllFacilitiesOverview } from 'src/app/actions/compliance';
+import { getFacilityComplianceData, getPersonnelData, getDocumentsData, markEmployeeSeparated, handleDocumentUploadSuccess, getSeparatedPersonnelData, getAllFacilitiesOverview, getAvailableRoles, addPersonnel } from 'src/app/actions/compliance';
 import { createClient } from 'src/app/utils/supabase/client';
 import ComplianceDashboardClient from 'src/components/ComplianceDashboardClient';
 
@@ -47,6 +47,86 @@ export default function ExecutiveOverview() {
     message: string;
   } | null>(null);
   const [selectedAuditReport, setSelectedAuditReport] = useState<DocumentRecord | null>(null);
+  
+  // Personnel form state
+  const [showAddPersonnelForm, setShowAddPersonnelForm] = useState(false);
+  const [availableRoles, setAvailableRoles] = useState<string[]>([]);
+  const [loadingRoles, setLoadingRoles] = useState(false);
+  const [addingPersonnel, setAddingPersonnel] = useState(false);
+  const [personnelFormData, setPersonnelFormData] = useState({
+    name: '',
+    role: '',
+    hire_date: new Date().toISOString().split('T')[0],
+    attestation_frequency: 'annual' as 'annual' | 'biannual' | 'quarterly' | 'monthly'
+  });
+
+  // Load available roles when form is opened
+  useEffect(() => {
+    if (showAddPersonnelForm && selectedFacilityId && selectedFacilityId !== 'all') {
+      loadAvailableRoles();
+    }
+  }, [showAddPersonnelForm, selectedFacilityId]);
+
+  const loadAvailableRoles = async () => {
+    if (!selectedFacilityId || selectedFacilityId === 'all') return;
+    
+    setLoadingRoles(true);
+    try {
+      const result = await getAvailableRoles(selectedFacilityId);
+      if (result.success) {
+        setAvailableRoles(result.roles);
+      } else {
+        alert(`Failed to load roles: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error loading roles:', error);
+    } finally {
+      setLoadingRoles(false);
+    }
+  };
+
+  const handleAddPersonnel = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!selectedFacilityId || selectedFacilityId === 'all') {
+      alert('Please select a specific facility first');
+      return;
+    }
+    
+    if (!personnelFormData.name || !personnelFormData.role) {
+      alert('Please fill in all required fields');
+      return;
+    }
+    
+    setAddingPersonnel(true);
+    try {
+      const result = await addPersonnel(selectedFacilityId, personnelFormData);
+      
+      if (result.success) {
+        alert(`✅ Successfully added ${personnelFormData.name} to the roster!`);
+        
+        // Reset form and close
+        setPersonnelFormData({
+          name: '',
+          role: '',
+          hire_date: new Date().toISOString().split('T')[0],
+          attestation_frequency: 'annual'
+        });
+        setShowAddPersonnelForm(false);
+        
+        // Reload personnel data
+        const personnel = await getPersonnelData(selectedFacilityId);
+        setPersonnelData(personnel);
+      } else {
+        alert(`❌ Failed to add personnel: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error adding personnel:', error);
+      alert('❌ An unexpected error occurred');
+    } finally {
+      setAddingPersonnel(false);
+    }
+  };
 
   // Handle employee separation with confirmation
   const handleSeparateEmployee = async (personnelId: string, employeeName: string) => {
@@ -406,10 +486,20 @@ export default function ExecutiveOverview() {
               </p>
             </div>
             
-            {/* Archive View Toggle Button */}
-            <button
-              onClick={() => setShowArchiveView(!showArchiveView)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all border"
+            {/* Action Buttons */}
+            <div className="flex items-center gap-3">
+              {!showArchiveView && (
+                <button
+                  onClick={() => setShowAddPersonnelForm(!showAddPersonnelForm)}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all bg-blue-600 text-white hover:bg-blue-700"
+                >
+                  ➕ Add Employee
+                </button>
+              )}
+              
+              <button
+                onClick={() => setShowArchiveView(!showArchiveView)}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all border"
               style={{
                 backgroundColor: showArchiveView ? '#f1f5f9' : '#ffffff',
                 borderColor: showArchiveView ? '#94a3b8' : '#e2e8f0',
@@ -423,7 +513,113 @@ export default function ExecutiveOverview() {
                 </span>
               )}
             </button>
+            </div>
           </div>
+          
+          {/* Add Personnel Form */}
+          {showAddPersonnelForm && !showArchiveView && (
+            <div className="mb-6 p-6 bg-blue-50 border border-blue-200 rounded-xl">
+              <h3 className="text-md font-bold text-slate-800 mb-4">Add New Employee</h3>
+              <form onSubmit={handleAddPersonnel} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Name Field */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Full Name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={personnelFormData.name}
+                      onChange={(e) => setPersonnelFormData({ ...personnelFormData, name: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="John Doe"
+                      required
+                    />
+                  </div>
+                  
+                  {/* Role Field - Dynamic from Database */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Role <span className="text-red-500">*</span>
+                    </label>
+                    {loadingRoles ? (
+                      <div className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-slate-50 text-slate-400">
+                        Loading roles...
+                      </div>
+                    ) : availableRoles.length === 0 ? (
+                      <div className="w-full px-3 py-2 border border-amber-300 rounded-lg bg-amber-50 text-amber-700 text-sm">
+                        ⚠️ No roles found. Run role discovery first.
+                      </div>
+                    ) : (
+                      <select
+                        value={personnelFormData.role}
+                        onChange={(e) => setPersonnelFormData({ ...personnelFormData, role: e.target.value })}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        required
+                      >
+                        <option value="">Select a role...</option>
+                        {availableRoles.map((role) => (
+                          <option key={role} value={role}>
+                            {role}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                  
+                  {/* Hire Date Field */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Hire Date <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={personnelFormData.hire_date}
+                      onChange={(e) => setPersonnelFormData({ ...personnelFormData, hire_date: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+                  
+                  {/* Attestation Frequency Field */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Attestation Frequency <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={personnelFormData.attestation_frequency}
+                      onChange={(e) => setPersonnelFormData({ ...personnelFormData, attestation_frequency: e.target.value as any })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    >
+                      <option value="monthly">Monthly</option>
+                      <option value="quarterly">Quarterly</option>
+                      <option value="biannual">Biannual (Every 6 months)</option>
+                      <option value="annual">Annual (Yearly)</option>
+                    </select>
+                  </div>
+                </div>
+                
+                {/* Form Actions */}
+                <div className="flex items-center gap-3 pt-2">
+                  <button
+                    type="submit"
+                    disabled={addingPersonnel || availableRoles.length === 0}
+                    className="px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {addingPersonnel ? 'Adding...' : 'Add Employee'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddPersonnelForm(false)}
+                    className="px-6 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
           
           {(showArchiveView ? separatedPersonnelData.length === 0 : personnelData.length === 0) ? (
             <div className="border border-dashed border-slate-200 rounded-xl p-12 text-center italic text-slate-400 text-xs bg-slate-50">
