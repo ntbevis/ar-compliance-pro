@@ -3,13 +3,14 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from 'src/app/utils/supabase/client';
-import { handleDocumentUploadSuccess } from 'src/app/actions/compliance';
+import { handleDocumentUploadSuccess, signAttestation } from 'src/app/actions/compliance';
 
 interface Gap {
   id: string;
   name: string;
   typeKey: string;
   severity: 'critical' | 'standard';
+  frequency?: 'annual' | 'monthly' | 'weekly' | 'daily';
 }
 
 interface DashboardProps {
@@ -29,6 +30,7 @@ export default function ComplianceDashboardClient({
   const [gaps, setGaps] = useState<Gap[]>(initialGaps);
   const [score, setScore] = useState<number>(initialScore);
   const [uploadingId, setUploadingId] = useState<string | null>(null);
+  const [signingAttestationId, setSigningAttestationId] = useState<string | null>(null);
   const [auditFeedback, setAuditFeedback] = useState<{
     status: string;
     code?: string;
@@ -106,6 +108,37 @@ export default function ComplianceDashboardClient({
     }
   };
 
+  const handleSignAttestation = async (gap: Gap) => {
+    if (!confirm(`Sign digital attestation for: ${gap.name}?\n\nThis will mark the requirement as satisfied without uploading a physical document.`)) {
+      return;
+    }
+
+    setSigningAttestationId(gap.id);
+    try {
+      const result = await signAttestation(facilityId, gap.id);
+      
+      if (result.success) {
+        alert(`✅ ${result.message}`);
+        
+        // Remove the gap from the list
+        setGaps(prevGaps => prevGaps.filter(g => g.id !== gap.id));
+        
+        // Update score
+        const newScore = Math.min(100, score + Math.ceil(100 / (gaps.length || 1)));
+        setScore(newScore);
+        
+        router.refresh();
+      } else {
+        alert(`❌ Failed to sign attestation: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error signing attestation:', error);
+      alert('❌ An unexpected error occurred');
+    } finally {
+      setSigningAttestationId(null);
+    }
+  };
+
   return (
     <div className="space-y-6 max-w-6xl mx-auto text-slate-800">
       {/* Dynamic Summary Cards */}
@@ -177,22 +210,39 @@ export default function ComplianceDashboardClient({
                   <p className="text-[11px] text-slate-400 font-mono">Requirement Key: {gap.typeKey}</p>
                 </div>
 
-                <div className="flex items-center">
+                <div className="flex items-center gap-2">
                   {uploadingId === gap.id ? (
                     <div className="flex items-center gap-2 text-indigo-600 font-bold text-xs animate-pulse">
                       <span className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></span>
                       AI Verification running...
                     </div>
+                  ) : signingAttestationId === gap.id ? (
+                    <div className="flex items-center gap-2 text-emerald-600 font-bold text-xs animate-pulse">
+                      <span className="w-3.5 h-3.5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin"></span>
+                      Signing attestation...
+                    </div>
                   ) : (
-                    <label className="cursor-pointer bg-white border border-slate-300 text-slate-800 hover:border-indigo-500 hover:text-indigo-600 px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all block text-center min-w-[120px]">
-                      Upload Document
-                      <input
-                        type="file"
-                        accept=".txt,.pdf,.png,.jpg,.jpeg"
-                        className="hidden"
-                        onChange={(e) => handleFileChange(e, gap)}
-                      />
-                    </label>
+                    <>
+                      {/* Show attestation button for frequent requirements (daily, weekly, monthly) */}
+                      {gap.frequency && ['daily', 'weekly', 'monthly'].includes(gap.frequency) ? (
+                        <button
+                          onClick={() => handleSignAttestation(gap)}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-w-[140px]"
+                        >
+                          ✓ Sign Digital Attestation
+                        </button>
+                      ) : (
+                        <label className="cursor-pointer bg-white border border-slate-300 text-slate-800 hover:border-indigo-500 hover:text-indigo-600 px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all block text-center min-w-[120px]">
+                          Upload Document
+                          <input
+                            type="file"
+                            accept=".txt,.pdf,.png,.jpg,.jpeg"
+                            className="hidden"
+                            onChange={(e) => handleFileChange(e, gap)}
+                          />
+                        </label>
+                      )}
+                    </>
                   )}
                 </div>
               </div>

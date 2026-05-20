@@ -869,3 +869,74 @@ export async function addPersonnel(
     return { success: false, error: 'An unexpected error occurred' };
   }
 }
+
+/**
+ * Sign a digital attestation for a compliance requirement.
+ * Creates a facility_documents record with digital_attestation metadata.
+ */
+export async function signAttestation(facilityId: string, requirementId: string) {
+  try {
+    // 1. Authenticate user and verify facility ownership
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+    
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id, name')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+    
+    // 2. Fetch the requirement details
+    const { data: requirement, error: reqError } = await supabase
+      .from('compliance_criteria')
+      .select('requirement_name, required_document_type, frequency')
+      .eq('id', requirementId)
+      .single();
+    
+    if (reqError || !requirement) {
+      throw new Error('Requirement not found');
+    }
+    
+    // 3. Create a digital attestation record in facility_documents
+    const attestationDate = new Date().toISOString();
+    const { data: attestation, error: insertError } = await supabase
+      .from('facility_documents')
+      .insert({
+        facility_id: facilityId,
+        name: `${requirement.requirement_name} - Digital Attestation`,
+        document_type: requirement.required_document_type,
+        status: 'approved',
+        file_url: null, // No physical file for digital attestations
+        metadata: {
+          attestation_type: 'digital_attestation',
+          signed_at: attestationDate,
+          requirement_id: requirementId,
+          requirement_name: requirement.requirement_name,
+          frequency: requirement.frequency
+        }
+      })
+      .select()
+      .single();
+    
+    if (insertError) {
+      console.error('❌ Error creating attestation:', insertError);
+      return { success: false, error: 'Failed to create digital attestation' };
+    }
+    
+    console.log(`✅ Digital attestation signed for: ${requirement.requirement_name}`);
+    
+    return {
+      success: true,
+      attestation,
+      message: `Successfully signed attestation for ${requirement.requirement_name}`
+    };
+  } catch (error) {
+    console.error("❌ Error signing attestation:", error);
+    return { success: false, error: 'An unexpected error occurred' };
+  }
+}

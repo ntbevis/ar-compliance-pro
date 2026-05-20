@@ -62,10 +62,18 @@ export async function discoverAllFacilityCriteria() {
                     "requirement_name": "Clear, descriptive title of the tracked requirement (e.g., 'Commercial General Liability Insurance Certificate')",
                     "required_document_type": "lowercase_snake_case_slug_for_system_keys",
                     "severity": "critical" | "standard",
+                    "frequency": "annual" | "monthly" | "weekly" | "daily",
                     "applies_to_subclass": "Indicate if this requirement is specific to the sub-classification mentioned above, or if it applies generally to all facilities of this type"
                   }
                 ]
               }
+              
+              FREQUENCY GUIDELINES:
+              - "annual": Documents renewed yearly (licenses, certifications, insurance policies)
+              - "monthly": Monthly reports, logs, or attestations
+              - "weekly": Weekly inspections, checklists, or logs
+              - "daily": Daily logs, attendance records, or operational checklists
+              
               If the text describes general behavior and does not mandate a retrievable file asset, document or permit, return an empty array.
             `
           }
@@ -94,7 +102,8 @@ export async function discoverAllFacilityCriteria() {
               sub_classification: requirementSubClass,
               requirement_name: req.requirement_name,
               required_document_type: req.required_document_type,
-              severity: req.severity
+              severity: req.severity,
+              frequency: req.frequency || 'annual' // Default to annual if not specified
             });
 
           if (insertError) {
