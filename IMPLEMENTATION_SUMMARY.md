@@ -9,12 +9,23 @@ This document summarizes the comprehensive architectural re-engineering complete
 
 ### Changes Made to `src/lib/reg-monitor.ts`:
 
-1. **Fixed Sub-Classification Query Bug**
-   - **Problem**: PostgREST `.or()` query was causing syntax errors and dropping rules
-   - **Solution**: COMPLETELY REMOVED sub-classification filtering from query
-   - **Query now**: ONLY filters by `facility_type` and `is_personnel_requirement`
-   - **Result**: Simple, reliable query that returns all rules for the facility type
-   - **Note**: Sub-classification filtering can be added later if needed, but kept simple for stability
+1. **Fixed Critical Query Failure Using "Dumb Fetch + Smart Filter" Pattern**
+   - **Problem**: Supabase query failures were crashing the entire UI (including dynamic staffing rules)
+   - **Solution**: Implemented fail-safe architecture
+   - **THE DUMB FETCH**: Query fetches ALL rules with zero filters
+     ```typescript
+     const { data: allRules, error: rulesError } = await supabase
+       .from('compliance_criteria')
+       .select('*');
+     ```
+   - **Graceful Error Handling**: Does NOT throw on query error (logs only)
+   - **THE SMART FILTER**: Filters rules in TypeScript after fetch
+     ```typescript
+     const activeRules = (allRules || []).filter(rule => {
+       return rule.facility_type === currentType && rule.is_personnel_requirement === false;
+     });
+     ```
+   - **Result**: Query failures no longer crash the UI; staffing ratio logic always runs
 
 2. **Updated Scoring Logic to Exclude Daily/Weekly**
    - Daily and weekly frequency rules are NOW EXCLUDED from the `calculatedScore`

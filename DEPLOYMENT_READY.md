@@ -49,7 +49,7 @@ UPDATE profiles SET role = 'owner' WHERE role IS NULL;
 
 | File | What Changed |
 |------|-------------|
-| `src/lib/reg-monitor.ts` | • **CRITICAL FIX**: Removed problematic PostgREST `.or()` query<br>• Query now ONLY filters by facility_type (simple & stable)<br>• Scoring excludes daily/weekly requirements<br>• Accurate frequency passthrough to frontend |
+| `src/lib/reg-monitor.ts` | • **CRITICAL FIX**: "Dumb Fetch + Smart Filter" pattern prevents UI crashes<br>• Query fetches ALL rules (no filters) for maximum stability<br>• Graceful error handling - no more throw on query failure<br>• TypeScript filtering applied after fetch<br>• Scoring excludes daily/weekly requirements<br>• Accurate frequency passthrough to frontend |
 | `src/app/actions/compliance.ts` | • Added RBAC to `getAllFacilitiesOverview()`<br>• Enhanced audit logs with user names/roles<br>• New: `submitBulkDailyAttestation()`<br>• New: `getDailyRequirements()`<br>• New: `getAuditLogs()`<br>• New: `getCurrentUserRole()` |
 
 ### Frontend Changes
@@ -196,9 +196,12 @@ UPDATE facilities SET director_id = (SELECT id FROM profiles WHERE email = 'mana
 ## Troubleshooting
 
 ### Issue: All compliance rules disappeared from UI
-**Cause**: PostgREST `.or()` query syntax error in sub-classification filtering
-**Solution**: ✅ FIXED - Query now simplified to ONLY filter by `facility_type`
-**Verification**: Check browser console - should see "📋 Loaded X compliance rules for facility type: childcare"
+**Cause**: Supabase query failures were throwing errors and crashing the function
+**Solution**: ✅ FIXED - "Dumb Fetch + Smart Filter" pattern implemented
+- Query now fetches ALL rules (no filters that can fail)
+- Errors are logged but don't crash the function
+- Filtering happens safely in TypeScript
+**Verification**: Check browser console - should see "📋 Loaded X total rules, filtered to Y applicable rules for facility type: childcare"
 
 ### Issue: "Column 'role' does not exist"
 **Solution**: Run the database migration SQL

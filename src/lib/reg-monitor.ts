@@ -178,22 +178,24 @@ export async function getRegulatoryStatus(facilityId: string) {
     
     console.log(`📊 Enrollment: ${enrollmentCount} (active: ${facility?.active_enrollment || 'N/A'}, capacity: ${facility?.capacity || 0})`);
 
-    // 2. Gather the active target requirements for this facility type
-    // SIMPLIFIED QUERY: Only filter by facility_type and is_personnel_requirement
-    // All sub-classification logic removed to avoid PostgREST .or() issues
-    const { data: activeRules, error: rulesError } = await supabase
+    // 2. THE DUMB FETCH: Get ALL rules without any filtering
+    // This prevents Supabase query errors from crashing the entire UI
+    const { data: allRules, error: rulesError } = await supabase
       .from('compliance_criteria')
-      .select('*')
-      .eq('facility_type', currentType)
-      .eq('is_personnel_requirement', false);
+      .select('*');
     
     if (rulesError) {
-      console.error('❌ Error fetching compliance rules:', rulesError);
-      throw new Error(`Failed to fetch compliance criteria: ${rulesError.message}`);
+      console.error('❌ Supabase fetch error:', rulesError);
+      // DO NOT throw here - fail gracefully so staffing ratio logic can still run
     }
     
-    console.log(`📋 Loaded ${activeRules?.length || 0} compliance rules for facility type: ${currentType}`);
+    // 3. THE SMART FILTER: Filter rules in TypeScript
+    // Filter for this facility type and exclude personnel requirements
+    const activeRules = (allRules || []).filter(rule => {
+      return rule.facility_type === currentType && rule.is_personnel_requirement === false;
+    });
     
+    console.log(`📋 Loaded ${allRules?.length || 0} total rules, filtered to ${activeRules.length} applicable rules for facility type: ${currentType}`);
 
     // 4. Gather what files the facility has already successfully verified
     const { data: uploadedDocs } = await supabase
