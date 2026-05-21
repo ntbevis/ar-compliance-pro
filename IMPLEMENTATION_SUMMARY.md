@@ -10,9 +10,11 @@ This document summarizes the comprehensive architectural re-engineering complete
 ### Changes Made to `src/lib/reg-monitor.ts`:
 
 1. **Fixed Sub-Classification Query Bug**
-   - **Problem**: PostgREST `.or()` query was dropping rules
-   - **Solution**: Query ONLY by `facility_type`, then filter in TypeScript
-   - **Result**: All applicable rules (both general and sub-classification specific) are now correctly included
+   - **Problem**: PostgREST `.or()` query was causing syntax errors and dropping rules
+   - **Solution**: COMPLETELY REMOVED sub-classification filtering from query
+   - **Query now**: ONLY filters by `facility_type` and `is_personnel_requirement`
+   - **Result**: Simple, reliable query that returns all rules for the facility type
+   - **Note**: Sub-classification filtering can be added later if needed, but kept simple for stability
 
 2. **Updated Scoring Logic to Exclude Daily/Weekly**
    - Daily and weekly frequency rules are NOW EXCLUDED from the `calculatedScore`

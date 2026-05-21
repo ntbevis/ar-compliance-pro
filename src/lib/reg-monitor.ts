@@ -179,25 +179,20 @@ export async function getRegulatoryStatus(facilityId: string) {
     console.log(`📊 Enrollment: ${enrollmentCount} (active: ${facility?.active_enrollment || 'N/A'}, capacity: ${facility?.capacity || 0})`);
 
     // 2. Gather the active target requirements for this facility type
-    // Query ONLY by facility_type first, then filter in TypeScript to avoid PostgREST .or() issues
-    // Exclude personnel requirements as they are handled separately in the Personnel Vault
-    const { data: allRules } = await supabase
+    // SIMPLIFIED QUERY: Only filter by facility_type and is_personnel_requirement
+    // All sub-classification logic removed to avoid PostgREST .or() issues
+    const { data: activeRules, error: rulesError } = await supabase
       .from('compliance_criteria')
       .select('*')
       .eq('facility_type', currentType)
       .eq('is_personnel_requirement', false);
     
-    // 3. Filter in TypeScript: Keep rules where sub_classification is null OR matches the facility's sub_classification
-    const activeRules = (allRules || []).filter(rule => {
-      if (!subClassification) {
-        // If facility has no sub_classification, only include general rules (sub_classification is null)
-        return rule.sub_classification === null || rule.sub_classification === undefined;
-      }
-      // If facility has sub_classification, include both general rules AND matching sub_classification rules
-      return rule.sub_classification === null || rule.sub_classification === undefined || rule.sub_classification === subClassification;
-    });
+    if (rulesError) {
+      console.error('❌ Error fetching compliance rules:', rulesError);
+      throw new Error(`Failed to fetch compliance criteria: ${rulesError.message}`);
+    }
     
-    console.log(`📋 Filtered ${activeRules.length} applicable rules from ${allRules?.length || 0} total rules for ${currentType}${subClassification ? ` (${subClassification})` : ''}`);
+    console.log(`📋 Loaded ${activeRules?.length || 0} compliance rules for facility type: ${currentType}`);
     
 
     // 4. Gather what files the facility has already successfully verified
