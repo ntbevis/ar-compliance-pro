@@ -2,7 +2,7 @@
 import React, { createContext, useContext, useState } from 'react';
 
 // Define the available view tabs
-export type ViewType = 'overview' | 'personnel' | 'documents';
+export type ViewType = 'overview' | 'personnel' | 'documents' | 'audit_logs';
 
 type FacilityContextType = {
   selectedFacilityId: string; // 'all' or a specific UUID

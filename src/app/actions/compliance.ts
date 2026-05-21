@@ -55,15 +55,15 @@ async function getAuthenticatedUserContext() {
   };
 }
 
-// Helper to determine content type from file name extensions
 /**
  * Create an immutable audit log entry for compliance actions.
  * Provides legal protection and DHS compliance trail.
+ * Fetches user's full name from profiles for perfect historical attribution.
  */
 async function createAuditLog(params: {
   facilityId: string;
   userId: string;
-  actionType: 'document_upload' | 'digital_attestation' | 'document_approval' | 'document_rejection' | 'enrollment_update' | 'document_deletion';
+  actionType: 'document_upload' | 'digital_attestation' | 'document_approval' | 'document_rejection' | 'enrollment_update' | 'document_deletion' | 'bulk_attestation';
   fileHash?: string;
   metadata: Record<string, any>;
 }) {
@@ -73,6 +73,16 @@ async function createAuditLog(params: {
   const headersList = await headers();
   const ipAddress = headersList.get('x-forwarded-for') || headersList.get('x-real-ip') || 'unknown';
   
+  // Fetch user's full name from profiles for attribution
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('full_name, role')
+    .eq('id', params.userId)
+    .single();
+  
+  const userName = profile?.full_name || 'Unknown User';
+  const userRole = profile?.role || 'unknown';
+  
   const { error } = await supabase
     .from('audit_logs')
     .insert({
@@ -81,15 +91,21 @@ async function createAuditLog(params: {
       action_type: params.actionType,
       ip_address: ipAddress,
       file_hash: params.fileHash || null,
-      metadata: params.metadata
+      metadata: {
+        ...params.metadata,
+        user_name: userName,      // Store full name for historical attribution
+        user_role: userRole        // Store role at time of action
+      }
     });
   
   if (error) {
     console.error('❌ Failed to create audit log:', error);
   } else {
-    console.log(`✅ Audit log created: ${params.actionType} for facility ${params.facilityId}`);
+    console.log(`✅ Audit log created: ${params.actionType} by ${userName} (${userRole}) for facility ${params.facilityId}`);
   }
 }
+
+// Helper to determine content type from file name extensions
 
 function getMimeType(fileName: string): string {
   const ext = fileName.split('.').pop()?.toLowerCase();
@@ -673,20 +689,34 @@ export async function getDocumentsData(facilityId: string) {
 /**
  * Fetches all facilities with their compliance data for the master view.
  * Returns aggregated fleet overview with real-time compliance scores.
- * SECURITY: Filters facilities by authenticated user's organization.
+ * SECURITY: Filters facilities by authenticated user's organization and role.
+ * - If role is 'director', ONLY return facilities where director_id matches the user's ID.
+ * - If role is 'owner' or 'admin', return all facilities in the organization.
  */
 export async function getAllFacilitiesOverview() {
   try {
-    // 1. Authenticate user and get their organization context
-    const { orgId } = await getAuthenticatedUserContext();
+    // 1. Authenticate user and get their organization context + role
+    const { userId, orgId, role } = await getAuthenticatedUserContext();
     const supabase = createAdminClient();
     
-    // 2. Fetch all facilities belonging to user's organization
-    const { data: facilities, error } = await supabase
+    // 2. Build query with RBAC filtering
+    let facilitiesQuery = supabase
       .from('facilities')
-      .select('id, name, facility_type, sub_classification, capacity, active_enrollment, enrollment_updated_at')
+      .select('id, name, facility_type, sub_classification, capacity, active_enrollment, enrollment_updated_at, director_id')
       .eq('org_id', orgId) // Multi-tenant isolation filter
       .order('name', { ascending: true });
+    
+    // Apply role-based access control
+    if (role === 'director') {
+      // Directors can ONLY see facilities assigned to them
+      facilitiesQuery = facilitiesQuery.eq('director_id', userId);
+      console.log(`🔐 RBAC: Filtering facilities for director ${userId}`);
+    } else {
+      // Owners and admins see all facilities in the organization
+      console.log(`🔐 RBAC: User role '${role}' has full organization access`);
+    }
+    
+    const { data: facilities, error } = await facilitiesQuery;
 
     if (error) {
       console.error('❌ Error fetching facilities:', error);
@@ -694,6 +724,7 @@ export async function getAllFacilitiesOverview() {
     }
 
     if (!facilities || facilities.length === 0) {
+      console.log(`📋 No facilities found for user ${userId} (role: ${role})`);
       return [];
     }
 
@@ -1196,6 +1227,260 @@ export async function updateEnrollment(facilityId: string, activeEnrollment: num
   } catch (error) {
     console.error("❌ Error updating enrollment:", error);
     return { success: false, error: 'An unexpected error occurred' };
+  }
+}
+
+/**
+ * Fetch all active daily compliance requirements for the fleet.
+ * Used by bulk attestation widget to show available daily requirements.
+ */
+export async function getDailyRequirements() {
+  try {
+    // 1. Authenticate user
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+    
+    // 2. Fetch all facilities for the organization
+    const { data: facilities } = await supabase
+      .from('facilities')
+      .select('id, name, facility_type')
+      .eq('org_id', orgId)
+      .order('name', { ascending: true });
+    
+    if (!facilities || facilities.length === 0) {
+      return {
+        success: true,
+        facilities: [],
+        requirements: []
+      };
+    }
+    
+    // 3. Fetch all daily requirements across all facility types
+    const facilityTypes = Array.from(new Set(facilities.map(f => f.facility_type)));
+    const { data: requirements } = await supabase
+      .from('compliance_criteria')
+      .select('id, requirement_name, required_document_type, facility_type')
+      .in('facility_type', facilityTypes)
+      .ilike('frequency', 'daily')
+      .eq('is_personnel_requirement', false);
+    
+    return {
+      success: true,
+      facilities: facilities,
+      requirements: requirements || []
+    };
+  } catch (error) {
+    console.error('❌ Error fetching daily requirements:', error);
+    return {
+      success: false,
+      error: 'Failed to fetch daily requirements',
+      facilities: [],
+      requirements: []
+    };
+  }
+}
+
+/**
+ * Submit bulk daily attestations for multiple facilities.
+ * Owner-only feature for signing off on daily operational requirements across the fleet.
+ */
+export async function submitBulkDailyAttestation(params: {
+  facilityIds: string[];
+  requirementIds: string[];
+  attestationNote: string;
+}) {
+  try {
+    // 1. Authenticate user and verify owner role
+    const { userId, orgId, role } = await getAuthenticatedUserContext();
+    
+    if (role !== 'owner' && role !== 'admin') {
+      return {
+        success: false,
+        error: 'Unauthorized: Only organization owners can submit bulk attestations'
+      };
+    }
+    
+    const supabase = createAdminClient();
+    
+    // 2. Verify all facilities belong to user's organization
+    const { data: facilities, error: facilitiesError } = await supabase
+      .from('facilities')
+      .select('id, name')
+      .in('id', params.facilityIds)
+      .eq('org_id', orgId);
+    
+    if (facilitiesError || !facilities || facilities.length !== params.facilityIds.length) {
+      return {
+        success: false,
+        error: 'One or more facilities not found or unauthorized'
+      };
+    }
+    
+    // 3. Fetch requirement details
+    const { data: requirements, error: reqError } = await supabase
+      .from('compliance_criteria')
+      .select('id, requirement_name, required_document_type, frequency')
+      .in('id', params.requirementIds);
+    
+    if (reqError || !requirements) {
+      return {
+        success: false,
+        error: 'Failed to fetch requirement details'
+      };
+    }
+    
+    // 4. Create attestation records for each facility-requirement combination
+    const attestationTimestamp = new Date().toISOString();
+    const attestationRecords = [];
+    const auditLogRecords = [];
+    
+    for (const facility of facilities) {
+      for (const requirement of requirements) {
+        // Create facility_documents record
+        attestationRecords.push({
+          facility_id: facility.id,
+          name: `${requirement.requirement_name} - Bulk Daily Attestation`,
+          document_type: requirement.required_document_type,
+          status: 'approved',
+          file_url: null,
+          metadata: {
+            attestation_type: 'bulk_daily_attestation',
+            signed_at: attestationTimestamp,
+            requirement_id: requirement.id,
+            requirement_name: requirement.requirement_name,
+            frequency: requirement.frequency,
+            attestation_note: params.attestationNote,
+            bulk_attestation: true
+          }
+        });
+        
+        // Prepare audit log (will be created after attestations)
+        auditLogRecords.push({
+          facilityId: facility.id,
+          requirementId: requirement.id,
+          requirementName: requirement.requirement_name
+        });
+      }
+    }
+    
+    // 5. Bulk insert attestation records
+    const { error: insertError } = await supabase
+      .from('facility_documents')
+      .insert(attestationRecords);
+    
+    if (insertError) {
+      console.error('❌ Error creating bulk attestations:', insertError);
+      return {
+        success: false,
+        error: 'Failed to create attestation records'
+      };
+    }
+    
+    // 6. Create audit logs for each attestation
+    for (const auditRecord of auditLogRecords) {
+      await createAuditLog({
+        facilityId: auditRecord.facilityId,
+        userId,
+        actionType: 'bulk_attestation',
+        metadata: {
+          requirement_id: auditRecord.requirementId,
+          requirement_name: auditRecord.requirementName,
+          attestation_note: params.attestationNote,
+          facility_count: facilities.length,
+          requirement_count: requirements.length
+        }
+      });
+    }
+    
+    console.log(`✅ Bulk attestation completed: ${attestationRecords.length} records created for ${facilities.length} facilities`);
+    
+    revalidatePath('/dashboard');
+    
+    return {
+      success: true,
+      message: `Successfully signed ${requirements.length} requirements for ${facilities.length} facilities (${attestationRecords.length} total attestations)`
+    };
+  } catch (error) {
+    console.error("❌ Error submitting bulk attestation:", error);
+    return {
+      success: false,
+      error: 'An unexpected error occurred'
+    };
+  }
+}
+
+/**
+ * Get the current user's role and context.
+ * Used for UI-level RBAC decisions (hiding/showing features).
+ */
+export async function getCurrentUserRole() {
+  try {
+    const { userId, orgId, role } = await getAuthenticatedUserContext();
+    
+    return {
+      success: true,
+      userId,
+      orgId,
+      role
+    };
+  } catch (error: any) {
+    console.error('❌ Error getting current user role:', error);
+    return {
+      success: false,
+      error: error.message,
+      role: null
+    };
+  }
+}
+
+/**
+ * Fetch audit logs for the organization or specific facility.
+ * Returns comprehensive audit trail with user attribution.
+ * SECURITY: Filters by organization and applies RBAC.
+ */
+export async function getAuditLogs(facilityId?: string) {
+  try {
+    // 1. Authenticate user and get their context
+    const { userId, orgId, role } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+    
+    // 2. Build query based on RBAC
+    let logsQuery = supabase
+      .from('audit_logs')
+      .select('*, facilities!inner(name, org_id, director_id)')
+      .eq('facilities.org_id', orgId)
+      .order('created_at', { ascending: false })
+      .limit(500); // Limit to most recent 500 entries
+    
+    // If specific facility requested, filter to that facility
+    if (facilityId) {
+      logsQuery = logsQuery.eq('facility_id', facilityId);
+    }
+    
+    // If director role, only show logs for their assigned facilities
+    if (role === 'director') {
+      logsQuery = logsQuery.eq('facilities.director_id', userId);
+    }
+    
+    const { data: logs, error } = await logsQuery;
+    
+    if (error) {
+      console.error('❌ Error fetching audit logs:', error);
+      return [];
+    }
+    
+    // Transform the data to include facility name at the top level
+    const transformedLogs = (logs || []).map(log => ({
+      ...log,
+      facility_name: log.facilities?.name || 'Unknown Facility',
+      user_name: log.metadata?.user_name || 'Unknown User',
+      user_role: log.metadata?.user_role || 'unknown'
+    }));
+    
+    return transformedLogs;
+  } catch (error) {
+    console.error('❌ Exception in getAuditLogs:', error);
+    return [];
   }
 }
 

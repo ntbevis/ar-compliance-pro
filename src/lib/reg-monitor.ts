@@ -178,30 +178,36 @@ export async function getRegulatoryStatus(facilityId: string) {
     
     console.log(`📊 Enrollment: ${enrollmentCount} (active: ${facility?.active_enrollment || 'N/A'}, capacity: ${facility?.capacity || 0})`);
 
-    // 2. Gather the active target requirements for this facility type AND specific sub-classification
-    // This ensures we only pull rules that match the exact facility classification scope
+    // 2. Gather the active target requirements for this facility type
+    // Query ONLY by facility_type first, then filter in TypeScript to avoid PostgREST .or() issues
     // Exclude personnel requirements as they are handled separately in the Personnel Vault
-    let rulesQuery = supabase
+    const { data: allRules } = await supabase
       .from('compliance_criteria')
       .select('*')
       .eq('facility_type', currentType)
       .eq('is_personnel_requirement', false);
     
-    // Add sub-classification filter if available to narrow down regulatory scope
-    if (subClassification) {
-      rulesQuery = rulesQuery.eq('sub_classification', subClassification);
-    }
+    // 3. Filter in TypeScript: Keep rules where sub_classification is null OR matches the facility's sub_classification
+    const activeRules = (allRules || []).filter(rule => {
+      if (!subClassification) {
+        // If facility has no sub_classification, only include general rules (sub_classification is null)
+        return rule.sub_classification === null || rule.sub_classification === undefined;
+      }
+      // If facility has sub_classification, include both general rules AND matching sub_classification rules
+      return rule.sub_classification === null || rule.sub_classification === undefined || rule.sub_classification === subClassification;
+    });
     
-    const { data: activeRules } = await rulesQuery;
+    console.log(`📋 Filtered ${activeRules.length} applicable rules from ${allRules?.length || 0} total rules for ${currentType}${subClassification ? ` (${subClassification})` : ''}`);
+    
 
-    // 3. Gather what files the facility has already successfully verified
+    // 4. Gather what files the facility has already successfully verified
     const { data: uploadedDocs } = await supabase
       .from('facility_documents')
       .select('document_type, status')
       .eq('facility_id', facilityId)
       .eq('status', 'approved');
 
-    // 4. Dynamic Schema-Driven Fuzzy Metric Intersection
+    // 5. Dynamic Schema-Driven Fuzzy Metric Intersection
     // Build a set of satisfied requirements using resilient token matching
     const satisfiedRuleIds = new Set<string>();
     const uploadedDocTypes = (uploadedDocs || []).map(d => d.document_type).filter(Boolean);
@@ -220,17 +226,28 @@ export async function getRegulatoryStatus(facilityId: string) {
       }
     }
     
-    // Filter to only critical rules for scoring calculation
-    const criticalRules = (activeRules || []).filter(rule => rule.severity === 'critical');
-    const criticalRuleCount = criticalRules.length;
-    const verifiedCriticalCount = criticalRules.filter(rule => satisfiedRuleIds.has(rule.id)).length;
+    // 6. NEW SCORING LOGIC: Exclude daily and weekly frequency rules from the score calculation
+    // Score should ONLY be based on monthly, annual, one-time, or undefined frequency critical requirements
+    const scorableFrequencies = ['monthly', 'annual', 'one-time', 'one_time', '2_years', '5_years', undefined, null];
     
-    // Compute audit readiness score based ONLY on critical requirements
+    // Filter to only critical rules that should be scored (exclude daily and weekly)
+    const scorableCriticalRules = (activeRules || []).filter(rule => {
+      if (rule.severity !== 'critical') return false;
+      const freq = rule.frequency?.toLowerCase();
+      return !freq || !['daily', 'weekly'].includes(freq);
+    });
+    
+    const criticalRuleCount = scorableCriticalRules.length;
+    const verifiedCriticalCount = scorableCriticalRules.filter(rule => satisfiedRuleIds.has(rule.id)).length;
+    
+    console.log(`📊 Score Calculation: ${verifiedCriticalCount}/${criticalRuleCount} scorable critical requirements met (daily/weekly excluded)`);
+    
+    // Compute audit readiness score based ONLY on scorable critical requirements
     let calculatedScore = criticalRuleCount > 0
       ? Math.round((verifiedCriticalCount / criticalRuleCount) * 100)
       : 100; // Default to 100 if no critical rules exist
 
-    // Filter down to map the current active gaps for the UI, passing through severity and frequency
+    // 7. Filter down to map the current active gaps for the UI, passing through severity and frequency
     // Exclude staffing ratio rules as they are handled by the dynamic staffing-ratio-deficit logic
     const identifiedGaps = (activeRules || [])
       .filter(rule => !satisfiedRuleIds.has(rule.id))
@@ -245,13 +262,13 @@ export async function getRegulatoryStatus(facilityId: string) {
         systemSlug: rule.required_document_type,
         isCritical: rule.severity === 'critical',
         severity: rule.severity, // Pass through severity for frontend filtering
-        frequency: rule.frequency // Pass through frequency for frontend display
+        frequency: rule.frequency || null // Pass through frequency for frontend display (ensure it's always defined)
       }));
     
     console.log(`📈 Audit Readiness Score: ${calculatedScore}% (${verifiedCriticalCount}/${criticalRuleCount} critical requirements met)`);
-    console.log(`📋 Total Requirements: ${activeRules?.length || 0} (${criticalRuleCount} critical, ${(activeRules?.length || 0) - criticalRuleCount} standard)`);
+    console.log(`📋 Total Requirements: ${activeRules?.length || 0} (${criticalRuleCount} scorable critical, ${(activeRules?.length || 0) - criticalRuleCount} other)`);
 
-    // 4. Fetch actual active personnel count from the database
+    // 8. Fetch actual active personnel count from the database
     const { count: personnelCount } = await supabase
       .from('personnel')
       .select('*', { count: 'exact', head: true })
@@ -260,7 +277,7 @@ export async function getRegulatoryStatus(facilityId: string) {
 
     const activeStaffCount = personnelCount ?? 0;
 
-    // 5. Calculate required staff threshold based on regulatory sector rules
+    // 9. Calculate required staff threshold based on regulatory sector rules
     // Defensive check: only calculate if enrollment count is valid (not null, undefined, or 0)
     let requiredStaff = 0;
     if (enrollmentCount && enrollmentCount > 0) {
@@ -273,7 +290,7 @@ export async function getRegulatoryStatus(facilityId: string) {
       console.log(`⚠️ Facility ${facilityId} has invalid or missing enrollment count (${enrollmentCount}). Skipping staffing ratio calculations.`);
     }
 
-    // 6. Apply staffing ratio deficit penalty if understaffed
+    // 10. Apply staffing ratio deficit penalty if understaffed
     if (requiredStaff > 0 && activeStaffCount < requiredStaff) {
       // Deduct strict 25-point penalty for staffing violations
       calculatedScore = Math.max(0, calculatedScore - 25);

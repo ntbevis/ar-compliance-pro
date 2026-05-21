@@ -3,7 +3,7 @@
 import { useFacility } from 'src/context/FacilityContext';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { getFacilityComplianceData, getPersonnelData, getDocumentsData, markEmployeeSeparated, handleDocumentUploadSuccess, getSeparatedPersonnelData, getAllFacilitiesOverview, getAvailableRoles, addPersonnel, updateEnrollment, deleteDocumentRecord } from 'src/app/actions/compliance';
+import { getFacilityComplianceData, getPersonnelData, getDocumentsData, markEmployeeSeparated, handleDocumentUploadSuccess, getSeparatedPersonnelData, getAllFacilitiesOverview, getAvailableRoles, addPersonnel, updateEnrollment, deleteDocumentRecord, getCurrentUserRole, getDailyRequirements, submitBulkDailyAttestation, getAuditLogs } from 'src/app/actions/compliance';
 import { createClient } from 'src/app/utils/supabase/client';
 import ComplianceDashboardClient from 'src/components/ComplianceDashboardClient';
 
@@ -64,6 +64,82 @@ export default function ExecutiveOverview() {
   // Enrollment state
   const [enrollmentInput, setEnrollmentInput] = useState<string>('');
   const [updatingEnrollment, setUpdatingEnrollment] = useState(false);
+  
+  // User role state for RBAC
+  const [userRole, setUserRole] = useState<string | null>(null);
+  const [loadingRole, setLoadingRole] = useState(true);
+  
+  // Audit logs state
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [loadingAuditLogs, setLoadingAuditLogs] = useState(false);
+  
+  // Bulk attestation state
+  const [dailyRequirements, setDailyRequirements] = useState<any[]>([]);
+  const [bulkFacilities, setBulkFacilities] = useState<any[]>([]);
+  const [selectedBulkFacilities, setSelectedBulkFacilities] = useState<string[]>([]);
+  const [selectedBulkRequirements, setSelectedBulkRequirements] = useState<string[]>([]);
+  const [bulkAttestationNote, setBulkAttestationNote] = useState('');
+  const [submittingBulkAttestation, setSubmittingBulkAttestation] = useState(false);
+
+  // Load user role on mount for RBAC
+  useEffect(() => {
+    async function loadUserRole() {
+      setLoadingRole(true);
+      try {
+        const result = await getCurrentUserRole();
+        if (result.success && result.role) {
+          setUserRole(result.role);
+          
+          // If user is a director, default to first facility view (not "all")
+          if (result.role === 'director' && selectedFacilityId === 'all') {
+            // Will be handled by facilities data load
+          }
+        }
+      } catch (error) {
+        console.error('Error loading user role:', error);
+      } finally {
+        setLoadingRole(false);
+      }
+    }
+    loadUserRole();
+  }, []);
+  
+  // Load audit logs when audit_logs view is selected
+  useEffect(() => {
+    async function loadAuditLogs() {
+      if (currentView !== 'audit_logs') return;
+      
+      setLoadingAuditLogs(true);
+      try {
+        const logs = await getAuditLogs(selectedFacilityId !== 'all' ? selectedFacilityId : undefined);
+        setAuditLogs(logs);
+      } catch (error) {
+        console.error('Error loading audit logs:', error);
+        setAuditLogs([]);
+      } finally {
+        setLoadingAuditLogs(false);
+      }
+    }
+    loadAuditLogs();
+  }, [currentView, selectedFacilityId]);
+  
+  // Load daily requirements for bulk attestation widget when Master View is opened
+  useEffect(() => {
+    async function loadDailyRequirements() {
+      if (selectedFacilityId !== 'all' || userRole !== 'owner') return;
+      
+      try {
+        const result = await getDailyRequirements();
+        if (result.success) {
+          setDailyRequirements(result.requirements);
+          setBulkFacilities(result.facilities);
+        }
+      } catch (error) {
+        console.error('Error loading daily requirements:', error);
+      }
+    }
+    loadDailyRequirements();
+  }, [selectedFacilityId, userRole]);
 
   // Load available roles when form is opened
   useEffect(() => {
@@ -87,6 +163,59 @@ export default function ExecutiveOverview() {
       console.error('Error loading roles:', error);
     } finally {
       setLoadingRoles(false);
+    }
+  };
+
+  const handleSubmitBulkAttestation = async () => {
+    if (selectedBulkFacilities.length === 0) {
+      alert('Please select at least one facility');
+      return;
+    }
+    
+    if (selectedBulkRequirements.length === 0) {
+      alert('Please select at least one requirement');
+      return;
+    }
+    
+    if (!bulkAttestationNote.trim()) {
+      alert('Please provide an attestation note');
+      return;
+    }
+    
+    const confirmed = confirm(
+      `Sign bulk attestation for:\n• ${selectedBulkFacilities.length} facilities\n• ${selectedBulkRequirements.length} requirements\n\nTotal: ${selectedBulkFacilities.length * selectedBulkRequirements.length} attestations will be created.\n\nContinue?`
+    );
+    
+    if (!confirmed) return;
+    
+    setSubmittingBulkAttestation(true);
+    try {
+      const result = await submitBulkDailyAttestation({
+        facilityIds: selectedBulkFacilities,
+        requirementIds: selectedBulkRequirements,
+        attestationNote: bulkAttestationNote
+      });
+      
+      if (result.success) {
+        alert(`✅ ${result.message}`);
+        
+        // Reset form
+        setSelectedBulkFacilities([]);
+        setSelectedBulkRequirements([]);
+        setBulkAttestationNote('');
+        
+        // Reload facilities data
+        const facilities = await getAllFacilitiesOverview();
+        setFacilitiesData(facilities);
+        router.refresh();
+      } else {
+        alert(`❌ Failed to submit bulk attestation: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error submitting bulk attestation:', error);
+      alert('❌ An unexpected error occurred');
+    } finally {
+      setSubmittingBulkAttestation(false);
     }
   };
 
@@ -326,8 +455,25 @@ export default function ExecutiveOverview() {
         setSeparatedPersonnelData([]);
         setDocumentsData([]);
         
-        // Load all facilities for master view
+        // Load all facilities for master view (if user is owner/admin)
         if (selectedFacilityId === 'all') {
+          // Directors should not see Master View - redirect to first facility
+          if (userRole === 'director') {
+            setLoading(true);
+            try {
+              const facilities = await getAllFacilitiesOverview();
+              if (facilities.length > 0) {
+                setSelectedFacilityId(facilities[0].id);
+              }
+              setFacilitiesData(facilities);
+            } catch (error) {
+              console.error('Error loading facilities:', error);
+              setFacilitiesData([]);
+            }
+            setLoading(false);
+            return;
+          }
+          
           setLoading(true);
           try {
             const facilities = await getAllFacilitiesOverview();
@@ -524,6 +670,139 @@ export default function ExecutiveOverview() {
             </div>
           </div>
         )}
+        
+        {/* Bulk Daily Attestation Widget (Owner Only) */}
+        {userRole === 'owner' && dailyRequirements.length > 0 && (
+          <div className="mt-8 bg-gradient-to-br from-indigo-50 to-blue-50 rounded-xl border-2 border-indigo-200 shadow-sm p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-white font-bold text-lg">
+                ✓
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">Daily Operations Attestation</h3>
+                <p className="text-sm text-slate-600">Sign off on daily compliance requirements across your fleet</p>
+              </div>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
+              {/* Facility Selection */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Select Facilities ({selectedBulkFacilities.length} selected)
+                </label>
+                <div className="bg-white rounded-lg border border-slate-200 p-3 max-h-48 overflow-y-auto space-y-2">
+                  <label className="flex items-center gap-2 text-sm hover:bg-slate-50 p-2 rounded cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedBulkFacilities.length === bulkFacilities.length}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedBulkFacilities(bulkFacilities.map(f => f.id));
+                        } else {
+                          setSelectedBulkFacilities([]);
+                        }
+                      }}
+                      className="w-4 h-4 text-indigo-600 rounded"
+                    />
+                    <span className="font-medium">Select All</span>
+                  </label>
+                  {bulkFacilities.map(facility => (
+                    <label key={facility.id} className="flex items-center gap-2 text-sm hover:bg-slate-50 p-2 rounded cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedBulkFacilities.includes(facility.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedBulkFacilities([...selectedBulkFacilities, facility.id]);
+                          } else {
+                            setSelectedBulkFacilities(selectedBulkFacilities.filter(id => id !== facility.id));
+                          }
+                        }}
+                        className="w-4 h-4 text-indigo-600 rounded"
+                      />
+                      <span>{facility.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              
+              {/* Requirement Selection */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Select Daily Requirements ({selectedBulkRequirements.length} selected)
+                </label>
+                <div className="bg-white rounded-lg border border-slate-200 p-3 max-h-48 overflow-y-auto space-y-2">
+                  <label className="flex items-center gap-2 text-sm hover:bg-slate-50 p-2 rounded cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedBulkRequirements.length === dailyRequirements.length}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedBulkRequirements(dailyRequirements.map(r => r.id));
+                        } else {
+                          setSelectedBulkRequirements([]);
+                        }
+                      }}
+                      className="w-4 h-4 text-indigo-600 rounded"
+                    />
+                    <span className="font-medium">Select All</span>
+                  </label>
+                  {dailyRequirements.map(req => (
+                    <label key={req.id} className="flex items-center gap-2 text-sm hover:bg-slate-50 p-2 rounded cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedBulkRequirements.includes(req.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedBulkRequirements([...selectedBulkRequirements, req.id]);
+                          } else {
+                            setSelectedBulkRequirements(selectedBulkRequirements.filter(id => id !== req.id));
+                          }
+                        }}
+                        className="w-4 h-4 text-indigo-600 rounded"
+                      />
+                      <span>{req.requirement_name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+            
+            {/* Attestation Note */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                Attestation Note / Comment <span className="text-red-500">*</span>
+              </label>
+              <textarea
+                value={bulkAttestationNote}
+                onChange={(e) => setBulkAttestationNote(e.target.value)}
+                placeholder="e.g., 'All daily logs verified by on-duty manager. No incidents reported.'"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                rows={3}
+              />
+            </div>
+            
+            {/* Submit Button */}
+            <button
+              onClick={handleSubmitBulkAttestation}
+              disabled={submittingBulkAttestation || selectedBulkFacilities.length === 0 || selectedBulkRequirements.length === 0 || !bulkAttestationNote.trim()}
+              className={`w-full py-3 px-4 rounded-lg font-medium transition-all ${
+                submittingBulkAttestation || selectedBulkFacilities.length === 0 || selectedBulkRequirements.length === 0 || !bulkAttestationNote.trim()
+                  ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                  : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-lg'
+              }`}
+            >
+              {submittingBulkAttestation ? (
+                <span className="flex items-center justify-center gap-2">
+                  <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                  Submitting Bulk Attestation...
+                </span>
+              ) : (
+                `Sign Bulk Attestation (${selectedBulkFacilities.length} facilities × ${selectedBulkRequirements.length} requirements = ${selectedBulkFacilities.length * selectedBulkRequirements.length} attestations)`
+              )}
+            </button>
+          </div>
+        )}
       </div>
     );
   }
@@ -545,6 +824,7 @@ export default function ExecutiveOverview() {
           {currentView === 'overview' && 'Executive Overview'}
           {currentView === 'personnel' && 'Personnel Vault'}
           {currentView === 'documents' && 'Document Center'}
+          {currentView === 'audit_logs' && 'Audit Trail & Compliance Logs'}
         </h1>
       </header>
 
@@ -1161,6 +1441,148 @@ export default function ExecutiveOverview() {
                     Close Report
                   </button>
                 </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* Audit Logs View - PHASE 5 */}
+      {currentView === 'audit_logs' && (
+        <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm max-w-6xl mx-auto text-slate-800">
+          <div className="flex items-start justify-between mb-6">
+            <div>
+              <h2 className="text-lg font-bold mb-2">Compliance Audit Trail</h2>
+              <p className="text-xs text-slate-400">
+                Immutable log of all compliance actions with full user attribution and timestamps.
+                {selectedFacilityId !== 'all' && (
+                  <span className="ml-2 font-mono text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
+                    Filtered by current facility
+                  </span>
+                )}
+              </p>
+            </div>
+          </div>
+          
+          {loadingAuditLogs ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="flex items-center gap-3 text-indigo-600">
+                <div className="w-6 h-6 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                <span className="font-medium">Loading audit logs...</span>
+              </div>
+            </div>
+          ) : auditLogs.length === 0 ? (
+            <div className="border border-dashed border-slate-200 rounded-xl p-12 text-center italic text-slate-400 text-xs bg-slate-50">
+              No audit logs found for the selected scope.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Timestamp</th>
+                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Facility</th>
+                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Action Type</th>
+                    <th className="text-left py-3 px-4 font-semibold text-slate-700">User</th>
+                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Details</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {auditLogs.map((log) => (
+                    <tr key={log.id} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="py-3 px-4 text-xs text-slate-600 font-mono whitespace-nowrap">
+                        {new Date(log.created_at).toLocaleString('en-US', {
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          second: '2-digit'
+                        })}
+                      </td>
+                      <td className="py-3 px-4 font-medium text-slate-800">
+                        {log.facility_name}
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          log.action_type === 'document_upload'
+                            ? 'bg-blue-100 text-blue-800'
+                            : log.action_type === 'digital_attestation'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : log.action_type === 'document_deletion'
+                            ? 'bg-rose-100 text-rose-800'
+                            : log.action_type === 'enrollment_update'
+                            ? 'bg-amber-100 text-amber-800'
+                            : log.action_type === 'bulk_attestation'
+                            ? 'bg-indigo-100 text-indigo-800'
+                            : 'bg-slate-100 text-slate-800'
+                        }`}>
+                          {log.action_type.replace(/_/g, ' ').toUpperCase()}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="flex flex-col gap-1">
+                          <span className="font-medium text-slate-800">{log.user_name}</span>
+                          <span className="text-xs text-slate-500 uppercase font-medium">{log.user_role}</span>
+                        </div>
+                      </td>
+                      <td className="py-3 px-4 text-xs text-slate-600 max-w-md">
+                        {/* Display relevant metadata based on action type */}
+                        {log.action_type === 'enrollment_update' && log.metadata?.previous_enrollment !== undefined && (
+                          <div className="space-y-1">
+                            <p className="font-medium text-amber-700">
+                              Enrollment Change: {log.metadata.previous_enrollment} → {log.metadata.new_enrollment}
+                            </p>
+                            <p className="text-slate-500 text-xs">
+                              This may impact staffing ratio requirements
+                            </p>
+                          </div>
+                        )}
+                        {log.action_type === 'digital_attestation' && log.metadata?.requirement_name && (
+                          <div>
+                            <p className="font-medium">{log.metadata.requirement_name}</p>
+                            {log.metadata.frequency && (
+                              <p className="text-slate-500 text-xs">Frequency: {log.metadata.frequency}</p>
+                            )}
+                            {log.metadata.is_not_applicable && (
+                              <p className="text-amber-600 text-xs font-medium mt-1">Marked N/A: {log.metadata.reason}</p>
+                            )}
+                          </div>
+                        )}
+                        {log.action_type === 'bulk_attestation' && (
+                          <div>
+                            <p className="font-medium">{log.metadata?.requirement_name}</p>
+                            <p className="text-indigo-600 text-xs">
+                              Bulk: {log.metadata?.facility_count} facilities × {log.metadata?.requirement_count} requirements
+                            </p>
+                            {log.metadata?.attestation_note && (
+                              <p className="text-slate-500 text-xs mt-1 italic">"{log.metadata.attestation_note}"</p>
+                            )}
+                          </div>
+                        )}
+                        {log.action_type === 'document_upload' && log.metadata?.filename && (
+                          <div>
+                            <p className="font-medium">{log.metadata.filename}</p>
+                            {log.metadata.file_size && (
+                              <p className="text-slate-500 text-xs">
+                                Size: {(log.metadata.file_size / 1024).toFixed(2)} KB
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {log.action_type === 'document_deletion' && log.metadata?.document_name && (
+                          <p className="font-medium text-rose-700">{log.metadata.document_name}</p>
+                        )}
+                        {log.metadata?.user_attestation && (
+                          <p className="text-emerald-600 text-xs mt-1">✓ User attestation certified</p>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="mt-4 text-xs text-slate-400 text-right">
+                Total Audit Logs: {auditLogs.length} (showing most recent 500)
               </div>
             </div>
           )}

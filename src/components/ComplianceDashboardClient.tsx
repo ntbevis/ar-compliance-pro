@@ -12,6 +12,8 @@ interface Gap {
   typeKey: string;
   severity: 'critical' | 'standard';
   frequency?: string; // Dynamic frequency: 'one-time', 'daily', 'weekly', 'monthly', 'annual', '2_years', '5_years', etc.
+  completed?: boolean; // Track if item is completed (via document upload, attestation, or N/A)
+  completionType?: 'document' | 'attestation' | 'n/a'; // Track how it was completed
 }
 
 interface DashboardProps {
@@ -107,12 +109,16 @@ export default function ComplianceDashboardClient({
         // Trigger an operational refresh to sync database states across server views
         router.refresh();
         
-        // Optimistically clear matching gap if AI classified it correctly
+        // Optimistically mark matching gap as completed if AI classified it correctly
         if (report.compliance_status === 'Compliant' && report.extracted_document_type) {
           const matchingGap = gaps.find(g => g.typeKey === report.extracted_document_type);
           
           if (matchingGap) {
-            setGaps((prev) => prev.filter((g) => g.id !== matchingGap.id));
+            setGaps((prev) => prev.map((g) => 
+              g.id === matchingGap.id 
+                ? { ...g, completed: true, completionType: 'document' as const }
+                : g
+            ));
             
             // Only update score if this was a critical gap
             if (matchingGap.severity === 'critical') {
@@ -152,8 +158,12 @@ export default function ComplianceDashboardClient({
       if (result.success) {
         alert(`✅ ${result.message}`);
         
-        // Remove the gap from the list
-        setGaps(prevGaps => prevGaps.filter(g => g.id !== gap.id));
+        // Mark the gap as completed instead of removing it
+        setGaps(prevGaps => prevGaps.map(g => 
+          g.id === gap.id 
+            ? { ...g, completed: true, completionType: 'attestation' as const }
+            : g
+        ));
         
         // Only update score if this was a critical gap
         if (gap.severity === 'critical') {
@@ -200,8 +210,12 @@ export default function ComplianceDashboardClient({
       if (result.success) {
         alert(`✅ ${result.message}`);
         
-        // Remove the gap from the list
-        setGaps(prevGaps => prevGaps.filter(g => g.id !== gap.id));
+        // Mark the gap as N/A instead of removing it
+        setGaps(prevGaps => prevGaps.map(g => 
+          g.id === gap.id 
+            ? { ...g, completed: true, completionType: 'n/a' as const }
+            : g
+        ));
         
         // Only update score if this was a critical gap
         if (gap.severity === 'critical') {
@@ -335,10 +349,16 @@ export default function ComplianceDashboardClient({
         ) : (
           <div className="divide-y divide-slate-100">
             {criticalGaps.map((gap) => (
-              <div key={gap.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 hover:bg-slate-50/50 transition-colors">
-                <div className="space-y-0.5">
+              <div key={gap.id} className={`p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 transition-colors ${
+                gap.completed ? 'bg-slate-50' : 'hover:bg-slate-50/50'
+              }`}>
+                <div className="space-y-0.5 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-slate-800 text-sm">{gap.name}</span>
+                    <span className={`font-semibold text-sm ${
+                      gap.completed ? 'text-slate-400 line-through' : 'text-slate-800'
+                    }`}>
+                      {gap.name}
+                    </span>
                     <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
                       gap.severity === 'critical' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'
                     }`}>
@@ -349,12 +369,29 @@ export default function ComplianceDashboardClient({
                         {gap.frequency.replace(/_/g, ' ').toUpperCase()}
                       </span>
                     )}
+                    {gap.completed && (
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
+                        {gap.completionType === 'n/a' ? 'N/A' : 'COMPLETED'}
+                      </span>
+                    )}
                   </div>
-                  <p className="text-[11px] text-slate-400 font-mono">Requirement Key: {gap.typeKey}</p>
+                  <p className={`text-[11px] font-mono ${gap.completed ? 'text-slate-300' : 'text-slate-400'}`}>
+                    Requirement Key: {gap.typeKey}
+                  </p>
+                  {gap.completed && (
+                    <p className="text-[10px] text-slate-400 italic mt-1">
+                      To undo, delete this record from the Document Center.
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {uploadingId === gap.id ? (
+                  {gap.completed ? (
+                    // No action buttons for completed items
+                    <div className="text-emerald-600 font-medium text-xs">
+                      ✓ Satisfied
+                    </div>
+                  ) : uploadingId === gap.id ? (
                     <div className="flex items-center gap-2 text-indigo-600 font-bold text-xs animate-pulse">
                       <span className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></span>
                       AI Verification running...
@@ -379,36 +416,78 @@ export default function ComplianceDashboardClient({
                     </button>
                   ) : (
                     <>
-                      {/* Show attestation button for frequent requirements (daily, weekly, monthly) */}
-                      {gap.frequency && ['daily', 'weekly', 'monthly'].includes(gap.frequency) ? (
-                        <button
-                          onClick={() => handleSignAttestation(gap)}
-                          disabled={!userAttestation}
-                          className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-w-[140px] ${
-                            userAttestation
-                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
-                              : 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                          }`}
-                          title={!userAttestation ? 'Please check the legal certification box above' : ''}
-                        >
-                          ✓ Sign Digital Attestation
-                        </button>
-                      ) : null}
-                      
-                      {/* Mark N/A button - not available for staffing deficit */}
-                      {gap.id !== 'staffing-ratio-deficit' && (
-                        <button
-                          onClick={() => handleMarkNotApplicable(gap)}
-                          disabled={!userAttestation}
-                          className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
-                            userAttestation
-                              ? 'bg-slate-600 hover:bg-slate-700 text-white cursor-pointer'
-                              : 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                          }`}
-                          title={!userAttestation ? 'Please check the legal certification box above' : 'Mark this requirement as Not Applicable'}
-                        >
-                          Mark N/A
-                        </button>
+                      {/* DAILY REQUIREMENTS: Physical log requirement - ONLY show attestation button, NO upload */}
+                      {gap.frequency?.toLowerCase() === 'daily' ? (
+                        <div className="flex flex-col items-end gap-2">
+                          <button
+                            onClick={() => handleSignAttestation(gap)}
+                            disabled={!userAttestation}
+                            className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-w-[140px] ${
+                              userAttestation
+                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                                : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                            }`}
+                            title={!userAttestation ? 'Please check the legal certification box above' : 'Sign daily physical log attestation'}
+                          >
+                            ✓ Sign Daily Log
+                          </button>
+                          <p className="text-[10px] text-slate-400 italic">Daily physical log requirement</p>
+                        </div>
+                      ) : gap.frequency?.toLowerCase() === 'weekly' ? (
+                        /* WEEKLY REQUIREMENTS: Show upload with prominent warning badge */
+                        <div className="flex flex-col items-end gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-bold px-2 py-1 rounded-md bg-amber-100 text-amber-700 border border-amber-300">
+                              ⚠️ WEEKLY - Not Scored
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => handleSignAttestation(gap)}
+                            disabled={!userAttestation}
+                            className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-w-[140px] ${
+                              userAttestation
+                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                                : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                            }`}
+                            title={!userAttestation ? 'Please check the legal certification box above' : ''}
+                          >
+                            ✓ Sign Attestation
+                          </button>
+                        </div>
+                      ) : (
+                        /* CORE REQUIREMENTS: Monthly/Annual/One-time - Show attestation for monthly, N/A for all */
+                        <>
+                          {gap.frequency?.toLowerCase() === 'monthly' && (
+                            <button
+                              onClick={() => handleSignAttestation(gap)}
+                              disabled={!userAttestation}
+                              className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-w-[140px] ${
+                                userAttestation
+                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                                  : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                              }`}
+                              title={!userAttestation ? 'Please check the legal certification box above' : ''}
+                            >
+                              ✓ Sign Digital Attestation
+                            </button>
+                          )}
+                          
+                          {/* Mark N/A button - not available for staffing deficit */}
+                          {gap.id !== 'staffing-ratio-deficit' && (
+                            <button
+                              onClick={() => handleMarkNotApplicable(gap)}
+                              disabled={!userAttestation}
+                              className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
+                                userAttestation
+                                  ? 'bg-slate-600 hover:bg-slate-700 text-white cursor-pointer'
+                                  : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                              }`}
+                              title={!userAttestation ? 'Please check the legal certification box above' : 'Mark this requirement as Not Applicable'}
+                            >
+                              Mark N/A
+                            </button>
+                          )}
+                        </>
                       )}
                     </>
                   )}
@@ -428,10 +507,16 @@ export default function ComplianceDashboardClient({
 
           <div className="divide-y divide-slate-200">
             {standardGaps.map((gap) => (
-              <div key={gap.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 hover:bg-white/50 transition-colors">
-                <div className="space-y-0.5">
+              <div key={gap.id} className={`p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 transition-colors ${
+                gap.completed ? 'bg-slate-100' : 'hover:bg-white/50'
+              }`}>
+                <div className="space-y-0.5 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-medium text-slate-700 text-sm">{gap.name}</span>
+                    <span className={`font-medium text-sm ${
+                      gap.completed ? 'text-slate-400 line-through' : 'text-slate-700'
+                    }`}>
+                      {gap.name}
+                    </span>
                     <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">
                       {gap.severity.toUpperCase()}
                     </span>
@@ -440,12 +525,29 @@ export default function ComplianceDashboardClient({
                         {gap.frequency.replace(/_/g, ' ').toUpperCase()}
                       </span>
                     )}
+                    {gap.completed && (
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
+                        {gap.completionType === 'n/a' ? 'N/A' : 'COMPLETED'}
+                      </span>
+                    )}
                   </div>
-                  <p className="text-[11px] text-slate-400 font-mono">Requirement Key: {gap.typeKey}</p>
+                  <p className={`text-[11px] font-mono ${gap.completed ? 'text-slate-300' : 'text-slate-400'}`}>
+                    Requirement Key: {gap.typeKey}
+                  </p>
+                  {gap.completed && (
+                    <p className="text-[10px] text-slate-400 italic mt-1">
+                      To undo, delete this record from the Document Center.
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {uploadingId === gap.id ? (
+                  {gap.completed ? (
+                    // No action buttons for completed items
+                    <div className="text-emerald-600 font-medium text-xs">
+                      ✓ Satisfied
+                    </div>
+                  ) : uploadingId === gap.id ? (
                     <div className="flex items-center gap-2 text-indigo-600 font-bold text-xs animate-pulse">
                       <span className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></span>
                       AI Verification running...
@@ -462,35 +564,77 @@ export default function ComplianceDashboardClient({
                     </div>
                   ) : (
                     <>
-                      {/* Show attestation button for frequent requirements (daily, weekly, monthly) */}
-                      {gap.frequency && ['daily', 'weekly', 'monthly'].includes(gap.frequency) ? (
-                        <button
-                          onClick={() => handleSignAttestation(gap)}
-                          disabled={!userAttestation}
-                          className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-w-[140px] ${
-                            userAttestation
-                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
-                              : 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                          }`}
-                          title={!userAttestation ? 'Please check the legal certification box above' : ''}
-                        >
-                          ✓ Sign Digital Attestation
-                        </button>
-                      ) : null}
-                      
-                      {/* Mark N/A button */}
-                      <button
-                        onClick={() => handleMarkNotApplicable(gap)}
-                        disabled={!userAttestation}
-                        className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
-                          userAttestation
-                            ? 'bg-slate-500 hover:bg-slate-600 text-white cursor-pointer'
-                            : 'bg-slate-300 text-slate-400 cursor-not-allowed'
-                        }`}
-                        title={!userAttestation ? 'Please check the legal certification box above' : 'Mark this requirement as Not Applicable'}
-                      >
-                        Mark N/A
-                      </button>
+                      {/* DAILY REQUIREMENTS: Physical log requirement - ONLY show attestation button, NO upload */}
+                      {gap.frequency?.toLowerCase() === 'daily' ? (
+                        <div className="flex flex-col items-end gap-2">
+                          <button
+                            onClick={() => handleSignAttestation(gap)}
+                            disabled={!userAttestation}
+                            className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-w-[140px] ${
+                              userAttestation
+                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                                : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                            }`}
+                            title={!userAttestation ? 'Please check the legal certification box above' : 'Sign daily physical log attestation'}
+                          >
+                            ✓ Sign Daily Log
+                          </button>
+                          <p className="text-[10px] text-slate-400 italic">Daily physical log requirement</p>
+                        </div>
+                      ) : gap.frequency?.toLowerCase() === 'weekly' ? (
+                        /* WEEKLY REQUIREMENTS: Show attestation with prominent warning badge */
+                        <div className="flex flex-col items-end gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-bold px-2 py-1 rounded-md bg-amber-100 text-amber-700 border border-amber-300">
+                              ⚠️ WEEKLY - Not Scored
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => handleSignAttestation(gap)}
+                            disabled={!userAttestation}
+                            className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-w-[140px] ${
+                              userAttestation
+                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                                : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                            }`}
+                            title={!userAttestation ? 'Please check the legal certification box above' : ''}
+                          >
+                            ✓ Sign Attestation
+                          </button>
+                        </div>
+                      ) : (
+                        /* CORE REQUIREMENTS: Monthly/Annual/One-time - Show attestation for monthly, N/A for all */
+                        <>
+                          {gap.frequency?.toLowerCase() === 'monthly' && (
+                            <button
+                              onClick={() => handleSignAttestation(gap)}
+                              disabled={!userAttestation}
+                              className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-w-[140px] ${
+                                userAttestation
+                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                                  : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                              }`}
+                              title={!userAttestation ? 'Please check the legal certification box above' : ''}
+                            >
+                              ✓ Sign Digital Attestation
+                            </button>
+                          )}
+                          
+                          {/* Mark N/A button */}
+                          <button
+                            onClick={() => handleMarkNotApplicable(gap)}
+                            disabled={!userAttestation}
+                            className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
+                              userAttestation
+                                ? 'bg-slate-500 hover:bg-slate-600 text-white cursor-pointer'
+                                : 'bg-slate-300 text-slate-400 cursor-not-allowed'
+                            }`}
+                            title={!userAttestation ? 'Please check the legal certification box above' : 'Mark this requirement as Not Applicable'}
+                          >
+                            Mark N/A
+                          </button>
+                        </>
+                      )}
                     </>
                   )}
                 </div>
