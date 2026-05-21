@@ -1,12 +1,12 @@
 'use client';
-import { useFacility, ViewType } from 'src/context/FacilityContext';
+import { useFacility, type ViewType } from 'src/context/FacilityContext';
 import FacilitySelector from './FacilitySelector';
 import { useState, useEffect } from 'react';
 import { createClient } from 'src/app/utils/supabase/client';
 
 export default function Sidebar() {
   const { selectedFacilityId, setSelectedFacilityId, currentView, setCurrentView } = useFacility();
-  const [facilities, setFacilities] = useState<any[]>([]);
+  const [facilities, setFacilities] = useState<Array<{ id: string; name: string }>>([]);
 
   useEffect(() => {
     const fetchFacilities = async () => {
@@ -17,11 +17,9 @@ export default function Sidebar() {
     fetchFacilities();
   }, []);
 
-  // Check if user is in Master View
   const isMasterView = selectedFacilityId === 'all' || !selectedFacilityId;
 
-  // Structural helper for clean tab rendering
-  const navItem = (label: string, view: ViewType, disabled: boolean = false) => {
+  const navItem = (label: string, view: ViewType, disabled = false) => {
     const isActive = currentView === view;
     return (
       <button
@@ -56,10 +54,15 @@ export default function Sidebar() {
       />
 
       <nav className="flex-1 p-4 space-y-2 mt-4">
-        <div className="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-4 px-2">Navigation</div>
+        <div className="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-4 px-2">
+          Navigation
+        </div>
         {navItem('Executive Overview', 'overview')}
         {navItem('Personnel Vault', 'personnel', isMasterView)}
         {navItem('Document Center', 'documents', isMasterView)}
+        {navItem('Operational Blueprints', 'blueprints', isMasterView)}
+        {navItem('Facility Settings', 'settings', isMasterView)}
+        {navItem('Audit Trail', 'audit_logs')}
       </nav>
 
       <div className="p-4 border-t border-gray-800">

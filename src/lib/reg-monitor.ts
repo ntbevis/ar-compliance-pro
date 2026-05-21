@@ -1,321 +1,250 @@
 // src/lib/reg-monitor.ts
 import { createAdminClient } from 'src/app/utils/supabase/admin';
-import { generatePrecisionEmbedding } from './ai-precision';
+import type {
+  ComplianceRule,
+  Facility,
+  FacilityToggleKey,
+  IdentifiedGap,
+  RegulatoryStatus,
+  ScoreCategory,
+} from './types';
+import { FACILITY_TOGGLE_KEYS } from './types';
 
 /**
- * Core engine for Regulatory Ingestion.
- * Takes raw legal text, chunks it at natural sentence boundaries, and stores it in the Supabase vault.
- */
-export async function ingestRegulatoryText(rawText: string, metadata: any) {
-  const supabase = createAdminClient();
-
-  // --- CLEANUP BLOCK ---
-  // Ensures zero duplicate data if the sync is rerun for this specific sub-classification.
-  // Only delete entries matching BOTH source AND sub_classification to preserve other sub-classifications.
-  const subClassification = metadata.sub_classification || null;
-  console.log(`[Monitor] Clearing old vault entries for: ${metadata.source} (sub_classification: ${subClassification})...`);
-  
-  let deleteQuery = supabase
-    .from('regulatory_knowledge')
-    .delete()
-    .eq('metadata->>source', metadata.source);
-  
-  if (subClassification) {
-    deleteQuery = deleteQuery.eq('metadata->>sub_classification', subClassification);
-  } else {
-    deleteQuery = deleteQuery.is('metadata->>sub_classification', null);
-  }
-  
-  await deleteQuery;
-
-  const textLength = rawText?.trim().length || 0;
-  console.log(`[Monitor] Received ${textLength} characters for ${metadata.source}`);
-
-  if (textLength < 10) {
-    console.error(`❌ REJECTED: Content too short for ${metadata.source}`);
-    return false;
-  }
-
-  // 1. SURGICAL CLEAN: Strip non-printable control characters globally before breaking text
-  const cleanRawText = rawText.replace(/[^\x20-\x7E\s]/g, '');
-
-  // 2. SENTENCE BOUNDARY DETECTION: Split text by sentences cleanly (. ! or ? followed by space)
-  const sentences = cleanRawText.match(/[^.!?]+[.!?]+(\s|$)/g) || [cleanRawText];
-  
-  const chunks: string[] = [];
-  let currentChunk = "";
-  const targetChunkSize = 1000;
-
-  for (const sentence of sentences) {
-    const trimmedSentence = sentence.trim();
-    if (!trimmedSentence) continue;
-
-    // Check if adding this complete sentence exceeds our target size
-    if ((currentChunk + " " + trimmedSentence).length > targetChunkSize) {
-      const finalizedChunk = currentChunk.trim();
-      
-      // THE QUALITY GATE: Must contain letters, basic word count, and structure
-      const hasLetters = /[a-zA-Z]/.test(finalizedChunk);
-      const hasWordDensity = (finalizedChunk.match(/\s/g) || []).length >= 3;
-      const isSubstantial = finalizedChunk.length >= 40;
-
-      if (hasLetters && hasWordDensity && isSubstantial) {
-        chunks.push(finalizedChunk);
-      }
-
-      // Overlap: Start the next chunk with the current sentence to maintain semantic linkage
-      currentChunk = trimmedSentence;
-    } else {
-      currentChunk = currentChunk ? `${currentChunk} ${trimmedSentence}` : trimmedSentence;
-    }
-  }
-
-  // Catch any remaining sentence aggregates left in the buffer
-  if (currentChunk.trim().length >= 40) {
-    const remainingChunk = currentChunk.trim();
-    if (/[a-zA-Z]/.test(remainingChunk) && (remainingChunk.match(/\s/g) || []).length >= 3) {
-      chunks.push(remainingChunk);
-    }
-  }
-
-  console.log(`🚀 Vectorizing ${chunks.length} immaculate, full-sentence segments for ${metadata.source}...`);
-
-  for (let i = 0; i < chunks.length; i++) {
-    // Generate the 1536-dimension vector embedding
-    const embedding = await generatePrecisionEmbedding(chunks[i]);
-
-    // Insert cleanly structured content into the vault with explicit schema alignment
-    const { error } = await supabase.from('regulatory_knowledge').insert({
-      content: chunks[i],
-      embedding,
-      category: metadata.category,
-      metadata: {
-        ...metadata,
-        chunk_index: i,
-        total_chunks: chunks.length,
-        ingested_at: new Date().toISOString()
-      }
-    });
-
-    if (error) {
-      console.error(`   [Error] Segment ${i}:`, error.message);
-      console.error(`   [Error Details]:`, error.details);
-      console.error(`   [Error Hint]:`, error.hint);
-      throw new Error(`Database Write Rejected: ${error.message} - Details: ${error.details || 'No additional details'}`);
-    }
-    
-    if (i % 20 === 0 && i > 0) {
-      console.log(`   [Progress] ${i}/${chunks.length} segments secured...`);
-    }
-  }
-
-  console.log(`✅ SUCCESS: ${metadata.source} is cleanly secured.`);
-  return true;
-}
-
-/**
- * String normalization helper for resilient fuzzy matching.
- * Converts strings to lowercase, strips whitespace, and normalizes separators.
+ * String normalization helper for resilient fuzzy matching against uploaded documents.
  */
 function normalizeDocumentKey(input: string | null | undefined): string {
   if (!input) return '';
   return input
     .toLowerCase()
     .trim()
-    .replace(/[\s\-]+/g, '_')  // Replace spaces and hyphens with underscores
-    .replace(/[^a-z0-9_]/g, ''); // Remove any non-alphanumeric characters except underscores
+    .replace(/[\s\-]+/g, '_')
+    .replace(/[^a-z0-9_]/g, '');
 }
 
 /**
- * Fuzzy token matching helper.
- * Checks if two normalized strings share significant token overlap or containment.
+ * Fuzzy token matching helper. Returns true if a rule's slug overlaps with an uploaded
+ * document's classified document_type.
  */
 function tokensMatch(ruleKey: string, docKey: string): boolean {
   const normalizedRule = normalizeDocumentKey(ruleKey);
   const normalizedDoc = normalizeDocumentKey(docKey);
-  
-  // Direct match
+
+  if (!normalizedRule || !normalizedDoc) return false;
   if (normalizedRule === normalizedDoc) return true;
-  
-  // Containment check (either direction)
   if (normalizedRule.includes(normalizedDoc) || normalizedDoc.includes(normalizedRule)) {
     return true;
   }
-  
-  // Token overlap check - split by underscore and check for shared meaningful tokens
-  const ruleTokens = normalizedRule.split('_').filter(t => t.length > 2); // Filter out short tokens
-  const docTokens = normalizedDoc.split('_').filter(t => t.length > 2);
-  
-  // If at least 2 significant tokens match, consider it a match
-  const sharedTokens = ruleTokens.filter(token => docTokens.includes(token));
-  if (sharedTokens.length >= 2) return true;
-  
-  return false;
+
+  const ruleTokens = normalizedRule.split('_').filter((t) => t.length > 2);
+  const docTokens = normalizedDoc.split('_').filter((t) => t.length > 2);
+  const sharedTokens = ruleTokens.filter((token) => docTokens.includes(token));
+  return sharedTokens.length >= 2;
 }
 
 /**
- * Reads from our database layers to calculate the real-time metrics
- * for the UI Dashboard using fully dynamic schema-driven token normalization.
+ * Returns the list of toggle keys that are TRUE on a given facility.
+ * These represent the activated scope flags that a rule's sub_classification can match.
  */
-export async function getRegulatoryStatus(facilityId: string) {
+function activeToggleKeys(facility: Pick<Facility, FacilityToggleKey>): Set<string> {
+  const activated = new Set<string>();
+  for (const key of FACILITY_TOGGLE_KEYS) {
+    if (facility[key]) activated.add(key);
+  }
+  return activated;
+}
+
+/**
+ * THE SMART FILTER.
+ *
+ * A rule applies to a facility IF:
+ *   - rule.facility_type === facility.facility_type, AND
+ *   - rule.sub_classification IS NULL, OR
+ *   - rule.sub_classification matches a toggle currently set to TRUE on the facility profile.
+ */
+export function ruleAppliesToFacility(
+  rule: Pick<ComplianceRule, 'facility_type' | 'sub_classification'>,
+  facility: Pick<Facility, 'facility_type' | FacilityToggleKey>
+): boolean {
+  if (rule.facility_type !== facility.facility_type) return false;
+  if (rule.sub_classification === null || rule.sub_classification === undefined) {
+    return true;
+  }
+  const activated = activeToggleKeys(facility);
+  return activated.has(rule.sub_classification);
+}
+
+/**
+ * Resolve the score category for a rule, gracefully handling legacy `is_personnel_requirement`
+ * rows that have not yet been backfilled with `score_category`.
+ */
+function resolveScoreCategory(rule: Record<string, unknown>): ScoreCategory {
+  const raw = rule.score_category;
+  if (raw === 'facility' || raw === 'personnel') return raw;
+  if (rule.is_personnel_requirement === true) return 'personnel';
+  if (rule.is_personnel_requirement === false) return 'facility';
+  return null;
+}
+
+/**
+ * Resolve whether a rule should be included in the twin-score math, with safe defaults
+ * for rows missing `is_scored` (treat them as scored).
+ */
+function resolveIsScored(rule: Record<string, unknown>): boolean {
+  if (typeof rule.is_scored === 'boolean') return rule.is_scored;
+  return true;
+}
+
+/**
+ * Reads from our database to calculate twin-score metrics for the dashboard.
+ *
+ * Returns:
+ *   - facilityReadinessScore:    (uploaded documents / total scored rules where score_category === 'facility') * 100
+ *   - personnelReadinessScore:   (uploaded documents / total scored rules where score_category === 'personnel') * 100
+ *   - identifiedGaps:            dynamically filtered list of outstanding rules
+ *   - staffCount, capacity, activeEnrollment, enrollmentUpdatedAt
+ *
+ * The "dumb fetch + smart filter" pattern keeps the UI alive even if Supabase has issues.
+ */
+export async function getRegulatoryStatus(facilityId: string): Promise<RegulatoryStatus> {
   const supabase = createAdminClient();
 
-  try {
-    // 1. Fetch the facility profile with capacity, active_enrollment, and sub_classification for staffing calculations
-    const { data: facility } = await supabase
-      .from('facilities')
-      .select('facility_type, capacity, active_enrollment, sub_classification')
-      .eq('id', facilityId)
-      .single();
+  // 1. Fetch the facility profile with capacity, active_enrollment, and ALL scope toggle columns
+  const { data: facility, error: facilityError } = await supabase
+    .from('facilities')
+    .select(
+      [
+        'id',
+        'facility_type',
+        'capacity',
+        'active_enrollment',
+        'enrollment_updated_at',
+        ...FACILITY_TOGGLE_KEYS,
+      ].join(', ')
+    )
+    .eq('id', facilityId)
+    .single();
 
-    const currentType = facility?.facility_type || 'childcare';
-    const subClassification = facility?.sub_classification;
-    
-    // Use active_enrollment if available and > 0, otherwise fall back to capacity
-    const enrollmentCount = facility?.active_enrollment && facility.active_enrollment > 0
-      ? facility.active_enrollment
-      : (facility?.capacity || 0);
-    
-    console.log(`📊 Enrollment: ${enrollmentCount} (active: ${facility?.active_enrollment || 'N/A'}, capacity: ${facility?.capacity || 0})`);
-
-    // 2. THE DUMB FETCH: Get ALL rules without any filtering
-    // This prevents Supabase query errors from crashing the entire UI
-    const { data: allRules, error: rulesError } = await supabase
-      .from('compliance_criteria')
-      .select('*');
-    
-    if (rulesError) {
-      console.error('❌ Supabase fetch error:', rulesError);
-      // DO NOT throw here - fail gracefully so staffing ratio logic can still run
-    }
-    
-    // 3. THE SMART FILTER: Filter rules in TypeScript
-    // Filter for this facility type and exclude personnel requirements
-    const activeRules = (allRules || []).filter(rule => {
-      return rule.facility_type === currentType && rule.is_personnel_requirement === false;
-    });
-    
-    console.log(`📋 Loaded ${allRules?.length || 0} total rules, filtered to ${activeRules.length} applicable rules for facility type: ${currentType}`);
-
-    // 4. Gather what files the facility has already successfully verified
-    const { data: uploadedDocs } = await supabase
-      .from('facility_documents')
-      .select('document_type, status')
-      .eq('facility_id', facilityId)
-      .eq('status', 'approved');
-
-    // 5. Dynamic Schema-Driven Fuzzy Metric Intersection
-    // Build a set of satisfied requirements using resilient token matching
-    const satisfiedRuleIds = new Set<string>();
-    const uploadedDocTypes = (uploadedDocs || []).map(d => d.document_type).filter(Boolean);
-    
-    console.log(`📊 Compliance Calculation: Evaluating ${activeRules?.length || 0} requirements against ${uploadedDocTypes.length} approved documents`);
-    
-    for (const rule of activeRules || []) {
-      const ruleKey = rule.required_document_type;
-      
-      // Check if any uploaded document matches this rule using fuzzy token matching
-      const isMatched = uploadedDocTypes.some(docType => tokensMatch(ruleKey, docType));
-      
-      if (isMatched) {
-        satisfiedRuleIds.add(rule.id);
-        console.log(`✅ Requirement satisfied: ${rule.requirement_name} (${ruleKey})`);
-      }
-    }
-    
-    // 6. NEW SCORING LOGIC: Exclude daily and weekly frequency rules from the score calculation
-    // Score should ONLY be based on monthly, annual, one-time, or undefined frequency critical requirements
-    const scorableFrequencies = ['monthly', 'annual', 'one-time', 'one_time', '2_years', '5_years', undefined, null];
-    
-    // Filter to only critical rules that should be scored (exclude daily and weekly)
-    const scorableCriticalRules = (activeRules || []).filter(rule => {
-      if (rule.severity !== 'critical') return false;
-      const freq = rule.frequency?.toLowerCase();
-      return !freq || !['daily', 'weekly'].includes(freq);
-    });
-    
-    const criticalRuleCount = scorableCriticalRules.length;
-    const verifiedCriticalCount = scorableCriticalRules.filter(rule => satisfiedRuleIds.has(rule.id)).length;
-    
-    console.log(`📊 Score Calculation: ${verifiedCriticalCount}/${criticalRuleCount} scorable critical requirements met (daily/weekly excluded)`);
-    
-    // Compute audit readiness score based ONLY on scorable critical requirements
-    let calculatedScore = criticalRuleCount > 0
-      ? Math.round((verifiedCriticalCount / criticalRuleCount) * 100)
-      : 100; // Default to 100 if no critical rules exist
-
-    // 7. Filter down to map the current active gaps for the UI, passing through severity and frequency
-    // Exclude staffing ratio rules as they are handled by the dynamic staffing-ratio-deficit logic
-    const identifiedGaps = (activeRules || [])
-      .filter(rule => !satisfiedRuleIds.has(rule.id))
-      .filter(rule => {
-        const typeKey = rule.required_document_type?.toLowerCase() || '';
-        const name = rule.requirement_name?.toLowerCase() || '';
-        return !typeKey.includes('ratio') && !name.includes('ratio');
-      })
-      .map(rule => ({
-        id: rule.id,
-        title: rule.requirement_name,
-        systemSlug: rule.required_document_type,
-        isCritical: rule.severity === 'critical',
-        severity: rule.severity, // Pass through severity for frontend filtering
-        frequency: rule.frequency || null // Pass through frequency for frontend display (ensure it's always defined)
-      }));
-    
-    console.log(`📈 Audit Readiness Score: ${calculatedScore}% (${verifiedCriticalCount}/${criticalRuleCount} critical requirements met)`);
-    console.log(`📋 Total Requirements: ${activeRules?.length || 0} (${criticalRuleCount} scorable critical, ${(activeRules?.length || 0) - criticalRuleCount} other)`);
-
-    // 8. Fetch actual active personnel count from the database
-    const { count: personnelCount } = await supabase
-      .from('personnel')
-      .select('*', { count: 'exact', head: true })
-      .eq('facility_id', facilityId)
-      .eq('status', 'active');
-
-    const activeStaffCount = personnelCount ?? 0;
-
-    // 9. Calculate required staff threshold based on regulatory sector rules
-    // Defensive check: only calculate if enrollment count is valid (not null, undefined, or 0)
-    let requiredStaff = 0;
-    if (enrollmentCount && enrollmentCount > 0) {
-      if (currentType === 'childcare') {
-        requiredStaff = Math.ceil(enrollmentCount / 10);
-      } else if (currentType === 'nursing_home') {
-        requiredStaff = Math.ceil(enrollmentCount / 15);
-      }
-    } else {
-      console.log(`⚠️ Facility ${facilityId} has invalid or missing enrollment count (${enrollmentCount}). Skipping staffing ratio calculations.`);
-    }
-
-    // 10. Apply staffing ratio deficit penalty if understaffed
-    if (requiredStaff > 0 && activeStaffCount < requiredStaff) {
-      // Deduct strict 25-point penalty for staffing violations
-      calculatedScore = Math.max(0, calculatedScore - 25);
-      
-      // Add critical staffing gap to the violations list
-      identifiedGaps.push({
-        id: 'staffing-ratio-deficit',
-        title: `CRITICAL: Regulatory Staffing Ratio Deficit (Required: ${requiredStaff}, Active: ${activeStaffCount})`,
-        systemSlug: 'staffing_ratio_deficit',
-        isCritical: true,
-        severity: 'critical',
-        frequency: 'ongoing'
-      });
-
-      console.log(`⚠️ STAFFING VIOLATION: Facility ${facilityId} requires ${requiredStaff} staff but only has ${activeStaffCount} active. Score penalized by 25 points.`);
-    }
-
+  if (facilityError || !facility) {
+    console.error('❌ Failed to load facility profile for compliance scoring:', facilityError);
     return {
-      calculatedScore,
-      identifiedGaps,
-      staffCount: activeStaffCount
-    };
-  } catch (error) {
-    console.error("❌ Failed to query metrics inside getRegulatoryStatus:", error);
-    return {
-      calculatedScore: 0,
+      facilityReadinessScore: 0,
+      personnelReadinessScore: 0,
       identifiedGaps: [],
-      staffCount: 0
+      staffCount: 0,
+      capacity: null,
+      activeEnrollment: null,
+      enrollmentUpdatedAt: null,
     };
   }
+
+  const facilityProfile = facility as unknown as Facility;
+
+  // 2. THE DUMB FETCH: pull every rule. We will filter in TypeScript.
+  const { data: allRules, error: rulesError } = await supabase
+    .from('compliance_criteria')
+    .select('*');
+
+  if (rulesError) {
+    console.error('❌ Supabase fetch error on compliance_criteria:', rulesError);
+    // Fail gracefully so dependent UI (staffing math, blueprints) still renders.
+  }
+
+  // 3. THE SMART FILTER: keep rules that match the facility type AND scope toggles.
+  const applicableRules: ComplianceRule[] = (allRules || [])
+    .filter((rule: Record<string, unknown>) =>
+      ruleAppliesToFacility(rule as unknown as ComplianceRule, facilityProfile)
+    )
+    .map((rule: Record<string, unknown>) => ({
+      id: rule.id as string,
+      facility_type: rule.facility_type as ComplianceRule['facility_type'],
+      sub_classification: (rule.sub_classification ?? null) as ComplianceRule['sub_classification'],
+      requirement_name: (rule.requirement_name as string) ?? '',
+      required_document_type: (rule.required_document_type as string) ?? '',
+      severity: ((rule.severity as ComplianceRule['severity']) ?? 'standard'),
+      frequency: (rule.frequency as ComplianceRule['frequency']) ?? 'annual',
+      is_scored: resolveIsScored(rule),
+      score_category: resolveScoreCategory(rule),
+    }));
+
+  console.log(
+    `📋 Compliance Engine: ${allRules?.length ?? 0} total rules → ${applicableRules.length} applicable for ${facilityProfile.facility_type}.`
+  );
+
+  // 4. Fetch approved facility documents to compute satisfied requirements.
+  const { data: uploadedDocs } = await supabase
+    .from('facility_documents')
+    .select('document_type, status')
+    .eq('facility_id', facilityId)
+    .eq('status', 'approved');
+
+  const uploadedDocTypes = (uploadedDocs || [])
+    .map((d: { document_type: string | null }) => d.document_type)
+    .filter((t): t is string => Boolean(t));
+
+  const satisfiedRuleIds = new Set<string>();
+  for (const rule of applicableRules) {
+    const isMatched = uploadedDocTypes.some((docType) =>
+      tokensMatch(rule.required_document_type, docType)
+    );
+    if (isMatched) {
+      satisfiedRuleIds.add(rule.id);
+    }
+  }
+
+  // 5. THE TWIN-SCORE MATH: separate buckets for facility vs. personnel rules.
+  const facilityScoredRules = applicableRules.filter(
+    (r) => r.is_scored && r.score_category === 'facility'
+  );
+  const personnelScoredRules = applicableRules.filter(
+    (r) => r.is_scored && r.score_category === 'personnel'
+  );
+
+  const facilityVerified = facilityScoredRules.filter((r) => satisfiedRuleIds.has(r.id)).length;
+  const personnelVerified = personnelScoredRules.filter((r) => satisfiedRuleIds.has(r.id)).length;
+
+  const facilityReadinessScore =
+    facilityScoredRules.length > 0
+      ? Math.round((facilityVerified / facilityScoredRules.length) * 100)
+      : 100;
+
+  const personnelReadinessScore =
+    personnelScoredRules.length > 0
+      ? Math.round((personnelVerified / personnelScoredRules.length) * 100)
+      : 100;
+
+  console.log(
+    `📊 Twin-Score → Facility: ${facilityVerified}/${facilityScoredRules.length} = ${facilityReadinessScore}% | Personnel: ${personnelVerified}/${personnelScoredRules.length} = ${personnelReadinessScore}%`
+  );
+
+  // 6. Build the dynamic gap list for the UI. We include ALL applicable rules (whether scored or not)
+  //    so the UI can decide where to render them (checklist vs blueprint).
+  const identifiedGaps: IdentifiedGap[] = applicableRules
+    .filter((rule) => !satisfiedRuleIds.has(rule.id))
+    .map((rule) => ({
+      id: rule.id,
+      name: rule.requirement_name,
+      typeKey: rule.required_document_type,
+      severity: rule.severity,
+      frequency: rule.frequency,
+      is_scored: rule.is_scored,
+      score_category: rule.score_category,
+    }));
+
+  // 7. Active staff count for the personnel headcount widget.
+  const { count: personnelCount } = await supabase
+    .from('personnel')
+    .select('*', { count: 'exact', head: true })
+    .eq('facility_id', facilityId)
+    .eq('status', 'active');
+
+  return {
+    facilityReadinessScore,
+    personnelReadinessScore,
+    identifiedGaps,
+    staffCount: personnelCount ?? 0,
+    capacity: facilityProfile.capacity ?? null,
+    activeEnrollment: facilityProfile.active_enrollment ?? null,
+    enrollmentUpdatedAt: facilityProfile.enrollment_updated_at ?? null,
+  };
 }

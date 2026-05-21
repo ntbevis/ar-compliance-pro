@@ -1,0 +1,167 @@
+// src/lib/types.ts
+// Central strict-typed schema definitions. The source of truth for our pristine taxonomy.
+
+/**
+ * Top-level regulatory authority domain.
+ * Aligns with the `facility_type` column in the `facilities` and `compliance_criteria` tables.
+ */
+export type FacilityType = 'childcare_center' | 'nursing_home';
+
+/**
+ * Sub-classification toggles persisted as boolean columns on the `facilities` table.
+ * These are the "scope tags" that activate/deactivate specific rules and roles.
+ */
+export interface FacilityScopeToggles {
+  // --- Childcare Center toggles ---
+  infant_toddler: boolean;
+  transportation: boolean;
+  food_service: boolean;
+  water_activities: boolean;
+  pets: boolean;
+  special_needs: boolean;
+  sick_care: boolean;
+  school_age: boolean;
+  night_care: boolean;
+
+  // --- Nursing Home toggles ---
+  private_water: boolean;
+  memory_care: boolean;
+}
+
+export const FACILITY_TOGGLE_KEYS: ReadonlyArray<keyof FacilityScopeToggles> = [
+  'infant_toddler',
+  'transportation',
+  'food_service',
+  'water_activities',
+  'pets',
+  'special_needs',
+  'sick_care',
+  'school_age',
+  'night_care',
+  'private_water',
+  'memory_care',
+] as const;
+
+export type FacilityToggleKey = keyof FacilityScopeToggles;
+
+/**
+ * Display labels for the boolean toggles surfaced in onboarding/settings UI.
+ */
+export const FACILITY_TOGGLE_LABELS: Record<FacilityToggleKey, string> = {
+  infant_toddler: 'Infants / Toddlers',
+  transportation: 'Transportation',
+  food_service: 'Food Service',
+  water_activities: 'Water Activities',
+  pets: 'Pets On-Site',
+  special_needs: 'Special Needs Care',
+  sick_care: 'Sick Care',
+  school_age: 'School Age Program',
+  night_care: 'Night Care',
+  private_water: 'Private Water Source',
+  memory_care: "Alzheimer's / Memory Care Unit",
+};
+
+/**
+ * Which toggles apply to which facility type. Used to filter the UI.
+ */
+export const TOGGLES_BY_FACILITY_TYPE: Record<FacilityType, ReadonlyArray<FacilityToggleKey>> = {
+  childcare_center: [
+    'infant_toddler',
+    'transportation',
+    'food_service',
+    'water_activities',
+    'pets',
+    'special_needs',
+    'sick_care',
+    'school_age',
+    'night_care',
+  ],
+  nursing_home: ['private_water', 'memory_care'],
+};
+
+/**
+ * Full Facility model as stored in the `facilities` table.
+ */
+export interface Facility extends FacilityScopeToggles {
+  id: string;
+  org_id: string;
+  name: string;
+  facility_type: FacilityType;
+  license_number: string | null;
+  capacity: number | null;
+  active_enrollment: number | null;
+  enrollment_updated_at: string | null;
+  director_id: string | null;
+  created_at?: string;
+}
+
+/**
+ * A "score category" classifies which of the twin dials a rule contributes to.
+ * - 'facility' rolls into the 🏢 Facility Operations Score
+ * - 'personnel' rolls into the 👥 Personnel & Licensing Upkeep score
+ * - null means the rule is informational/operational and does not factor into either dial
+ */
+export type ScoreCategory = 'facility' | 'personnel' | null;
+
+/**
+ * A compliance rule as stored in `compliance_criteria`.
+ * Note the deliberate removal of `is_personnel_requirement` in favor of `score_category`.
+ */
+export interface ComplianceRule {
+  id: string;
+  facility_type: FacilityType;
+  sub_classification: FacilityToggleKey | null;
+  requirement_name: string;
+  required_document_type: string;
+  severity: 'critical' | 'standard';
+  frequency: ComplianceFrequency;
+  is_scored: boolean;
+  score_category: ScoreCategory;
+}
+
+/**
+ * Frequencies we treat as first-class strings throughout the engine.
+ * Any string is accepted at runtime, but these are the canonical values.
+ */
+export type ComplianceFrequency =
+  | 'one-time'
+  | 'daily'
+  | 'weekly'
+  | 'monthly'
+  | 'quarterly'
+  | 'biannual'
+  | 'annual'
+  | '2_years'
+  | '3_years'
+  | '5_years'
+  | '10_years'
+  | 'ongoing'
+  | string;
+
+/**
+ * The shape returned by the Twin-Score Engine for an individual outstanding rule.
+ */
+export interface IdentifiedGap {
+  id: string;
+  name: string;
+  typeKey: string;
+  severity: 'critical' | 'standard';
+  frequency: ComplianceFrequency;
+  is_scored: boolean;
+  score_category: ScoreCategory;
+  completed?: boolean;
+  completionType?: 'document' | 'attestation' | 'n/a';
+}
+
+/**
+ * Aggregated payload returned to the dashboard.
+ */
+export interface RegulatoryStatus {
+  facilityReadinessScore: number;
+  personnelReadinessScore: number;
+  identifiedGaps: IdentifiedGap[];
+  staffCount: number;
+  capacity: number | null;
+  activeEnrollment: number | null;
+  enrollmentUpdatedAt: string | null;
+}

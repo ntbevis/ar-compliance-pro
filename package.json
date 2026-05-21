@@ -6,19 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
-    "ingest": "tsx run-ingestion.ts",
-    "discover": "tsx run-discovery.ts",
-    "discover:roles": "tsx run-role-discovery.ts"
+    "lint": "eslint"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.105.4",
     "next": "16.2.6",
-    "openai": "^6.37.0",
-    "pdf-parse": "^2.4.5",
-    "pdf-to-text": "^0.0.7",
-    "pdf2json": "^4.0.3",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "zod": "^4.4.3"
@@ -26,7 +19,6 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.0",
     "@types/node": "^20.19.41",
-    "@types/pdf-parse": "^1.1.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

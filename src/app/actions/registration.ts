@@ -55,11 +55,12 @@ export async function submitRegistrationRequest(formData: {
       requestId: data.id
     };
 
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
     console.error('❌ Exception in submitRegistrationRequest:', error);
-    return { 
-      success: false, 
-      error: error.message || 'An unexpected error occurred' 
+    return {
+      success: false,
+      error: message,
     };
   }
 }

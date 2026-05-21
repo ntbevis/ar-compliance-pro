@@ -51,8 +51,9 @@ export default function RequestAccessPage() {
       } else {
         setError(result.error || 'Failed to submit request');
       }
-    } catch (err: any) {
-      setError(err.message || 'An unexpected error occurred');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'An unexpected error occurred';
+      setError(message);
     } finally {
       setSubmitting(false);
     }

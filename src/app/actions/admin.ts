@@ -80,11 +80,12 @@ export async function getPendingRequests() {
       success: true,
       requests: requests || []
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
     console.error('❌ Exception in getPendingRequests:', error);
     return {
       success: false,
-      error: error.message || 'An unexpected error occurred',
+      error: message,
       requests: []
     };
   }
@@ -204,11 +205,12 @@ export async function approveRegistrationRequest(requestId: string) {
       userId: newUserId
     };
     
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
     console.error('❌ Exception in approveRegistrationRequest:', error);
     return {
       success: false,
-      error: error.message || 'An unexpected error occurred'
+      error: message
     };
   }
 }

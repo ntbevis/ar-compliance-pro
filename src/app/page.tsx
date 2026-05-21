@@ -47,8 +47,9 @@ export default function LandingPage() {
       } else if (data.session) {
         router.replace('/dashboard');
       }
-    } catch (err: any) {
-      setError(err.message || 'An unexpected error occurred');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'An unexpected error occurred';
+      setError(message);
     } finally {
       setSigningIn(false);
     }
@@ -101,7 +102,8 @@ export default function LandingPage() {
             </h2>
             
             <p className="text-xl text-blue-200 leading-relaxed">
-              AI-powered regulatory monitoring, real-time document verification, and automated staffing ratio enforcement for childcare and nursing home facilities.
+              Twin-score regulatory monitoring, dynamic facility scope flags, and real-time
+              personnel licensing oversight for childcare centers and nursing homes.
             </p>
 
             <div className="space-y-4 pt-4">
@@ -124,8 +126,8 @@ export default function LandingPage() {
                   </svg>
                 </div>
                 <div>
-                  <h3 className="font-semibold text-lg">AI Document Verification</h3>
-                  <p className="text-blue-200 text-sm">Multimodal AI scans documents for compliance violations automatically</p>
+                  <h3 className="font-semibold text-lg">Operator-Verified Document Vault</h3>
+                  <p className="text-blue-200 text-sm">Director attestations and uploaded evidence with full audit trail.</p>
                 </div>
               </div>
 
@@ -223,7 +225,7 @@ export default function LandingPage() {
       <footer className="absolute bottom-0 left-0 right-0 py-6">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <p className="text-center text-blue-300 text-sm">
-            © 2026 AR Compliance Guard. Powered by AI-driven regulatory intelligence.
+            © 2026 AR Compliance Guard. Strictly-typed regulatory intelligence.
           </p>
         </div>
       </footer>

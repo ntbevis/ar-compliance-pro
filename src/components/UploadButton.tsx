@@ -30,21 +30,22 @@ export default function UploadButton({ facilityId, requirementType, onUploadSucc
 
       if (storageError) throw storageError;
 
-      // 3. Insert metadata into the database
+      // 3. Insert metadata into the database — operator-confirmed, no AI verification.
       const { error: dbError } = await supabase
-        .from('facility_documents' as any)
+        .from('facility_documents')
         .insert([{
           facility_id: facilityId,
           document_type: requirementType,
           file_url: fileName,
-          status: 'pending' // AI will move this to 'approved' later
+          status: 'approved',
         }]);
 
       if (dbError) throw dbError;
 
       onUploadSuccess();
-    } catch (error: any) {
-      alert("Error: " + error.message);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      alert('Error: ' + message);
     } finally {
       setUploading(false);
     }

@@ -1,11 +1,25 @@
 'use client';
 import React, { createContext, useContext, useState } from 'react';
 
-// Define the available view tabs
-export type ViewType = 'overview' | 'personnel' | 'documents' | 'audit_logs';
+/**
+ * Available view tabs in the dashboard shell.
+ * - overview:    Executive Overview / Twin-Score Dashboard
+ * - personnel:   Personnel Vault (staff & licensing checklist)
+ * - documents:   Document Center (audit trail of uploads)
+ * - blueprints:  Operational Blueprints & Daily Guidelines
+ * - settings:    Facility Settings (scope toggles)
+ * - audit_logs:  Compliance audit trail
+ */
+export type ViewType =
+  | 'overview'
+  | 'personnel'
+  | 'documents'
+  | 'blueprints'
+  | 'settings'
+  | 'audit_logs';
 
 type FacilityContextType = {
-  selectedFacilityId: string; // 'all' or a specific UUID
+  selectedFacilityId: string;
   setSelectedFacilityId: (id: string) => void;
   currentView: ViewType;
   setCurrentView: (view: ViewType) => void;
@@ -14,11 +28,11 @@ type FacilityContextType = {
 const FacilityContext = createContext<FacilityContextType | undefined>(undefined);
 
 export function FacilityProvider({ children }: { children: React.ReactNode }) {
-  const [selectedFacilityId, setSelectedFacilityId] = useState('all');
+  const [selectedFacilityId, setSelectedFacilityId] = useState<string>('all');
   const [currentView, setCurrentView] = useState<ViewType>('overview');
 
   return (
-    <FacilityContext.Provider 
+    <FacilityContext.Provider
       value={{ selectedFacilityId, setSelectedFacilityId, currentView, setCurrentView }}
     >
       {children}

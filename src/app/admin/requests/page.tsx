@@ -10,7 +10,7 @@ interface RegistrationRequest {
   contact_name: string;
   email: string;
   phone: string;
-  facility_type: 'childcare' | 'nursing_home';
+  facility_type: 'childcare_center' | 'nursing_home';
   sub_classification: string;
   license_number: string;
   estimated_capacity: number;
@@ -40,17 +40,19 @@ export default function AdminRequestsPage() {
         }
         setError(result.error || 'Failed to load requests');
       } else {
-        setRequests(result.requests);
+        setRequests(result.requests as RegistrationRequest[]);
       }
-    } catch (err: any) {
-      setError(err.message || 'An unexpected error occurred');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'An unexpected error occurred';
+      setError(message);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadRequests();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadRequests();
   }, []);
 
   const handleApprove = async (requestId: string, businessName: string) => {
@@ -72,8 +74,9 @@ export default function AdminRequestsPage() {
       } else {
         setError(result.error || 'Failed to approve request');
       }
-    } catch (err: any) {
-      setError(err.message || 'An unexpected error occurred');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'An unexpected error occurred';
+      setError(message);
     } finally {
       setProcessingId(null);
     }
@@ -90,7 +93,7 @@ export default function AdminRequestsPage() {
   };
 
   const getFacilityTypeLabel = (type: string) => {
-    return type === 'childcare' ? '🧸 Childcare' : '🏥 Healthcare';
+    return type === 'childcare_center' ? '🧸 Childcare Center' : '🏥 Nursing Home';
   };
 
   return (
@@ -229,7 +232,7 @@ export default function AdminRequestsPage() {
                       </div>
                       <div>
                         <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Estimated Capacity</p>
-                        <p className="text-white font-medium">{request.estimated_capacity} {request.facility_type === 'childcare' ? 'children' : 'beds'}</p>
+                        <p className="text-white font-medium">{request.estimated_capacity} {request.facility_type === 'childcare_center' ? 'children' : 'beds'}</p>
                       </div>
                     </div>
                   </div>
