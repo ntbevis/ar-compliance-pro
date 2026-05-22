@@ -139,6 +139,15 @@ export type ComplianceFrequency =
   | string;
 
 /**
+ * The compliance status of a single requirement for the UI.
+ * - 'missing'        → no matching document exists
+ * - 'satisfied'      → document exists and is not near expiration
+ * - 'expiring_soon'  → document exists but expires within 30 days
+ * - 'expired'        → document exists but its expiration date has passed
+ */
+export type DocumentComplianceStatus = 'missing' | 'satisfied' | 'expiring_soon' | 'expired';
+
+/**
  * The shape returned by the Twin-Score Engine for an individual outstanding rule.
  */
 export interface IdentifiedGap {
@@ -149,6 +158,9 @@ export interface IdentifiedGap {
   frequency: ComplianceFrequency;
   is_scored: boolean;
   score_category: ScoreCategory;
+  compliance_status: DocumentComplianceStatus;
+  document_id?: string;
+  document_created_at?: string;
   completed?: boolean;
   completionType?: 'document' | 'attestation' | 'n/a';
 }

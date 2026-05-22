@@ -2,6 +2,8 @@
 import { createAdminClient } from 'src/app/utils/supabase/admin';
 import type {
   ComplianceRule,
+  ComplianceFrequency,
+  DocumentComplianceStatus,
   Facility,
   FacilityToggleKey,
   IdentifiedGap,
@@ -100,6 +102,52 @@ function resolveIsScored(rule: Record<string, unknown>): boolean {
 }
 
 /**
+ * Calculates the expiration date for a document given the rule's frequency and upload date.
+ * Returns null for frequencies that do not have a calculable expiration (e.g. 'ongoing').
+ */
+function calcExpirationDate(createdAt: string, frequency: ComplianceFrequency): Date | null {
+  const created = new Date(createdAt);
+  if (isNaN(created.getTime())) return null;
+
+  const d = new Date(created);
+  switch (frequency) {
+    case 'daily':      d.setDate(d.getDate() + 1); break;
+    case 'weekly':     d.setDate(d.getDate() + 7); break;
+    case 'monthly':    d.setMonth(d.getMonth() + 1); break;
+    case 'quarterly':  d.setMonth(d.getMonth() + 3); break;
+    case 'biannual':   d.setMonth(d.getMonth() + 6); break;
+    case 'annual':     d.setFullYear(d.getFullYear() + 1); break;
+    case '2_years':    d.setFullYear(d.getFullYear() + 2); break;
+    case '3_years':    d.setFullYear(d.getFullYear() + 3); break;
+    case '5_years':    d.setFullYear(d.getFullYear() + 5); break;
+    case '10_years':   d.setFullYear(d.getFullYear() + 10); break;
+    // one-time, ongoing, and unknown frequencies do not expire
+    default:           return null;
+  }
+  return d;
+}
+
+/**
+ * Determines the compliance status of a satisfied requirement based on
+ * when its document was uploaded and the rule's renewal frequency.
+ */
+function calcComplianceStatus(
+  createdAt: string,
+  frequency: ComplianceFrequency
+): DocumentComplianceStatus {
+  const expiration = calcExpirationDate(createdAt, frequency);
+  if (!expiration) return 'satisfied'; // ongoing / one-time — never expires
+
+  const now = new Date();
+  const msUntilExpiry = expiration.getTime() - now.getTime();
+  const daysUntilExpiry = msUntilExpiry / (1000 * 60 * 60 * 24);
+
+  if (daysUntilExpiry < 0) return 'expired';
+  if (daysUntilExpiry <= 30) return 'expiring_soon';
+  return 'satisfied';
+}
+
+/**
  * Reads from our database to calculate twin-score metrics for the dashboard.
  *
  * Returns:
@@ -178,23 +226,33 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
   // 4. Fetch approved facility documents to compute satisfied requirements.
   const { data: uploadedDocs } = await supabase
     .from('facility_documents')
-    .select('document_type, status')
+    .select('id, document_type, status, created_at')
     .eq('facility_id', facilityId)
-    .eq('status', 'approved');
+    .eq('status', 'approved')
+    .order('created_at', { ascending: false }); // newest first so we pick the freshest match
 
-  const uploadedDocTypes = (uploadedDocs || [])
-    .map((d: { document_type: string | null }) => d.document_type)
-    .filter((t): t is string => Boolean(t));
+  type UploadedDoc = { id: string; document_type: string | null; status: string; created_at: string };
+  const docs: UploadedDoc[] = (uploadedDocs || []) as UploadedDoc[];
 
-  const satisfiedRuleIds = new Set<string>();
+  // Map from rule id → the best matching document (most recent)
+  const satisfiedRuleMap = new Map<string, { docId: string; createdAt: string; status: DocumentComplianceStatus }>();
+
   for (const rule of applicableRules) {
-    const isMatched = uploadedDocTypes.some((docType) =>
-      tokensMatch(rule.required_document_type, docType)
+    const matchingDoc = docs.find(
+      (d) => d.document_type && tokensMatch(rule.required_document_type, d.document_type)
     );
-    if (isMatched) {
-      satisfiedRuleIds.add(rule.id);
+    if (matchingDoc) {
+      const status = calcComplianceStatus(matchingDoc.created_at, rule.frequency);
+      satisfiedRuleMap.set(rule.id, {
+        docId: matchingDoc.id,
+        createdAt: matchingDoc.created_at,
+        status,
+      });
     }
   }
+
+  // A rule is "satisfied enough" for score purposes if the doc exists (even if expired/expiring)
+  const satisfiedRuleIds = new Set(satisfiedRuleMap.keys());
 
   // 5. THE TWIN-SCORE MATH: separate buckets for facility vs. personnel rules.
   const facilityScoredRules = applicableRules.filter(
@@ -221,11 +279,13 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
     `📊 Twin-Score → Facility: ${facilityVerified}/${facilityScoredRules.length} = ${facilityReadinessScore}% | Personnel: ${personnelVerified}/${personnelScoredRules.length} = ${personnelReadinessScore}%`
   );
 
-  // 6. Build the dynamic gap list for the UI. We include ALL applicable rules (whether scored or not)
-  //    so the UI can decide where to render them (checklist vs blueprint).
-  const identifiedGaps: IdentifiedGap[] = applicableRules
-    .filter((rule) => !satisfiedRuleIds.has(rule.id))
-    .map((rule) => ({
+  // 6. Build the gap list for the UI.
+  //    We include ALL applicable rules so the UI can render them (checklist vs blueprint).
+  //    Rules with an existing (possibly expired) document are still included so the user
+  //    can see their expiration status and replace the document if needed.
+  const identifiedGaps: IdentifiedGap[] = applicableRules.map((rule) => {
+    const satisfaction = satisfiedRuleMap.get(rule.id);
+    return {
       id: rule.id,
       name: rule.requirement_name,
       typeKey: rule.required_document_type,
@@ -233,7 +293,11 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
       frequency: rule.frequency,
       is_scored: rule.is_scored,
       score_category: rule.score_category,
-    }));
+      compliance_status: satisfaction ? satisfaction.status : 'missing',
+      document_id: satisfaction?.docId,
+      document_created_at: satisfaction?.createdAt,
+    };
+  });
 
   // 7. Active staff count for the personnel headcount widget.
   const { count: personnelCount } = await supabase

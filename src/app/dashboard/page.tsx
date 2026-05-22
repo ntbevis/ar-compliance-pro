@@ -498,6 +498,120 @@ export default function DashboardPage() {
           </div>
         )}
 
+        {/* Fleet Analytics Section */}
+        {facilitiesData.length > 0 && (() => {
+          const avgFacility = Math.round(
+            facilitiesData.reduce((s, f) => s + f.facilityReadinessScore, 0) / facilitiesData.length
+          );
+          const avgPersonnel = Math.round(
+            facilitiesData.reduce((s, f) => s + f.personnelReadinessScore, 0) / facilitiesData.length
+          );
+          const lowestFacility = facilitiesData.reduce((worst, f) =>
+            (f.facilityReadinessScore + f.personnelReadinessScore) <
+            (worst.facilityReadinessScore + worst.personnelReadinessScore)
+              ? f
+              : worst
+          );
+          const lowestCombined = Math.round(
+            (lowestFacility.facilityReadinessScore + lowestFacility.personnelReadinessScore) / 2
+          );
+          const dialTone = (score: number) =>
+            score >= 80
+              ? { border: 'border-emerald-500', text: 'text-emerald-600', bg: 'bg-emerald-50' }
+              : score >= 50
+              ? { border: 'border-amber-500', text: 'text-amber-600', bg: 'bg-amber-50' }
+              : { border: 'border-rose-500', text: 'text-rose-600', bg: 'bg-rose-50' };
+
+          return (
+            <div className="mb-10 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="bg-gradient-to-r from-slate-900 to-slate-700 px-8 py-5">
+                <p className="text-blue-300 text-xs font-bold uppercase tracking-widest mb-1">
+                  Fleet Analytics
+                </p>
+                <h2 className="text-2xl font-bold text-white">
+                  Organization-Wide Compliance Overview
+                </h2>
+                <p className="text-slate-400 text-sm mt-1">
+                  Averages across {facilitiesData.length} active{' '}
+                  {facilitiesData.length === 1 ? 'facility' : 'facilities'}
+                </p>
+              </div>
+
+              <div className="p-8 grid grid-cols-1 md:grid-cols-3 gap-8">
+                {/* Facility Score Dial */}
+                <div className="flex flex-col items-center text-center">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-4">
+                    🏢 Avg. Facility Score
+                  </p>
+                  <div
+                    className={`w-28 h-28 rounded-full border-8 flex items-center justify-center text-2xl font-black ${dialTone(avgFacility).border} ${dialTone(avgFacility).text} ${dialTone(avgFacility).bg}`}
+                  >
+                    {avgFacility}%
+                  </div>
+                  <div className="mt-4 w-full bg-slate-100 rounded-full h-2">
+                    <div
+                      className={`h-2 rounded-full transition-all ${avgFacility >= 80 ? 'bg-emerald-500' : avgFacility >= 50 ? 'bg-amber-500' : 'bg-rose-500'}`}
+                      style={{ width: `${avgFacility}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Personnel Score Dial */}
+                <div className="flex flex-col items-center text-center">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-4">
+                    👥 Avg. Personnel Score
+                  </p>
+                  <div
+                    className={`w-28 h-28 rounded-full border-8 flex items-center justify-center text-2xl font-black ${dialTone(avgPersonnel).border} ${dialTone(avgPersonnel).text} ${dialTone(avgPersonnel).bg}`}
+                  >
+                    {avgPersonnel}%
+                  </div>
+                  <div className="mt-4 w-full bg-slate-100 rounded-full h-2">
+                    <div
+                      className={`h-2 rounded-full transition-all ${avgPersonnel >= 80 ? 'bg-emerald-500' : avgPersonnel >= 50 ? 'bg-amber-500' : 'bg-rose-500'}`}
+                      style={{ width: `${avgPersonnel}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Needs Attention Alert */}
+                <div className="flex flex-col justify-center">
+                  {lowestCombined < 80 ? (
+                    <div className="rounded-xl border-2 border-amber-300 bg-amber-50 p-5">
+                      <p className="text-xs font-bold uppercase tracking-wider text-amber-700 mb-2">
+                        ⚠️ Needs Attention
+                      </p>
+                      <p className="font-bold text-slate-800 text-base mb-1">
+                        {lowestFacility.name}
+                      </p>
+                      <p className="text-xs text-slate-600 mb-3">
+                        Combined score: <span className="font-bold text-amber-700">{lowestCombined}%</span> — the lowest in your fleet.
+                      </p>
+                      <button
+                        onClick={() => {
+                          setSelectedFacilityId(lowestFacility.id);
+                          setCurrentView('overview');
+                        }}
+                        className="w-full text-xs font-bold px-3 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors"
+                      >
+                        View {lowestFacility.name} →
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border-2 border-emerald-300 bg-emerald-50 p-5 text-center">
+                      <p className="text-3xl mb-2">✅</p>
+                      <p className="font-bold text-emerald-800 text-sm">All Facilities Healthy</p>
+                      <p className="text-xs text-emerald-700 mt-1">
+                        Every facility is above 80% compliance.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {facilitiesData.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20">
             <div className="p-8 border border-dashed border-slate-300 rounded-2xl bg-white max-w-md shadow-sm text-center">

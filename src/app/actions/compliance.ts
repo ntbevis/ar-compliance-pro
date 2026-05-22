@@ -745,6 +745,70 @@ export async function addPersonnel(
 // =============================================================================
 
 /**
+ * Deletes a single document from `facility_documents` and writes an audit log entry.
+ * Accessible to 'owner' and 'director' roles only.
+ */
+export async function deleteDocument(documentId: string, facilityId: string) {
+  try {
+    const { userId, orgId, role } = await getAuthenticatedUserContext();
+
+    if (role !== 'owner' && role !== 'director' && role !== 'admin') {
+      return { success: false, error: 'Unauthorized: Only owners and directors can delete documents' };
+    }
+
+    const supabase = createAdminClient();
+
+    // Verify the document belongs to a facility in this org
+    const { data: doc, error: docError } = await supabase
+      .from('facility_documents')
+      .select('id, facility_id, name, document_type')
+      .eq('id', documentId)
+      .single();
+
+    if (docError || !doc) {
+      return { success: false, error: 'Document not found' };
+    }
+
+    const { data: facility } = await supabase
+      .from('facilities')
+      .select('org_id')
+      .eq('id', doc.facility_id)
+      .single();
+
+    if (!facility || facility.org_id !== orgId) {
+      return { success: false, error: 'Unauthorized: Document does not belong to your organization' };
+    }
+
+    const { error: deleteError } = await supabase
+      .from('facility_documents')
+      .delete()
+      .eq('id', documentId);
+
+    if (deleteError) {
+      return { success: false, error: 'Failed to delete document' };
+    }
+
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'document_deletion',
+      metadata: {
+        document_id: documentId,
+        document_name: doc.name,
+        document_type: doc.document_type,
+        deleted_for_replacement: true,
+      },
+    });
+
+    revalidatePath('/dashboard');
+    return { success: true };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
+  }
+}
+
+/**
  * Fetches personnel-specific documents (where metadata contains personnel_id).
  */
 export async function getPersonnelDocuments(facilityId: string) {

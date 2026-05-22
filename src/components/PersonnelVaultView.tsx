@@ -15,7 +15,9 @@ import {
   signAttestation,
   markNotApplicable,
   hashFileBuffer,
+  deleteDocument,
 } from 'src/app/actions/compliance';
+import type { DocumentComplianceStatus } from '@/lib/types';
 
 interface Props {
   facilityId: string;
@@ -47,6 +49,35 @@ interface PersonnelDocument {
   file_url: string | null;
   metadata: Record<string, unknown> | null;
   created_at: string;
+}
+
+// Client-side expiration helper (mirrors server logic in reg-monitor.ts)
+function calcPersonnelComplianceStatus(
+  createdAt: string,
+  frequency: string
+): DocumentComplianceStatus {
+  const created = new Date(createdAt);
+  if (isNaN(created.getTime())) return 'satisfied';
+
+  const expiry = new Date(created);
+  switch (frequency) {
+    case 'daily':     expiry.setDate(expiry.getDate() + 1); break;
+    case 'weekly':    expiry.setDate(expiry.getDate() + 7); break;
+    case 'monthly':   expiry.setMonth(expiry.getMonth() + 1); break;
+    case 'quarterly': expiry.setMonth(expiry.getMonth() + 3); break;
+    case 'biannual':  expiry.setMonth(expiry.getMonth() + 6); break;
+    case 'annual':    expiry.setFullYear(expiry.getFullYear() + 1); break;
+    case '2_years':   expiry.setFullYear(expiry.getFullYear() + 2); break;
+    case '3_years':   expiry.setFullYear(expiry.getFullYear() + 3); break;
+    case '5_years':   expiry.setFullYear(expiry.getFullYear() + 5); break;
+    case '10_years':  expiry.setFullYear(expiry.getFullYear() + 10); break;
+    default:          return 'satisfied'; // one-time / ongoing — never expires
+  }
+
+  const daysLeft = (expiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+  if (daysLeft < 0) return 'expired';
+  if (daysLeft <= 30) return 'expiring_soon';
+  return 'satisfied';
 }
 
 interface NewPersonnelForm {
@@ -87,6 +118,15 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   const [signingReqId, setSigningReqId] = useState<string | null>(null);
   const [markingNAReqId, setMarkingNAReqId] = useState<string | null>(null);
   const [personnelToArchive, setPersonnelToArchive] = useState<PersonnelRecord | null>(null);
+
+  // Document management modal state
+  const [docManagementItem, setDocManagementItem] = useState<{
+    personnelId: string;
+    req: RoleRequirement;
+    doc: PersonnelDocument;
+  } | null>(null);
+  const [confirmingDocDelete, setConfirmingDocDelete] = useState(false);
+  const [deletingDoc, setDeletingDoc] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -174,16 +214,41 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     }
   };
 
-  const isRequirementSatisfied = (personnelId: string, typeKey: string): boolean => {
-    return personnelDocuments.some((doc) => {
-      const meta = doc.metadata as Record<string, unknown> | null;
-      return (
-        meta &&
-        meta.personnel_id === personnelId &&
-        doc.document_type === typeKey &&
-        doc.status === 'approved'
-      );
-    });
+  const getMatchingPersonnelDoc = (
+    personnelId: string,
+    typeKey: string
+  ): PersonnelDocument | null => {
+    return (
+      personnelDocuments.find((doc) => {
+        const meta = doc.metadata as Record<string, unknown> | null;
+        return (
+          meta &&
+          meta.personnel_id === personnelId &&
+          doc.document_type === typeKey &&
+          doc.status === 'approved'
+        );
+      }) ?? null
+    );
+  };
+
+  const handleDocDelete = async () => {
+    if (!docManagementItem) return;
+    setDeletingDoc(true);
+    try {
+      const result = await deleteDocument(docManagementItem.doc.id, facilityId);
+      if (result.success) {
+        const refreshedDocs = (await getPersonnelDocuments(facilityId)) as PersonnelDocument[];
+        setPersonnelDocuments(refreshedDocs);
+        setDocManagementItem(null);
+        setConfirmingDocDelete(false);
+        router.refresh();
+      } else {
+        alert(`❌ Delete failed: ${result.error}`);
+        setConfirmingDocDelete(false);
+      }
+    } finally {
+      setDeletingDoc(false);
+    }
   };
 
   const handlePersonnelUpload = async (
@@ -342,6 +407,91 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                   {separatingId !== null ? 'Archiving…' : 'Yes, Archive Employee'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Document Management Modal */}
+      {docManagementItem && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full">
+            <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 rounded-t-xl flex items-center justify-between">
+              <h2 className="text-lg font-bold text-white">Document Management</h2>
+              <button
+                onClick={() => { setDocManagementItem(null); setConfirmingDocDelete(false); }}
+                className="text-white/70 hover:text-white text-2xl leading-none"
+              >
+                ×
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="space-y-1">
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Requirement</p>
+                <p className="font-semibold text-slate-800">{docManagementItem.req.name}</p>
+                <p className="text-[11px] font-mono text-slate-400">{docManagementItem.req.typeKey}</p>
+              </div>
+              <div className="bg-slate-50 rounded-lg p-4 space-y-2 border border-slate-200 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Upload Date</span>
+                  <span className="font-medium text-slate-800">
+                    {new Date(docManagementItem.doc.created_at).toLocaleDateString()}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Frequency</span>
+                  <span className="font-medium text-slate-800">
+                    {docManagementItem.req.frequency.replace(/_/g, ' ').toUpperCase()}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Current Status</span>
+                  <span className={`font-bold text-xs px-2 py-0.5 rounded-full ${
+                    calcPersonnelComplianceStatus(docManagementItem.doc.created_at, docManagementItem.req.frequency) === 'expired'
+                      ? 'bg-rose-100 text-rose-700'
+                      : calcPersonnelComplianceStatus(docManagementItem.doc.created_at, docManagementItem.req.frequency) === 'expiring_soon'
+                      ? 'bg-amber-100 text-amber-700'
+                      : 'bg-emerald-100 text-emerald-700'
+                  }`}>
+                    {calcPersonnelComplianceStatus(docManagementItem.doc.created_at, docManagementItem.req.frequency) === 'expired'
+                      ? '🔴 Expired'
+                      : calcPersonnelComplianceStatus(docManagementItem.doc.created_at, docManagementItem.req.frequency) === 'expiring_soon'
+                      ? '🟡 Expiring Soon'
+                      : '✅ Satisfied'}
+                  </span>
+                </div>
+              </div>
+
+              {confirmingDocDelete ? (
+                <div className="rounded-xl border-2 border-rose-300 bg-rose-50 p-4 space-y-3">
+                  <p className="text-sm font-bold text-rose-800">
+                    ⚠️ Are you sure? This will permanently delete the document and reset this requirement to &ldquo;Missing.&rdquo;
+                  </p>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setConfirmingDocDelete(false)}
+                      disabled={deletingDoc}
+                      className="flex-1 px-4 py-2 rounded-lg bg-slate-200 text-slate-700 font-medium hover:bg-slate-300 disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleDocDelete}
+                      disabled={deletingDoc}
+                      className="flex-1 px-4 py-2 rounded-lg bg-rose-600 text-white font-medium hover:bg-rose-700 disabled:opacity-50"
+                    >
+                      {deletingDoc ? 'Deleting…' : 'Yes, Delete Document'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmingDocDelete(true)}
+                  className="w-full px-4 py-2.5 bg-rose-600 text-white rounded-lg font-medium hover:bg-rose-700 transition-colors"
+                >
+                  🗑️ Delete &amp; Replace Document
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -562,17 +712,41 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                     ) : (
                       <ul className="divide-y divide-slate-200 bg-white rounded-lg border border-slate-200">
                         {requirements.map((req) => {
-                          const isSatisfied = isRequirementSatisfied(person.id, req.typeKey);
+                          const matchingDoc = getMatchingPersonnelDoc(person.id, req.typeKey);
+                          const complianceStatus: DocumentComplianceStatus = matchingDoc
+                            ? calcPersonnelComplianceStatus(matchingDoc.created_at, req.frequency)
+                            : 'missing';
+                          const isMissing = complianceStatus === 'missing';
                           const isBusy =
                             uploadingReqId === req.id ||
                             signingReqId === req.id ||
                             markingNAReqId === req.id;
 
+                          const statusBadgeClass: Record<DocumentComplianceStatus, string> = {
+                            satisfied:     'bg-emerald-100 text-emerald-700 hover:bg-emerald-200',
+                            expiring_soon: 'bg-amber-100 text-amber-700 hover:bg-amber-200',
+                            expired:       'bg-rose-100 text-rose-700 hover:bg-rose-200',
+                            missing:       '',
+                          };
+                          const statusBadgeLabel: Record<DocumentComplianceStatus, string> = {
+                            satisfied:     '✅ Satisfied',
+                            expiring_soon: '🟡 Expiring Soon',
+                            expired:       '🔴 Expired',
+                            missing:       '',
+                          };
+
                           return (
                             <li key={req.id} className="px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                               <div className="flex-1">
-                                <p className="text-sm font-medium text-slate-800">{req.name}</p>
+                                <p className={`text-sm font-medium ${isMissing ? 'text-slate-800' : 'text-slate-500'}`}>
+                                  {req.name}
+                                </p>
                                 <p className="text-[11px] text-slate-400 font-mono">{req.typeKey}</p>
+                                {!isMissing && matchingDoc && (
+                                  <p className="text-[10px] text-slate-400 italic mt-0.5">
+                                    Uploaded {new Date(matchingDoc.created_at).toLocaleDateString()} · Click badge to manage
+                                  </p>
+                                )}
                               </div>
                               <div className="flex items-center gap-2 flex-wrap">
                                 <span
@@ -588,10 +762,21 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                   {req.frequency.toUpperCase()}
                                 </span>
 
-                                {isSatisfied ? (
-                                  <span className="text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-100 text-emerald-700">
-                                    ✅ Satisfied
-                                  </span>
+                                {!isMissing ? (
+                                  <button
+                                    onClick={() =>
+                                      matchingDoc &&
+                                      setDocManagementItem({
+                                        personnelId: person.id,
+                                        req,
+                                        doc: matchingDoc,
+                                      })
+                                    }
+                                    className={`text-xs font-medium px-2.5 py-1 rounded-md transition-colors cursor-pointer ${statusBadgeClass[complianceStatus]}`}
+                                    title="Click to manage this document"
+                                  >
+                                    {statusBadgeLabel[complianceStatus]}
+                                  </button>
                                 ) : isBusy ? (
                                   <div className="flex items-center gap-2 text-indigo-600 font-bold text-xs animate-pulse">
                                     <span className="w-3 h-3 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></span>

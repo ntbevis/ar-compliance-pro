@@ -8,8 +8,9 @@ import {
   markNotApplicable,
   recordDocumentUpload,
   hashFileBuffer,
+  deleteDocument,
 } from 'src/app/actions/compliance';
-import type { IdentifiedGap } from '@/lib/types';
+import type { DocumentComplianceStatus, IdentifiedGap } from '@/lib/types';
 
 interface DashboardProps {
   facilityId: string;
@@ -21,6 +22,8 @@ interface DashboardProps {
 type DashboardGap = IdentifiedGap;
 
 type ChecklistTab = 'facility' | 'personnel';
+
+// ── Score Dial ──────────────────────────────────────────────────────────────
 
 function ScoreDial({
   label,
@@ -58,6 +61,183 @@ function ScoreDial({
   );
 }
 
+// ── Compliance Status Badge ──────────────────────────────────────────────────
+
+function StatusBadge({
+  status,
+  onClick,
+}: {
+  status: DocumentComplianceStatus;
+  onClick?: () => void;
+}) {
+  if (status === 'satisfied') {
+    return (
+      <button
+        onClick={onClick}
+        className="text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-100 text-emerald-700 hover:bg-emerald-200 transition-colors cursor-pointer"
+        title="Click to manage this document"
+      >
+        ✅ Satisfied
+      </button>
+    );
+  }
+  if (status === 'expiring_soon') {
+    return (
+      <button
+        onClick={onClick}
+        className="text-xs font-medium px-2.5 py-1 rounded-md bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors cursor-pointer"
+        title="Click to manage this document"
+      >
+        🟡 Expiring Soon
+      </button>
+    );
+  }
+  if (status === 'expired') {
+    return (
+      <button
+        onClick={onClick}
+        className="text-xs font-medium px-2.5 py-1 rounded-md bg-rose-100 text-rose-700 hover:bg-rose-200 transition-colors cursor-pointer"
+        title="Click to manage this document"
+      >
+        🔴 Expired
+      </button>
+    );
+  }
+  return null;
+}
+
+// ── Document Management Modal ────────────────────────────────────────────────
+
+function DocManagementModal({
+  gap,
+  facilityId,
+  onClose,
+  onDeleted,
+}: {
+  gap: DashboardGap;
+  facilityId: string;
+  onClose: () => void;
+  onDeleted: (gapId: string) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDelete = async () => {
+    if (!gap.document_id) return;
+    setDeleting(true);
+    try {
+      const result = await deleteDocument(gap.document_id, facilityId);
+      if (result.success) {
+        onDeleted(gap.id);
+        onClose();
+      } else {
+        alert(`❌ Delete failed: ${result.error}`);
+        setConfirming(false);
+      }
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const statusLabel: Record<DocumentComplianceStatus, string> = {
+    satisfied: 'Satisfied',
+    expiring_soon: 'Expiring Soon',
+    expired: 'Expired',
+    missing: 'Missing',
+  };
+
+  const statusColor: Record<DocumentComplianceStatus, string> = {
+    satisfied: 'text-emerald-700 bg-emerald-100',
+    expiring_soon: 'text-amber-700 bg-amber-100',
+    expired: 'text-rose-700 bg-rose-100',
+    missing: 'text-slate-700 bg-slate-100',
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full">
+        <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 rounded-t-xl flex items-center justify-between">
+          <h2 className="text-lg font-bold text-white">Document Management</h2>
+          <button
+            onClick={onClose}
+            className="text-white/70 hover:text-white text-2xl leading-none"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="p-6 space-y-4">
+          {/* Requirement details */}
+          <div className="space-y-2">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Requirement</p>
+                <p className="font-semibold text-slate-800">{gap.name}</p>
+                <p className="text-[11px] font-mono text-slate-400 mt-0.5">{gap.typeKey}</p>
+              </div>
+              <span className={`shrink-0 text-xs font-bold px-2.5 py-1 rounded-full ${statusColor[gap.compliance_status]}`}>
+                {statusLabel[gap.compliance_status]}
+              </span>
+            </div>
+          </div>
+
+          <div className="bg-slate-50 rounded-lg p-4 space-y-2 border border-slate-200">
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-500">Frequency</span>
+              <span className="font-medium text-slate-800">
+                {String(gap.frequency).replace(/_/g, ' ').toUpperCase()}
+              </span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-500">Upload Date</span>
+              <span className="font-medium text-slate-800">
+                {gap.document_created_at
+                  ? new Date(gap.document_created_at).toLocaleDateString()
+                  : '—'}
+              </span>
+            </div>
+          </div>
+
+          {/* Inline delete confirmation */}
+          {confirming ? (
+            <div className="rounded-xl border-2 border-rose-300 bg-rose-50 p-4 space-y-3">
+              <p className="text-sm font-bold text-rose-800">
+                ⚠️ Are you sure? This will permanently delete the document and reset this requirement to "Missing."
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setConfirming(false)}
+                  disabled={deleting}
+                  className="flex-1 px-4 py-2 rounded-lg bg-slate-200 text-slate-700 font-medium hover:bg-slate-300 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDelete}
+                  disabled={deleting}
+                  className="flex-1 px-4 py-2 rounded-lg bg-rose-600 text-white font-medium hover:bg-rose-700 disabled:opacity-50"
+                >
+                  {deleting ? 'Deleting…' : 'Yes, Delete Document'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirming(true)}
+              disabled={!gap.document_id}
+              className="w-full px-4 py-2.5 bg-rose-600 text-white rounded-lg font-medium hover:bg-rose-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              🗑️ Delete &amp; Replace Document
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main Dashboard Component ─────────────────────────────────────────────────
+
 export default function ComplianceDashboardClient({
   facilityId,
   facilityReadinessScore,
@@ -76,25 +256,43 @@ export default function ComplianceDashboardClient({
   const [signingAttestationId, setSigningAttestationId] = useState<string | null>(null);
   const [markingNAId, setMarkingNAId] = useState<string | null>(null);
 
-  // Only `is_scored === true` rules appear in the dashboard tabs.
+  // Document management modal
+  const [docManagementGap, setDocManagementGap] = useState<DashboardGap | null>(null);
+
+  // Scored rules partitioned by category
   const scoredGaps = gaps.filter((g) => g.is_scored);
   const facilityGaps = scoredGaps.filter((g) => g.score_category === 'facility');
   const personnelGaps = scoredGaps.filter((g) => g.score_category === 'personnel');
 
+  // Tab badge count = rules that need attention
+  const needsAttention = (g: DashboardGap) =>
+    !g.completed && g.compliance_status !== 'satisfied';
+
+  const facilityAttentionCount = facilityGaps.filter(needsAttention).length;
+  const personnelAttentionCount = personnelGaps.filter(needsAttention).length;
+
+  // ── Score recomputation ────────────────────────────────────────────────────
+
   const recomputeScoresAfterCompletion = (gap: DashboardGap) => {
     if (!gap.is_scored) return;
-
-    const recompute = (bucket: DashboardGap[]) => {
+    const countSatisfied = (bucket: DashboardGap[]) => {
       if (bucket.length === 0) return 100;
-      const satisfied = bucket.filter((g) => g.completed).length;
+      const satisfied = bucket.filter(
+        (g) => g.completed || g.compliance_status !== 'missing'
+      ).length;
       return Math.round((satisfied / bucket.length) * 100);
     };
-
     if (gap.score_category === 'facility') {
-      setScoreFacility(recompute(facilityGaps.map((g) => (g.id === gap.id ? { ...g, completed: true } : g))));
+      setScoreFacility(
+        countSatisfied(
+          facilityGaps.map((g) => (g.id === gap.id ? { ...g, completed: true } : g))
+        )
+      );
     } else if (gap.score_category === 'personnel') {
       setScorePersonnel(
-        recompute(personnelGaps.map((g) => (g.id === gap.id ? { ...g, completed: true } : g)))
+        countSatisfied(
+          personnelGaps.map((g) => (g.id === gap.id ? { ...g, completed: true } : g))
+        )
       );
     }
   };
@@ -102,10 +300,28 @@ export default function ComplianceDashboardClient({
   const markGapCompleted = (gapId: string, completionType: 'document' | 'attestation' | 'n/a') => {
     const target = gaps.find((g) => g.id === gapId);
     setGaps((prev) =>
-      prev.map((g) => (g.id === gapId ? { ...g, completed: true, completionType } : g))
+      prev.map((g) =>
+        g.id === gapId
+          ? { ...g, completed: true, completionType, compliance_status: 'satisfied' }
+          : g
+      )
     );
     if (target) recomputeScoresAfterCompletion(target);
   };
+
+  // When a document is deleted: reset the gap back to 'missing' so action buttons reappear
+  const handleDocDeleted = (gapId: string) => {
+    setGaps((prev) =>
+      prev.map((g) =>
+        g.id === gapId
+          ? { ...g, compliance_status: 'missing', completed: false, document_id: undefined, document_created_at: undefined }
+          : g
+      )
+    );
+    router.refresh();
+  };
+
+  // ── Upload / Attest / N/A handlers ────────────────────────────────────────
 
   const handleUploadEvidence = async (gap: DashboardGap, file: File) => {
     if (!userAttestation) {
@@ -210,25 +426,38 @@ export default function ComplianceDashboardClient({
     }
   };
 
+  // ── Row renderer ──────────────────────────────────────────────────────────
+
   const renderGapRow = (gap: DashboardGap) => {
-    const isBusy = uploadingId === gap.id || signingAttestationId === gap.id || markingNAId === gap.id;
-    const isCompleted = Boolean(gap.completed);
+    const isBusy =
+      uploadingId === gap.id ||
+      signingAttestationId === gap.id ||
+      markingNAId === gap.id;
+
+    const status = gap.completed ? 'satisfied' : gap.compliance_status;
+    const isMissing = status === 'missing';
 
     return (
       <div
         key={gap.id}
         className={`p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 transition-colors ${
-          isCompleted ? 'bg-slate-50' : 'hover:bg-slate-50/50'
+          !isMissing ? 'bg-slate-50/60' : 'hover:bg-slate-50/50'
         }`}
       >
         <div className="space-y-0.5 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className={`font-semibold text-sm ${isCompleted ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
+            <span
+              className={`font-semibold text-sm ${
+                !isMissing ? 'text-slate-500' : 'text-slate-800'
+              }`}
+            >
               {gap.name}
             </span>
             <span
               className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
-                gap.severity === 'critical' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'
+                gap.severity === 'critical'
+                  ? 'bg-rose-100 text-rose-700'
+                  : 'bg-slate-100 text-slate-600'
               }`}
             >
               {gap.severity.toUpperCase()}
@@ -238,25 +467,23 @@ export default function ComplianceDashboardClient({
                 {String(gap.frequency).replace(/_/g, ' ').toUpperCase()}
               </span>
             )}
-            {isCompleted && (
-              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
-                {gap.completionType === 'n/a' ? 'N/A' : 'COMPLETED'}
-              </span>
-            )}
           </div>
-          <p className={`text-[11px] font-mono ${isCompleted ? 'text-slate-300' : 'text-slate-400'}`}>
+          <p className="text-[11px] font-mono text-slate-400">
             Requirement Key: {gap.typeKey}
           </p>
-          {isCompleted && (
-            <p className="text-[10px] text-slate-400 italic mt-1">
-              To undo, delete this record from the Document Center.
+          {!isMissing && gap.document_created_at && (
+            <p className="text-[10px] text-slate-400 italic mt-0.5">
+              Uploaded {new Date(gap.document_created_at).toLocaleDateString()} · Click badge to manage
             </p>
           )}
         </div>
 
         <div className="flex items-center gap-2">
-          {isCompleted ? (
-            <div className="text-emerald-600 font-medium text-xs">✓ Satisfied</div>
+          {!isMissing ? (
+            <StatusBadge
+              status={status}
+              onClick={() => setDocManagementGap(gap)}
+            />
           ) : isBusy ? (
             <div className="flex items-center gap-2 text-indigo-600 font-bold text-xs animate-pulse">
               <span className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></span>
@@ -270,7 +497,11 @@ export default function ComplianceDashboardClient({
                     ? 'bg-blue-600 hover:bg-blue-700 text-white'
                     : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                 }`}
-                title={userAttestation ? 'Upload evidence' : 'Please check the legal certification box above'}
+                title={
+                  userAttestation
+                    ? 'Upload evidence'
+                    : 'Please check the legal certification box above'
+                }
               >
                 Upload
                 <input
@@ -318,6 +549,16 @@ export default function ComplianceDashboardClient({
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto text-slate-800">
+      {/* Document Management Modal */}
+      {docManagementGap && (
+        <DocManagementModal
+          gap={docManagementGap}
+          facilityId={facilityId}
+          onClose={() => setDocManagementGap(null)}
+          onDeleted={handleDocDeleted}
+        />
+      )}
+
       {/* Twin Dials */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <ScoreDial
@@ -352,8 +593,9 @@ export default function ComplianceDashboardClient({
               </span>
             </div>
             <p className="text-sm text-amber-900 leading-relaxed">
-              I certify that this information is authentic, unaltered, and satisfies Arkansas DHS requirements.
-              I understand that providing false information may result in penalties under state and federal law.
+              I certify that this information is authentic, unaltered, and satisfies Arkansas DHS
+              requirements. I understand that providing false information may result in penalties under
+              state and federal law.
             </p>
           </label>
         </div>
@@ -373,9 +615,11 @@ export default function ComplianceDashboardClient({
             }`}
           >
             🏢 Building &amp; Facility Checklist
-            <span className="ml-2 inline-flex items-center justify-center min-w-[1.5rem] px-1.5 py-0.5 rounded-full text-[10px] bg-white text-slate-800">
-              {facilityGaps.length}
-            </span>
+            {facilityAttentionCount > 0 && (
+              <span className="ml-2 inline-flex items-center justify-center min-w-[1.5rem] px-1.5 py-0.5 rounded-full text-[10px] bg-rose-100 text-rose-800">
+                {facilityAttentionCount}
+              </span>
+            )}
           </button>
           <button
             role="tab"
@@ -388,15 +632,18 @@ export default function ComplianceDashboardClient({
             }`}
           >
             👥 Staff &amp; Personnel Vault
-            <span className="ml-2 inline-flex items-center justify-center min-w-[1.5rem] px-1.5 py-0.5 rounded-full text-[10px] bg-white text-slate-800">
-              {personnelGaps.length}
-            </span>
+            {personnelAttentionCount > 0 && (
+              <span className="ml-2 inline-flex items-center justify-center min-w-[1.5rem] px-1.5 py-0.5 rounded-full text-[10px] bg-rose-100 text-rose-800">
+                {personnelAttentionCount}
+              </span>
+            )}
           </button>
         </div>
 
         {activeGaps.length === 0 ? (
           <div className="p-12 text-center text-emerald-600 text-sm font-semibold">
-            ✅ All scored {activeTab === 'facility' ? 'facility' : 'personnel'} requirements are satisfied.
+            ✅ All scored {activeTab === 'facility' ? 'facility' : 'personnel'} requirements are
+            satisfied.
           </div>
         ) : (
           <div className="divide-y divide-slate-100">{activeGaps.map(renderGapRow)}</div>
