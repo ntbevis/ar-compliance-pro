@@ -1,18 +1,13 @@
 'use client';
 
-// 1. Define the blueprint for what a Facility and the Props look like
-interface Facility {
-  id: string;
-  name: string;
-}
+import type { Facility } from '@/lib/types';
 
 interface FacilitySelectorProps {
-  facilities: Facility[];
+  facilities: Pick<Facility, 'id' | 'name'>[];
   selectedFacilityId: string | null;
   onSelect: (value: string) => void;
 }
 
-// 2. Apply that blueprint to the function parameters with explicit Safari text-color safeguards
 export default function FacilitySelector({ facilities, selectedFacilityId, onSelect }: FacilitySelectorProps) {
   return (
     <div className="p-4 border-b border-gray-800">
