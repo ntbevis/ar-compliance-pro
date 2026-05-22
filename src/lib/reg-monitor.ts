@@ -67,7 +67,11 @@ export function ruleAppliesToFacility(
   facility: Pick<Facility, 'facility_type' | FacilityToggleKey>
 ): boolean {
   if (rule.facility_type !== facility.facility_type) return false;
-  if (rule.sub_classification === null || rule.sub_classification === undefined) {
+  if (
+    rule.sub_classification === null ||
+    rule.sub_classification === undefined ||
+    rule.sub_classification === 'null'
+  ) {
     return true;
   }
   const activated = activeToggleKeys(facility);

@@ -579,7 +579,13 @@ export async function getAvailableRoles(facilityId: string) {
 
     const filteredRoles = (roles ?? []).filter((role: Record<string, unknown>) => {
       if (role.facility_type !== facilityType) return false;
-      if (role.sub_classification === null || role.sub_classification === undefined) return true;
+      if (
+        role.sub_classification === null ||
+        role.sub_classification === undefined ||
+        role.sub_classification === 'null'
+      ) {
+        return true;
+      }
       const subKey = role.sub_classification as string;
       return facilityRow[subKey] === true;
     });
@@ -625,7 +631,7 @@ export async function getRequirementsForRole(facilityId: string, roleName: strin
     const applicable = (rules ?? []).filter((rule: Record<string, unknown>) => {
       if (rule.facility_type !== facilityType) return false;
       const subClass = rule.sub_classification;
-      if (subClass !== null && subClass !== undefined) {
+      if (subClass !== null && subClass !== undefined && subClass !== 'null') {
         if (facilityRow[subClass as string] !== true) return false;
       }
       const scoreCategory =
