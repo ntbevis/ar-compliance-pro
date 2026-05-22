@@ -86,6 +86,7 @@ export default function DashboardPage() {
   const [showAddFacilityModal, setShowAddFacilityModal] = useState<boolean>(false);
   const [addingFacility, setAddingFacility] = useState<boolean>(false);
   const [archivingFacilityId, setArchivingFacilityId] = useState<string | null>(null);
+  const [facilityToArchive, setFacilityToArchive] = useState<{id: string; name: string} | null>(null);
   const [newFacilityForm, setNewFacilityForm] = useState<{
     name: string;
     facility_type: FacilityType;
@@ -212,17 +213,12 @@ export default function DashboardPage() {
     }
   };
 
-  const handleArchiveFacility = async (facilityId: string, facilityName: string) => {
-    if (
-      !confirm(
-        `⚠️ WARNING: Archive "${facilityName}"?\n\nThis will hide the facility from the dashboard but retain all audit logs and historical data. This action can be reversed by a database administrator.`
-      )
-    ) {
-      return;
-    }
-    setArchivingFacilityId(facilityId);
+  const handleArchiveFacility = async () => {
+    if (!facilityToArchive) return;
+    
+    setArchivingFacilityId(facilityToArchive.id);
     try {
-      const result = await archiveFacility(facilityId);
+      const result = await archiveFacility(facilityToArchive.id);
       if (result.success) {
         const facilities = (await getAllFacilitiesOverview()) as FacilitySummary[];
         setFacilitiesData(facilities);
@@ -231,6 +227,7 @@ export default function DashboardPage() {
       }
     } finally {
       setArchivingFacilityId(null);
+      setFacilityToArchive(null);
     }
   };
 
@@ -337,6 +334,43 @@ export default function DashboardPage() {
           </p>
         </header>
 
+        {/* Archive Facility Confirmation Modal */}
+        {facilityToArchive && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
+              <div className="bg-gradient-to-r from-rose-600 to-rose-700 px-6 py-4 rounded-t-xl">
+                <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                  ⚠️ Confirm Archive Action
+                </h2>
+              </div>
+              <div className="p-6">
+                <p className="text-slate-800 mb-2 font-semibold">
+                  Are you sure you want to archive <span className="text-rose-700">{facilityToArchive.name}</span>?
+                </p>
+                <p className="text-sm text-slate-600 mb-4">
+                  This will hide it from your active dashboard. Its audit logs will be preserved.
+                </p>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setFacilityToArchive(null)}
+                    disabled={archivingFacilityId !== null}
+                    className="flex-1 px-4 py-2.5 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleArchiveFacility}
+                    disabled={archivingFacilityId !== null}
+                    className="flex-1 px-4 py-2.5 bg-rose-600 text-white rounded-lg font-medium hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {archivingFacilityId !== null ? 'Archiving…' : 'Yes, Archive Facility'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Add Facility Modal */}
         {showAddFacilityModal && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -360,7 +394,7 @@ export default function DashboardPage() {
                       type="text"
                       value={newFacilityForm.name}
                       onChange={(e) => setNewFacilityForm({ ...newFacilityForm, name: e.target.value })}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 bg-white placeholder:text-slate-400"
                       placeholder="e.g., Sunshine Learning Center"
                       required
                     />
@@ -378,11 +412,11 @@ export default function DashboardPage() {
                           toggles: {},
                         })
                       }
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 bg-white"
                       required
                     >
-                      <option value="childcare_center">Childcare Center</option>
-                      <option value="nursing_home">Nursing Home</option>
+                      <option value="childcare_center" className="text-slate-900 bg-white">Childcare Center</option>
+                      <option value="nursing_home" className="text-slate-900 bg-white">Nursing Home</option>
                     </select>
                   </div>
                   <div>
@@ -395,7 +429,7 @@ export default function DashboardPage() {
                       onChange={(e) =>
                         setNewFacilityForm({ ...newFacilityForm, license_number: e.target.value })
                       }
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 bg-white placeholder:text-slate-400"
                       placeholder="e.g., AR-12345"
                       required
                     />
@@ -409,7 +443,7 @@ export default function DashboardPage() {
                       min="1"
                       value={newFacilityForm.capacity}
                       onChange={(e) => setNewFacilityForm({ ...newFacilityForm, capacity: e.target.value })}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 bg-white placeholder:text-slate-400"
                       placeholder="e.g., 50"
                       required
                     />
@@ -534,7 +568,7 @@ export default function DashboardPage() {
                   </button>
                   {canManageFacilities && (
                     <button
-                      onClick={() => handleArchiveFacility(facility.id, facility.name)}
+                      onClick={() => setFacilityToArchive({ id: facility.id, name: facility.name })}
                       disabled={archivingFacilityId === facility.id}
                       className="w-full bg-white hover:bg-rose-50 text-slate-600 hover:text-rose-700 font-medium py-2.5 px-4 rounded-lg transition-colors text-sm border border-slate-200 hover:border-rose-300 disabled:opacity-50 disabled:cursor-not-allowed"
                     >

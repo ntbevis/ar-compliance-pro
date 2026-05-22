@@ -86,6 +86,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   const [uploadingReqId, setUploadingReqId] = useState<string | null>(null);
   const [signingReqId, setSigningReqId] = useState<string | null>(null);
   const [markingNAReqId, setMarkingNAReqId] = useState<string | null>(null);
+  const [personnelToArchive, setPersonnelToArchive] = useState<PersonnelRecord | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -154,13 +155,14 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     }
   };
 
-  const handleSeparate = async (person: PersonnelRecord) => {
-    if (!confirm(`Mark ${person.name} as separated?`)) return;
-    setSeparatingId(person.id);
+  const handleSeparate = async () => {
+    if (!personnelToArchive) return;
+    
+    setSeparatingId(personnelToArchive.id);
     try {
-      const result = await markEmployeeSeparated(person.id);
+      const result = await markEmployeeSeparated(personnelToArchive.id);
       if (result.success) {
-        setActive((prev) => prev.filter((p) => p.id !== person.id));
+        setActive((prev) => prev.filter((p) => p.id !== personnelToArchive.id));
         const sep = await getSeparatedPersonnelData(facilityId);
         setSeparated(sep);
       } else {
@@ -168,6 +170,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       }
     } finally {
       setSeparatingId(null);
+      setPersonnelToArchive(null);
     }
   };
 
@@ -307,6 +310,43 @@ export default function PersonnelVaultView({ facilityId }: Props) {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto text-slate-800">
+      {/* Archive Personnel Confirmation Modal */}
+      {personnelToArchive && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
+            <div className="bg-gradient-to-r from-rose-600 to-rose-700 px-6 py-4 rounded-t-xl">
+              <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                ⚠️ Confirm Archive Action
+              </h2>
+            </div>
+            <div className="p-6">
+              <p className="text-slate-800 mb-2 font-semibold">
+                Are you sure you want to archive <span className="text-rose-700">{personnelToArchive.name}</span>?
+              </p>
+              <p className="text-sm text-slate-600 mb-4">
+                They will be moved to the separated roster.
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setPersonnelToArchive(null)}
+                  disabled={separatingId !== null}
+                  className="flex-1 px-4 py-2.5 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSeparate}
+                  disabled={separatingId !== null}
+                  className="flex-1 px-4 py-2.5 bg-rose-600 text-white rounded-lg font-medium hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {separatingId !== null ? 'Archiving…' : 'Yes, Archive Employee'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Legal Certification */}
       {!showArchive && (
         <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-6 shadow-sm">
@@ -496,7 +536,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleSeparate(person);
+                          setPersonnelToArchive(person);
                         }}
                         disabled={separatingId === person.id}
                         className="text-xs font-medium px-3 py-1.5 rounded-md bg-slate-100 text-slate-700 hover:bg-rose-100 hover:text-rose-700 border border-slate-200"
