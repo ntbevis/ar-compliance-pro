@@ -171,6 +171,7 @@ export async function recordDocumentUpload(params: {
   fileHash: string;
   userAttestation: boolean;
   personnelId?: string;
+  aiExpirationDate?: string;
 }) {
   try {
     const { userId, orgId } = await getAuthenticatedUserContext();
@@ -195,6 +196,9 @@ export async function recordDocumentUpload(params: {
     };
     if (params.personnelId) {
       metadata.personnel_id = params.personnelId;
+    }
+    if (params.aiExpirationDate) {
+      metadata.ai_extracted_expiration = params.aiExpirationDate;
     }
 
     const { error: updateError } = await supabase

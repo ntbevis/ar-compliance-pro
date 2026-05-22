@@ -102,12 +102,36 @@ function resolveIsScored(rule: Record<string, unknown>): boolean {
 }
 
 /**
- * Calculates the expiration date for a document given the rule's frequency and upload date.
- * Returns null for frequencies that do not have a calculable expiration (e.g. 'ongoing').
+ * Safely parses a date string to a Date object.
+ * Returns null if the string is missing, empty, or does not produce a valid Date.
  */
-function calcExpirationDate(createdAt: string, frequency: ComplianceFrequency): Date | null {
-  const created = new Date(createdAt);
-  if (isNaN(created.getTime())) return null;
+function safeParseDate(value: string | null | undefined): Date | null {
+  if (!value || typeof value !== 'string') return null;
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Calculates the expiration date for a document.
+ *
+ * Priority:
+ *   1. `aiExpirationDate` — the printed expiration extracted by the AI (YYYY-MM-DD).
+ *   2. Fall back to `createdAt + frequency` calculation if no AI date is available.
+ *
+ * Returns null for frequencies with no defined expiration (e.g. 'ongoing', 'one-time').
+ */
+function calcExpirationDate(
+  createdAt: string,
+  frequency: ComplianceFrequency,
+  aiExpirationDate?: string | null
+): Date | null {
+  // Priority 1: AI-extracted printed expiration date
+  const aiDate = safeParseDate(aiExpirationDate);
+  if (aiDate) return aiDate;
+
+  // Priority 2: calculate from upload date + renewal frequency
+  const created = safeParseDate(createdAt);
+  if (!created) return null;
 
   const d = new Date(created);
   switch (frequency) {
@@ -128,19 +152,24 @@ function calcExpirationDate(createdAt: string, frequency: ComplianceFrequency): 
 }
 
 /**
- * Determines the compliance status of a satisfied requirement based on
- * when its document was uploaded and the rule's renewal frequency.
+ * Determines the compliance status of a satisfied requirement based on:
+ *   1. The AI-extracted expiration date stored in `metadata.ai_extracted_expiration` (preferred), OR
+ *   2. The rule's renewal frequency applied to the document's upload date (fallback).
  */
 function calcComplianceStatus(
   createdAt: string,
-  frequency: ComplianceFrequency
+  frequency: ComplianceFrequency,
+  docMetadata?: Record<string, unknown> | null
 ): DocumentComplianceStatus {
-  const expiration = calcExpirationDate(createdAt, frequency);
+  const aiExpirationDate =
+    typeof docMetadata?.ai_extracted_expiration === 'string'
+      ? docMetadata.ai_extracted_expiration
+      : null;
+
+  const expiration = calcExpirationDate(createdAt, frequency, aiExpirationDate);
   if (!expiration) return 'satisfied'; // ongoing / one-time — never expires
 
-  const now = new Date();
-  const msUntilExpiry = expiration.getTime() - now.getTime();
-  const daysUntilExpiry = msUntilExpiry / (1000 * 60 * 60 * 24);
+  const daysUntilExpiry = (expiration.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
 
   if (daysUntilExpiry < 0) return 'expired';
   if (daysUntilExpiry <= 30) return 'expiring_soon';
@@ -226,12 +255,18 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
   // 4. Fetch approved facility documents to compute satisfied requirements.
   const { data: uploadedDocs } = await supabase
     .from('facility_documents')
-    .select('id, document_type, status, created_at')
+    .select('id, document_type, status, created_at, metadata')
     .eq('facility_id', facilityId)
     .eq('status', 'approved')
     .order('created_at', { ascending: false }); // newest first so we pick the freshest match
 
-  type UploadedDoc = { id: string; document_type: string | null; status: string; created_at: string };
+  type UploadedDoc = {
+    id: string;
+    document_type: string | null;
+    status: string;
+    created_at: string;
+    metadata: Record<string, unknown> | null;
+  };
   const docs: UploadedDoc[] = (uploadedDocs || []) as UploadedDoc[];
 
   // Map from rule id → the best matching document (most recent)
@@ -242,7 +277,7 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
       (d) => d.document_type && tokensMatch(rule.required_document_type, d.document_type)
     );
     if (matchingDoc) {
-      const status = calcComplianceStatus(matchingDoc.created_at, rule.frequency);
+      const status = calcComplianceStatus(matchingDoc.created_at, rule.frequency, matchingDoc.metadata);
       satisfiedRuleMap.set(rule.id, {
         docId: matchingDoc.id,
         createdAt: matchingDoc.created_at,

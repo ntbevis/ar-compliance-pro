@@ -17,6 +17,7 @@ import {
   hashFileBuffer,
   deleteDocument,
 } from 'src/app/actions/compliance';
+import { verifyDocumentWithAI } from 'src/app/actions/ai-verify';
 import type { DocumentComplianceStatus } from '@/lib/types';
 
 interface Props {
@@ -52,26 +53,55 @@ interface PersonnelDocument {
 }
 
 // Client-side expiration helper (mirrors server logic in reg-monitor.ts)
+
+/** Safely parse a date string; returns null if absent or invalid. */
+function safeParseDate(value: string | null | undefined): Date | null {
+  if (!value || typeof value !== 'string') return null;
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Calculates compliance status for a personnel document.
+ *
+ * Priority:
+ *   1. `doc.metadata.ai_extracted_expiration` — the printed expiration date extracted by the AI.
+ *   2. Fall back to `createdAt + frequency` calculation when no AI date is present.
+ */
 function calcPersonnelComplianceStatus(
   createdAt: string,
-  frequency: string
+  frequency: string,
+  metadata?: Record<string, unknown> | null
 ): DocumentComplianceStatus {
-  const created = new Date(createdAt);
-  if (isNaN(created.getTime())) return 'satisfied';
+  // Priority 1: AI-extracted printed expiration
+  const aiRaw =
+    typeof metadata?.ai_extracted_expiration === 'string'
+      ? metadata.ai_extracted_expiration
+      : null;
+  const aiExpiry = safeParseDate(aiRaw);
 
-  const expiry = new Date(created);
-  switch (frequency) {
-    case 'daily':     expiry.setDate(expiry.getDate() + 1); break;
-    case 'weekly':    expiry.setDate(expiry.getDate() + 7); break;
-    case 'monthly':   expiry.setMonth(expiry.getMonth() + 1); break;
-    case 'quarterly': expiry.setMonth(expiry.getMonth() + 3); break;
-    case 'biannual':  expiry.setMonth(expiry.getMonth() + 6); break;
-    case 'annual':    expiry.setFullYear(expiry.getFullYear() + 1); break;
-    case '2_years':   expiry.setFullYear(expiry.getFullYear() + 2); break;
-    case '3_years':   expiry.setFullYear(expiry.getFullYear() + 3); break;
-    case '5_years':   expiry.setFullYear(expiry.getFullYear() + 5); break;
-    case '10_years':  expiry.setFullYear(expiry.getFullYear() + 10); break;
-    default:          return 'satisfied'; // one-time / ongoing — never expires
+  let expiry: Date | null = aiExpiry;
+
+  // Priority 2: calculated from upload date + renewal frequency
+  if (!expiry) {
+    const created = safeParseDate(createdAt);
+    if (!created) return 'satisfied';
+
+    const d = new Date(created);
+    switch (frequency) {
+      case 'daily':     d.setDate(d.getDate() + 1); break;
+      case 'weekly':    d.setDate(d.getDate() + 7); break;
+      case 'monthly':   d.setMonth(d.getMonth() + 1); break;
+      case 'quarterly': d.setMonth(d.getMonth() + 3); break;
+      case 'biannual':  d.setMonth(d.getMonth() + 6); break;
+      case 'annual':    d.setFullYear(d.getFullYear() + 1); break;
+      case '2_years':   d.setFullYear(d.getFullYear() + 2); break;
+      case '3_years':   d.setFullYear(d.getFullYear() + 3); break;
+      case '5_years':   d.setFullYear(d.getFullYear() + 5); break;
+      case '10_years':  d.setFullYear(d.getFullYear() + 10); break;
+      default:          return 'satisfied'; // one-time / ongoing — never expires
+    }
+    expiry = d;
   }
 
   const daysLeft = (expiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
@@ -115,9 +145,18 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   const [personnelDocuments, setPersonnelDocuments] = useState<PersonnelDocument[]>([]);
   const [userAttestation, setUserAttestation] = useState<boolean>(false);
   const [uploadingReqId, setUploadingReqId] = useState<string | null>(null);
+  const [verifyingReqId, setVerifyingReqId] = useState<string | null>(null);
   const [signingReqId, setSigningReqId] = useState<string | null>(null);
   const [markingNAReqId, setMarkingNAReqId] = useState<string | null>(null);
   const [personnelToArchive, setPersonnelToArchive] = useState<PersonnelRecord | null>(null);
+
+  // AI rejection modal
+  const [personnelRejectionModal, setPersonnelRejectionModal] = useState<{
+    requirementName: string;
+    detectedType: string;
+    confidence: number;
+    reason: string;
+  } | null>(null);
 
   // Document management modal state
   const [docManagementItem, setDocManagementItem] = useState<{
@@ -261,8 +300,35 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       return;
     }
 
-    setUploadingReqId(requirement.id);
+    // ── Step 1: AI Verification ───────────────────────────────────────────────
+    setVerifyingReqId(requirement.id);
     try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('requirementName', requirement.name);
+
+      const aiResult = await verifyDocumentWithAI(formData);
+
+      if (!aiResult.success) {
+        console.warn('⚠️ AI verification service unavailable, proceeding with upload:', aiResult.error);
+      } else if (!aiResult.object.is_valid_match) {
+        setPersonnelRejectionModal({
+          requirementName: requirement.name,
+          detectedType: aiResult.object.detected_document_type,
+          confidence: aiResult.object.confidence_score,
+          reason: aiResult.object.rejection_reason ?? 'The document did not match the requirement.',
+        });
+        return;
+      }
+
+      const aiExpirationDate = aiResult.success
+        ? (aiResult.object.expiration_date ?? undefined)
+        : undefined;
+
+      // ── Step 2: Storage Upload ──────────────────────────────────────────────
+      setVerifyingReqId(null);
+      setUploadingReqId(requirement.id);
+
       const documentId = crypto.randomUUID();
       const fileExtension = file.name.split('.').pop()?.toLowerCase() ?? 'bin';
       const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
@@ -279,7 +345,11 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         status: 'approved',
         file_url: storagePath,
         name: file.name,
-        metadata: { upload_source: 'personnel_vault', personnel_id: personnelId },
+        metadata: {
+          upload_source: 'personnel_vault',
+          personnel_id: personnelId,
+          ...(aiExpirationDate ? { ai_extracted_expiration: aiExpirationDate } : {}),
+        },
       });
       if (insertError) throw insertError;
 
@@ -296,6 +366,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         fileHash,
         userAttestation,
         personnelId,
+        aiExpirationDate,
       });
 
       if (!result.success) {
@@ -310,6 +381,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       alert(`❌ Upload failed: ${message}`);
     } finally {
+      setVerifyingReqId(null);
       setUploadingReqId(null);
     }
   };
@@ -412,6 +484,62 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         </div>
       )}
 
+      {/* AI Rejection Modal */}
+      {personnelRejectionModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full">
+            <div className="bg-gradient-to-r from-rose-600 to-rose-700 px-6 py-4 rounded-t-xl flex items-center gap-3">
+              <span className="text-2xl" aria-hidden>🤖</span>
+              <div>
+                <h2 className="text-lg font-bold text-white leading-tight">AI Verification Failed</h2>
+                <p className="text-rose-200 text-xs">Document does not match the requirement</p>
+              </div>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-slate-50 rounded-lg p-4 space-y-3 border border-slate-200">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500 font-medium">Requirement</span>
+                  <span className="text-slate-800 font-semibold text-right max-w-[60%]">
+                    {personnelRejectionModal.requirementName}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500 font-medium">Document Detected</span>
+                  <span className="text-slate-800 font-semibold">{personnelRejectionModal.detectedType}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500 font-medium">AI Confidence</span>
+                  <span className={`font-bold text-xs px-2 py-0.5 rounded-full ${
+                    personnelRejectionModal.confidence >= 70
+                      ? 'bg-amber-100 text-amber-700'
+                      : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {personnelRejectionModal.confidence}%
+                  </span>
+                </div>
+              </div>
+              <div className="bg-rose-50 border border-rose-200 rounded-lg p-4">
+                <p className="text-xs font-bold uppercase tracking-wider text-rose-700 mb-1">
+                  Rejection Reason
+                </p>
+                <p className="text-sm text-rose-900 leading-relaxed">
+                  {personnelRejectionModal.reason}
+                </p>
+              </div>
+              <p className="text-xs text-slate-500 italic">
+                Please upload the correct document and try again. If you believe this is an error, use &ldquo;Attest&rdquo; to manually certify compliance.
+              </p>
+              <button
+                onClick={() => setPersonnelRejectionModal(null)}
+                className="w-full px-4 py-2.5 bg-slate-800 text-white rounded-lg font-medium hover:bg-slate-700 transition-colors"
+              >
+                Dismiss &amp; Try Again
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Document Management Modal */}
       {docManagementItem && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -446,19 +574,24 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500">Current Status</span>
-                  <span className={`font-bold text-xs px-2 py-0.5 rounded-full ${
-                    calcPersonnelComplianceStatus(docManagementItem.doc.created_at, docManagementItem.req.frequency) === 'expired'
-                      ? 'bg-rose-100 text-rose-700'
-                      : calcPersonnelComplianceStatus(docManagementItem.doc.created_at, docManagementItem.req.frequency) === 'expiring_soon'
-                      ? 'bg-amber-100 text-amber-700'
-                      : 'bg-emerald-100 text-emerald-700'
-                  }`}>
-                    {calcPersonnelComplianceStatus(docManagementItem.doc.created_at, docManagementItem.req.frequency) === 'expired'
-                      ? '🔴 Expired'
-                      : calcPersonnelComplianceStatus(docManagementItem.doc.created_at, docManagementItem.req.frequency) === 'expiring_soon'
-                      ? '🟡 Expiring Soon'
-                      : '✅ Satisfied'}
-                  </span>
+                  {(() => {
+                    const s = calcPersonnelComplianceStatus(
+                      docManagementItem.doc.created_at,
+                      docManagementItem.req.frequency,
+                      docManagementItem.doc.metadata
+                    );
+                    return (
+                      <span className={`font-bold text-xs px-2 py-0.5 rounded-full ${
+                        s === 'expired'
+                          ? 'bg-rose-100 text-rose-700'
+                          : s === 'expiring_soon'
+                          ? 'bg-amber-100 text-amber-700'
+                          : 'bg-emerald-100 text-emerald-700'
+                      }`}>
+                        {s === 'expired' ? '🔴 Expired' : s === 'expiring_soon' ? '🟡 Expiring Soon' : '✅ Satisfied'}
+                      </span>
+                    );
+                  })()}
                 </div>
               </div>
 
@@ -714,10 +847,12 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                         {requirements.map((req) => {
                           const matchingDoc = getMatchingPersonnelDoc(person.id, req.typeKey);
                           const complianceStatus: DocumentComplianceStatus = matchingDoc
-                            ? calcPersonnelComplianceStatus(matchingDoc.created_at, req.frequency)
+                            ? calcPersonnelComplianceStatus(matchingDoc.created_at, req.frequency, matchingDoc.metadata)
                             : 'missing';
                           const isMissing = complianceStatus === 'missing';
+                          const isVerifyingThis = verifyingReqId === req.id;
                           const isBusy =
+                            isVerifyingThis ||
                             uploadingReqId === req.id ||
                             signingReqId === req.id ||
                             markingNAReqId === req.id;
@@ -777,10 +912,15 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                   >
                                     {statusBadgeLabel[complianceStatus]}
                                   </button>
+                                ) : isVerifyingThis ? (
+                                  <div className="flex items-center gap-2 text-violet-600 font-bold text-xs animate-pulse">
+                                    <span className="w-3 h-3 border-2 border-violet-600 border-t-transparent rounded-full animate-spin"></span>
+                                    🤖 AI verifying…
+                                  </div>
                                 ) : isBusy ? (
                                   <div className="flex items-center gap-2 text-indigo-600 font-bold text-xs animate-pulse">
                                     <span className="w-3 h-3 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></span>
-                                    Working…
+                                    Uploading…
                                   </div>
                                 ) : !showArchive ? (
                                   <>
