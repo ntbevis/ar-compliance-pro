@@ -70,7 +70,7 @@ export function ruleAppliesToFacility(
   if (
     rule.sub_classification === null ||
     rule.sub_classification === undefined ||
-    rule.sub_classification === 'null'
+    String(rule.sub_classification) === 'null'
   ) {
     return true;
   }
