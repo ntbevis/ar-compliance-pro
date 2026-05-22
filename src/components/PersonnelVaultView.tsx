@@ -142,6 +142,12 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     Record<string, RoleRequirement[]>
   >({});
   const [expandedPersonId, setExpandedPersonId] = useState<string | null>(null);
+  /**
+   * Tracks the worst document compliance status per person.
+   * Populated whenever a person's requirements row is expanded/loaded.
+   * Drives the expiration warning badge on collapsed rows.
+   */
+  const [personWorstStatus, setPersonWorstStatus] = useState<Record<string, DocumentComplianceStatus | null>>({});
 
   // Personnel-specific upload state
   const [personnelDocuments, setPersonnelDocuments] = useState<PersonnelDocument[]>([]);
@@ -225,6 +231,26 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       .finally(() => setIsLoadingDocViewer(false));
   }, [docManagementItem?.doc.id, facilityId]);
 
+  const computeWorstStatus = (personId: string, reqs: RoleRequirement[]): DocumentComplianceStatus | null => {
+    const statusPriority: Record<DocumentComplianceStatus, number> = {
+      expired: 4, expiring_soon: 3, pending_review: 2, missing: 1, satisfied: 0,
+    };
+    let worst: DocumentComplianceStatus | null = null;
+    for (const req of reqs) {
+      const doc = personnelDocuments.find((d) => {
+        const meta = d.metadata as Record<string, unknown> | null;
+        return meta && meta.personnel_id === personId && d.document_type === req.typeKey && (d.status === 'approved' || d.status === 'pending');
+      });
+      const status: DocumentComplianceStatus = doc
+        ? doc.status === 'pending'
+          ? 'pending_review'
+          : calcPersonnelComplianceStatus(doc.created_at, req.frequency, doc.metadata)
+        : 'missing';
+      if (!worst || statusPriority[status] > statusPriority[worst]) worst = status;
+    }
+    return worst;
+  };
+
   const toggleExpanded = async (person: PersonnelRecord) => {
     if (expandedPersonId === person.id) {
       setExpandedPersonId(null);
@@ -235,7 +261,14 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       const result = await getRequirementsForRole(facilityId, person.role);
       if (result.success) {
         setRequirementsByPerson((prev) => ({ ...prev, [person.id]: result.requirements }));
+        // Compute & cache worst-case status for the row indicator
+        const worst = computeWorstStatus(person.id, result.requirements);
+        setPersonWorstStatus((prev) => ({ ...prev, [person.id]: worst }));
       }
+    } else {
+      // Requirements already loaded — just refresh the cached status
+      const worst = computeWorstStatus(person.id, requirementsByPerson[person.id]);
+      setPersonWorstStatus((prev) => ({ ...prev, [person.id]: worst }));
     }
   };
 
@@ -959,6 +992,68 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         </div>
       )}
 
+      {/* ── Personnel Expiration Alert Summary ─────────────────────────── */}
+      {!loading && !showArchive && (() => {
+        const staffWithExpired = Object.entries(personWorstStatus)
+          .filter(([, s]) => s === 'expired')
+          .map(([id]) => active.find((p) => p.id === id))
+          .filter(Boolean) as PersonnelRecord[];
+        const staffExpiring = Object.entries(personWorstStatus)
+          .filter(([, s]) => s === 'expiring_soon')
+          .map(([id]) => active.find((p) => p.id === id))
+          .filter(Boolean) as PersonnelRecord[];
+
+        if (staffWithExpired.length === 0 && staffExpiring.length === 0) return null;
+        return (
+          <div className="rounded-xl overflow-hidden border shadow-sm">
+            {staffWithExpired.length > 0 && (
+              <div className="bg-rose-50 border-b border-rose-200 p-4">
+                <div className="flex items-start gap-3">
+                  <span className="text-lg shrink-0 mt-0.5">🚨</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-rose-800 text-sm">
+                      {staffWithExpired.length} Staff Member{staffWithExpired.length !== 1 ? 's' : ''} Have Expired Documents
+                    </p>
+                    <p className="text-xs text-rose-600 mt-0.5 mb-2">
+                      Expand each row below to see which credentials have lapsed and upload replacements.
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {staffWithExpired.map((p) => (
+                        <span key={p.id} className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 border border-rose-400 text-rose-800">
+                          {p.name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            {staffExpiring.length > 0 && (
+              <div className="bg-amber-50 p-4">
+                <div className="flex items-start gap-3">
+                  <span className="text-lg shrink-0 mt-0.5">⚠️</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-amber-800 text-sm">
+                      {staffExpiring.length} Staff Member{staffExpiring.length !== 1 ? 's' : ''} Have Documents Expiring Within 30 Days
+                    </p>
+                    <p className="text-xs text-amber-700 mt-0.5 mb-2">
+                      Expand the rows below to renew credentials before they expire.
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {staffExpiring.map((p) => (
+                        <span key={p.id} className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 border border-amber-400 text-amber-800">
+                          {p.name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {loading ? (
         <p className="text-slate-500 italic">Loading roster…</p>
       ) : roster.length === 0 ? (
@@ -991,6 +1086,17 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
+                    {/* Expiration indicator — visible once the row has been expanded once */}
+                    {personWorstStatus[person.id] === 'expired' && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 border border-rose-400 text-rose-700">
+                        🔴 Expired
+                      </span>
+                    )}
+                    {personWorstStatus[person.id] === 'expiring_soon' && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 border border-amber-400 text-amber-700">
+                        🟡 Expiring Soon
+                      </span>
+                    )}
                     <span
                       className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                         person.clearance_status === 'approved' || person.clearance_status === 'cleared'

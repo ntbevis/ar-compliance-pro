@@ -76,7 +76,7 @@ function DialSummary({ label, score }: { label: string; score: number }) {
 }
 
 export default function DashboardPage() {
-  const { selectedFacilityId, setSelectedFacilityId, currentView, setCurrentView } = useFacility();
+  const { selectedFacilityId, setSelectedFacilityId, currentView, setCurrentView, refreshFacilities } = useFacility();
   const [userRole, setUserRole] = useState<string | null>(null);
 
   const [facilitiesData, setFacilitiesData] = useState<FacilitySummary[]>([]);
@@ -98,17 +98,18 @@ export default function DashboardPage() {
   const [facilityToArchive, setFacilityToArchive] = useState<{id: string; name: string} | null>(null);
   const [newFacilityForm, setNewFacilityForm] = useState<{
     name: string;
-    facility_type: FacilityType;
+    facility_type: FacilityType | null;
     license_number: string;
     capacity: string;
     toggles: Partial<FacilityScopeToggles>;
   }>({
     name: '',
-    facility_type: 'childcare_center',
+    facility_type: null,
     license_number: '',
     capacity: '',
     toggles: {},
   });
+  const [facilityFormErrors, setFacilityFormErrors] = useState<Record<string, string>>({});
 
   // Load user role once
   useEffect(() => {
@@ -193,17 +194,27 @@ export default function DashboardPage() {
 
   const handleAddFacility = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Client-side validation — all fields required for accurate compliance calculation
+    const errors: Record<string, string> = {};
+    if (!newFacilityForm.name.trim()) errors.name = 'Facility name is required.';
+    if (!newFacilityForm.facility_type) errors.facility_type = 'You must select a regulatory domain.';
+    if (!newFacilityForm.license_number.trim()) errors.license_number = 'License / Provider ID is required.';
     const capacity = parseInt(newFacilityForm.capacity, 10);
-    if (Number.isNaN(capacity) || capacity < 0) {
-      toast.error('Please enter a valid capacity number.');
+    if (!newFacilityForm.capacity || Number.isNaN(capacity) || capacity < 1) {
+      errors.capacity = 'A valid licensed capacity (≥ 1) is required.';
+    }
+    if (Object.keys(errors).length > 0) {
+      setFacilityFormErrors(errors);
       return;
     }
+    setFacilityFormErrors({});
     setAddingFacility(true);
     try {
       const result = await addFacility({
-        name: newFacilityForm.name,
-        facility_type: newFacilityForm.facility_type,
-        license_number: newFacilityForm.license_number,
+        name: newFacilityForm.name.trim(),
+        facility_type: newFacilityForm.facility_type!,
+        license_number: newFacilityForm.license_number.trim().toUpperCase(),
         capacity,
         toggles: newFacilityForm.toggles,
       });
@@ -211,11 +222,14 @@ export default function DashboardPage() {
         setShowAddFacilityModal(false);
         setNewFacilityForm({
           name: '',
-          facility_type: 'childcare_center',
+          facility_type: null,
           license_number: '',
           capacity: '',
           toggles: {},
         });
+        setFacilityFormErrors({});
+        // Refresh both the sidebar dropdown and the fleet cards
+        await refreshFacilities();
         const facilities = (await getAllFacilitiesOverview()) as FacilitySummary[];
         setFacilitiesData(facilities);
         toast.success('Facility added successfully.');
@@ -234,6 +248,7 @@ export default function DashboardPage() {
     try {
       const result = await archiveFacility(facilityToArchive.id);
       if (result.success) {
+        await refreshFacilities();
         const facilities = (await getAllFacilitiesOverview()) as FacilitySummary[];
         setFacilitiesData(facilities);
         toast.success('Facility archived.');
@@ -475,122 +490,191 @@ export default function DashboardPage() {
 
         {/* Add Facility Modal */}
         {showAddFacilityModal && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-              <div className="sticky top-0 bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 flex items-center justify-between">
-                <h2 className="text-xl font-bold text-white">Add New Facility</h2>
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[92vh] overflow-y-auto">
+              <div className="sticky top-0 bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 flex items-center justify-between rounded-t-2xl">
+                <div>
+                  <h2 className="text-xl font-bold text-white">Add New Facility</h2>
+                  <p className="text-slate-400 text-xs mt-0.5">All fields are required for accurate compliance calculations.</p>
+                </div>
                 <button
-                  onClick={() => setShowAddFacilityModal(false)}
-                  className="text-white/80 hover:text-white text-2xl leading-none"
+                  onClick={() => { setShowAddFacilityModal(false); setFacilityFormErrors({}); }}
+                  className="text-white/70 hover:text-white text-2xl leading-none"
                 >
                   ×
                 </button>
               </div>
-              <form onSubmit={handleAddFacility} className="p-6 space-y-6">
+
+              <form onSubmit={handleAddFacility} noValidate className="p-6 space-y-6">
+                {/* ── Step 1: Regulatory Domain (required — drives the entire rule set) ── */}
+                <div>
+                  <label className="block text-xs font-black text-slate-600 uppercase tracking-wider mb-2">
+                    Regulatory Domain <span className="text-red-500">*</span>
+                  </label>
+                  <p className="text-xs text-slate-500 mb-3">
+                    This determines which Arkansas DHS rule set applies. Select carefully — it cannot be changed after creation.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    {([
+                      { value: 'childcare_center' as FacilityType, label: 'Childcare Center', sub: 'DCCECE Framework', emoji: '🧸' },
+                      { value: 'nursing_home' as FacilityType, label: 'Nursing Home', sub: 'OLTC Framework', emoji: '🏥' },
+                    ] as const).map(({ value, label, sub, emoji }) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => {
+                          setNewFacilityForm({ ...newFacilityForm, facility_type: value, toggles: {} });
+                          setFacilityFormErrors((prev) => ({ ...prev, facility_type: '' }));
+                        }}
+                        className={`flex items-center gap-3 p-4 rounded-xl border-2 text-left transition-all ${
+                          newFacilityForm.facility_type === value
+                            ? 'border-blue-500 bg-blue-50 shadow-sm'
+                            : 'border-slate-200 bg-white hover:border-slate-400'
+                        }`}
+                      >
+                        <span className="text-2xl">{emoji}</span>
+                        <div>
+                          <p className={`font-bold text-sm ${newFacilityForm.facility_type === value ? 'text-blue-700' : 'text-slate-800'}`}>
+                            {label}
+                          </p>
+                          <p className="text-[10px] text-slate-400 font-mono uppercase tracking-wide">{sub}</p>
+                        </div>
+                        {newFacilityForm.facility_type === value && (
+                          <span className="ml-auto text-blue-500 text-lg">✓</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                  {facilityFormErrors.facility_type && (
+                    <p className="text-xs text-red-600 mt-2 font-medium">⚠ {facilityFormErrors.facility_type}</p>
+                  )}
+                </div>
+
+                {/* ── Step 2: Core Identifiers ── */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">
-                      Facility Name <span className="text-red-500">*</span>
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-black text-slate-600 uppercase tracking-wider mb-1.5">
+                      Facility Operating Name <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="text"
                       value={newFacilityForm.name}
-                      onChange={(e) => setNewFacilityForm({ ...newFacilityForm, name: e.target.value })}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 bg-white placeholder:text-slate-400"
-                      placeholder="e.g., Sunshine Learning Center"
-                      required
+                      onChange={(e) => {
+                        setNewFacilityForm({ ...newFacilityForm, name: e.target.value });
+                        if (facilityFormErrors.name) setFacilityFormErrors((p) => ({ ...p, name: '' }));
+                      }}
+                      className={`w-full px-3 py-2.5 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 bg-white placeholder:text-slate-400 ${
+                        facilityFormErrors.name ? 'border-red-400 bg-red-50' : 'border-slate-300'
+                      }`}
+                      placeholder="e.g., Little Rock Early Learning Center"
                     />
+                    {facilityFormErrors.name && (
+                      <p className="text-xs text-red-600 mt-1 font-medium">⚠ {facilityFormErrors.name}</p>
+                    )}
                   </div>
+
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">
-                      Facility Type <span className="text-red-500">*</span>
-                    </label>
-                    <select
-                      value={newFacilityForm.facility_type}
-                      onChange={(e) =>
-                        setNewFacilityForm({
-                          ...newFacilityForm,
-                          facility_type: e.target.value as FacilityType,
-                          toggles: {},
-                        })
-                      }
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 bg-white"
-                      required
-                    >
-                      <option value="childcare_center" className="text-slate-900 bg-white">Childcare Center</option>
-                      <option value="nursing_home" className="text-slate-900 bg-white">Nursing Home</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">
-                      License Number <span className="text-red-500">*</span>
+                    <label className="block text-xs font-black text-slate-600 uppercase tracking-wider mb-1.5">
+                      License / Provider ID <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="text"
                       value={newFacilityForm.license_number}
-                      onChange={(e) =>
-                        setNewFacilityForm({ ...newFacilityForm, license_number: e.target.value })
-                      }
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 bg-white placeholder:text-slate-400"
-                      placeholder="e.g., AR-12345"
-                      required
+                      onChange={(e) => {
+                        setNewFacilityForm({ ...newFacilityForm, license_number: e.target.value });
+                        if (facilityFormErrors.license_number) setFacilityFormErrors((p) => ({ ...p, license_number: '' }));
+                      }}
+                      className={`w-full px-3 py-2.5 border rounded-lg text-sm font-mono uppercase focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 bg-white placeholder:text-slate-400 ${
+                        facilityFormErrors.license_number ? 'border-red-400 bg-red-50' : 'border-slate-300'
+                      }`}
+                      placeholder="e.g., FAC-44109-AR"
                     />
+                    {facilityFormErrors.license_number && (
+                      <p className="text-xs text-red-600 mt-1 font-medium">⚠ {facilityFormErrors.license_number}</p>
+                    )}
                   </div>
+
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">
-                      Licensed Capacity <span className="text-red-500">*</span>
+                    <label className="block text-xs font-black text-slate-600 uppercase tracking-wider mb-1.5">
+                      {newFacilityForm.facility_type === 'nursing_home' ? 'Licensed Bed Capacity' : 'Max Licensed Capacity'}{' '}
+                      <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="number"
                       min="1"
                       value={newFacilityForm.capacity}
-                      onChange={(e) => setNewFacilityForm({ ...newFacilityForm, capacity: e.target.value })}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 bg-white placeholder:text-slate-400"
-                      placeholder="e.g., 50"
-                      required
+                      onChange={(e) => {
+                        setNewFacilityForm({ ...newFacilityForm, capacity: e.target.value });
+                        if (facilityFormErrors.capacity) setFacilityFormErrors((p) => ({ ...p, capacity: '' }));
+                      }}
+                      className={`w-full px-3 py-2.5 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 bg-white placeholder:text-slate-400 ${
+                        facilityFormErrors.capacity ? 'border-red-400 bg-red-50' : 'border-slate-300'
+                      }`}
+                      placeholder={newFacilityForm.facility_type === 'nursing_home' ? 'e.g., 120' : 'e.g., 75'}
                     />
+                    {facilityFormErrors.capacity && (
+                      <p className="text-xs text-red-600 mt-1 font-medium">⚠ {facilityFormErrors.capacity}</p>
+                    )}
                   </div>
                 </div>
 
-                {/* Dynamic Toggles */}
-                <div>
-                  <h3 className="text-sm font-bold text-slate-800 mb-3">Facility Scope Toggles</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {TOGGLES_BY_FACILITY_TYPE[newFacilityForm.facility_type].map((toggleKey) => (
-                      <label
-                        key={toggleKey}
-                        className="flex items-center gap-2 p-3 border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={Boolean(newFacilityForm.toggles[toggleKey])}
-                          onChange={(e) =>
-                            setNewFacilityForm({
-                              ...newFacilityForm,
-                              toggles: { ...newFacilityForm.toggles, [toggleKey]: e.target.checked },
-                            })
-                          }
-                          className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-2 focus:ring-blue-500"
-                        />
-                        <span className="text-sm text-slate-700">{FACILITY_TOGGLE_LABELS[toggleKey]}</span>
-                      </label>
-                    ))}
+                {/* ── Step 3: Scope Flags (optional but refine compliance rules) ── */}
+                {newFacilityForm.facility_type && (
+                  <div className="animate-in fade-in slide-in-from-bottom-2 duration-200">
+                    <label className="block text-xs font-black text-slate-600 uppercase tracking-wider mb-1.5">
+                      Scope Flags
+                      <span className="ml-2 text-[10px] font-normal text-slate-400 normal-case tracking-normal">
+                        Optional — activates additional rule sets for this facility
+                      </span>
+                    </label>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                      {TOGGLES_BY_FACILITY_TYPE[newFacilityForm.facility_type].map((toggleKey) => (
+                        <label
+                          key={toggleKey}
+                          className={`flex items-center gap-2.5 p-3 rounded-xl border cursor-pointer transition-all text-sm ${
+                            newFacilityForm.toggles[toggleKey]
+                              ? 'bg-blue-50 border-blue-400 text-slate-900'
+                              : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={Boolean(newFacilityForm.toggles[toggleKey])}
+                            onChange={(e) =>
+                              setNewFacilityForm({
+                                ...newFacilityForm,
+                                toggles: { ...newFacilityForm.toggles, [toggleKey]: e.target.checked },
+                              })
+                            }
+                            className="accent-blue-500 w-4 h-4 shrink-0"
+                          />
+                          <span className="font-medium">{FACILITY_TOGGLE_LABELS[toggleKey]}</span>
+                        </label>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
 
                 <div className="flex items-center gap-3 pt-4 border-t border-slate-200">
                   <button
                     type="submit"
                     disabled={addingFacility}
-                    className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed"
+                    className="px-6 py-2.5 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed shadow-sm transition-all"
                   >
-                    {addingFacility ? 'Creating…' : 'Create Facility'}
+                    {addingFacility ? (
+                      <span className="flex items-center gap-2">
+                        <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        Creating…
+                      </span>
+                    ) : (
+                      'Create Facility'
+                    )}
                   </button>
                   <button
                     type="button"
-                    onClick={() => setShowAddFacilityModal(false)}
+                    onClick={() => { setShowAddFacilityModal(false); setFacilityFormErrors({}); }}
                     disabled={addingFacility}
-                    className="px-6 py-2.5 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 disabled:cursor-not-allowed"
+                    className="px-6 py-2.5 bg-slate-100 text-slate-700 rounded-xl font-bold text-sm hover:bg-slate-200 disabled:cursor-not-allowed transition-all"
                   >
                     Cancel
                   </button>

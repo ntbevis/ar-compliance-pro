@@ -11,39 +11,34 @@ interface UserProfile {
 }
 
 export default function Sidebar() {
-  const { selectedFacilityId, setSelectedFacilityId, currentView, setCurrentView } = useFacility();
-  const [facilities, setFacilities] = useState<Array<{ id: string; name: string }>>([]);
+  const {
+    selectedFacilityId,
+    setSelectedFacilityId,
+    currentView,
+    setCurrentView,
+    facilityList,
+  } = useFacility();
+
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const router = useRouter();
 
   useEffect(() => {
-    const init = async () => {
+    const loadProfile = async () => {
       const supabase = createClient();
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      // Fetch only this org's facilities using the user's org_id from their profile
       const { data: profileData } = await supabase
         .from('profiles')
-        .select('org_id, role, full_name')
+        .select('role, full_name')
         .eq('id', session.user.id)
         .single();
 
       if (profileData) {
         setProfile({ full_name: profileData.full_name, role: profileData.role });
-
-        if (profileData.org_id) {
-          const { data: facilityData } = await supabase
-            .from('facilities')
-            .select('id, name')
-            .eq('org_id', profileData.org_id)
-            .eq('is_active', true)
-            .order('name');
-          if (facilityData) setFacilities(facilityData);
-        }
       }
     };
-    init();
+    loadProfile();
   }, []);
 
   const handleSignOut = async () => {
@@ -83,8 +78,9 @@ export default function Sidebar() {
         <h2 className="text-blue-500 font-black tracking-tighter text-xl italic">AR_GUARD</h2>
       </div>
 
+      {/* facilityList comes from FacilityContext — always up-to-date after add/archive */}
       <FacilitySelector
-        facilities={facilities}
+        facilities={facilityList}
         selectedFacilityId={selectedFacilityId}
         onSelect={(id) => {
           setSelectedFacilityId(id);

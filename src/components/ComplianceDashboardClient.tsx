@@ -882,6 +882,81 @@ export default function ComplianceDashboardClient({
         />
       </div>
 
+      {/* ── Expiration Alert Banner ────────────────────────────────────────── */}
+      {(() => {
+        const expiredGaps = gaps.filter(
+          (g) => !g.completed && g.compliance_status === 'expired'
+        );
+        const expiringGaps = gaps.filter(
+          (g) => !g.completed && g.compliance_status === 'expiring_soon'
+        );
+        if (expiredGaps.length === 0 && expiringGaps.length === 0) return null;
+        return (
+          <div className="rounded-xl overflow-hidden border shadow-sm">
+            {expiredGaps.length > 0 && (
+              <div className="bg-rose-50 border-b border-rose-200 p-4">
+                <div className="flex items-start gap-3">
+                  <span className="text-lg shrink-0 mt-0.5">🚨</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-rose-800 text-sm">
+                      {expiredGaps.length} Expired Document{expiredGaps.length !== 1 ? 's' : ''} — Immediate Action Required
+                    </p>
+                    <p className="text-xs text-rose-600 mt-0.5 mb-2">
+                      These documents have passed their compliance deadline. Upload replacements immediately to restore your score.
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {expiredGaps.map((g) => (
+                        <span
+                          key={g.id}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                            g.severity === 'critical'
+                              ? 'bg-rose-100 border-rose-400 text-rose-800'
+                              : 'bg-rose-50 border-rose-300 text-rose-700'
+                          }`}
+                        >
+                          {g.severity === 'critical' && <span>⚡</span>}
+                          {g.name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            {expiringGaps.length > 0 && (
+              <div className="bg-amber-50 p-4">
+                <div className="flex items-start gap-3">
+                  <span className="text-lg shrink-0 mt-0.5">⚠️</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-amber-800 text-sm">
+                      {expiringGaps.length} Document{expiringGaps.length !== 1 ? 's' : ''} Expiring Within 30 Days
+                    </p>
+                    <p className="text-xs text-amber-700 mt-0.5 mb-2">
+                      Renew these before they expire to avoid compliance score drops.
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {expiringGaps.map((g) => (
+                        <span
+                          key={g.id}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                            g.severity === 'critical'
+                              ? 'bg-amber-100 border-amber-500 text-amber-900'
+                              : 'bg-amber-50 border-amber-300 text-amber-700'
+                          }`}
+                        >
+                          {g.severity === 'critical' && <span>⚡</span>}
+                          {g.name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Legal certification */}
       <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-6 shadow-sm">
         <div className="flex items-start gap-4">
