@@ -3,11 +3,11 @@
 
 import { createAdminClient } from 'src/app/utils/supabase/admin';
 import { createClient } from 'src/app/utils/supabase/server';
-import { getRegulatoryStatus } from '@/lib/reg-monitor';
+import { getRegulatoryStatus, ruleAppliesToFacility } from '@/lib/reg-monitor';
 import { createHash } from 'crypto';
 import { headers } from 'next/headers';
 import { revalidatePath } from 'next/cache';
-import type { FacilityScopeToggles, FacilityType, IdentifiedGap } from '@/lib/types';
+import type { ComplianceRule, Facility, FacilityScopeToggles, FacilityType, IdentifiedGap } from '@/lib/types';
 import { FACILITY_TOGGLE_KEYS } from '@/lib/types';
 
 // =============================================================================
@@ -60,6 +60,7 @@ type AuditActionType =
   | 'enrollment_update'
   | 'bulk_attestation'
   | 'blueprints_attestation'
+  | 'operational_acknowledgment'
   | 'facility_settings_update'
   | 'facility_archived';
 
@@ -475,6 +476,169 @@ export async function attestDailyBlueprints(facilityId: string, comment: string 
 }
 
 // =============================================================================
+// OPERATIONAL BLUEPRINTS
+// =============================================================================
+
+export type BlueprintRule = {
+  id: string;
+  name: string;
+  typeKey: string;
+  severity: 'critical' | 'standard';
+  frequency: string;
+  is_scored: boolean;
+};
+
+/**
+ * Returns the full list of compliance rules applicable to a facility — used as the
+ * static reference manual in the Operational Blueprints view. Unlike getRegulatoryStatus,
+ * this does NOT compute scores, gap statuses, or document satisfaction. It is read-only.
+ */
+export async function getOperationalBlueprints(facilityId: string): Promise<BlueprintRule[]> {
+  try {
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select(['id', 'org_id', 'facility_type', ...FACILITY_TOGGLE_KEYS].join(', '))
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+
+    const { data: allRules } = await supabase.from('compliance_criteria').select('*');
+
+    return (allRules || [])
+      .filter((rule: Record<string, unknown>) =>
+        ruleAppliesToFacility(
+          rule as unknown as ComplianceRule,
+          facility as unknown as Facility
+        )
+      )
+      .map((rule: Record<string, unknown>) => ({
+        id: rule.id as string,
+        name: (rule.requirement_name as string) ?? '',
+        typeKey: (rule.required_document_type as string) ?? '',
+        severity: ((rule.severity as 'critical' | 'standard') ?? 'standard'),
+        frequency: String(rule.frequency ?? ''),
+        is_scored: typeof rule.is_scored === 'boolean' ? rule.is_scored : true,
+      }));
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('❌ getOperationalBlueprints failure:', message);
+    return [];
+  }
+}
+
+/**
+ * Signs the Operational Acknowledgment for a facility director.
+ * Creates an audit log entry and returns the name-stamped acknowledgment details
+ * so the UI can update immediately without a second fetch.
+ */
+export async function signOperationalAcknowledgment(facilityId: string): Promise<
+  | { success: true; acknowledgment: { created_at: string; user_name: string } }
+  | { success: false; error: string }
+> {
+  try {
+    const { userId, orgId, role } = await getAuthenticatedUserContext();
+
+    if (role !== 'owner' && role !== 'admin' && role !== 'director') {
+      return {
+        success: false,
+        error: 'Only owners, administrators, or directors may sign operational acknowledgments.',
+      };
+    }
+
+    const supabase = createAdminClient();
+
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+
+    // Fetch the user's display name to embed in the response (createAuditLog also fetches it
+    // internally; this avoids a second round-trip by caching the value here).
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', userId)
+      .single();
+
+    const userName = (profile?.full_name as string | null) ?? 'Unknown User';
+    const now = new Date().toISOString();
+
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'operational_acknowledgment',
+      metadata: {
+        acknowledged_at: now,
+        acknowledgment_text:
+          'I acknowledge that maintaining these operational standards is my responsibility as the facility director.',
+      },
+    });
+
+    revalidatePath('/dashboard');
+    return { success: true, acknowledgment: { created_at: now, user_name: userName } };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('❌ signOperationalAcknowledgment failure:', message);
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Retrieves the most recent Operational Acknowledgment for a facility.
+ * Returns null if none has ever been signed.
+ */
+export async function getLatestOperationalAcknowledgment(
+  facilityId: string
+): Promise<{ created_at: string; user_name: string } | null> {
+  try {
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    // Verify org ownership before exposing audit data
+    const { data: facility } = await supabase
+      .from('facilities')
+      .select('id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .maybeSingle();
+
+    if (!facility) return null;
+
+    const { data: log } = await supabase
+      .from('audit_logs')
+      .select('created_at, metadata')
+      .eq('facility_id', facilityId)
+      .eq('action_type', 'operational_acknowledgment')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!log) return null;
+
+    const metadata = (log.metadata as Record<string, unknown> | null) ?? {};
+    const userName =
+      typeof metadata.user_name === 'string' ? metadata.user_name : 'Unknown User';
+
+    return { created_at: log.created_at as string, user_name: userName };
+  } catch {
+    return null;
+  }
+}
+
+// =============================================================================
 // PERSONNEL VAULT
 // =============================================================================
 
@@ -880,6 +1044,81 @@ export async function getDocumentsData(facilityId: string) {
   }
 }
 
+/**
+ * Generates a temporary signed URL for a facility document stored in Supabase Storage.
+ * The URL is valid for 5 minutes. Also returns the document's metadata so the viewer
+ * can display AI-extracted fields (e.g. expiration date, upload source).
+ *
+ * Authorization: owner, admin, or the director specifically assigned to this facility.
+ */
+export async function getSecureDocumentUrl(
+  documentId: string,
+  facilityId: string
+): Promise<
+  | { success: true; url: string | null; metadata: Record<string, unknown> | null }
+  | { success: false; error: string }
+> {
+  try {
+    const { userId, orgId, role } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    // Verify the facility belongs to this org
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id, director_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+
+    if (facilityError || !facility) {
+      return { success: false, error: 'Unauthorized: Facility not found or does not belong to your organization' };
+    }
+
+    // Directors may only access documents from their own assigned facility
+    const fac = facility as Record<string, unknown>;
+    if (role === 'director' && fac.director_id !== userId) {
+      return { success: false, error: 'Unauthorized: You are not the assigned director of this facility' };
+    }
+
+    // Fetch the document record to get the storage path
+    const { data: document, error: docError } = await supabase
+      .from('facility_documents')
+      .select('id, file_url, metadata')
+      .eq('id', documentId)
+      .eq('facility_id', facilityId)
+      .single();
+
+    if (docError || !document) {
+      return { success: false, error: 'Document not found or does not belong to this facility' };
+    }
+
+    const doc = document as Record<string, unknown>;
+    const fileUrl = typeof doc.file_url === 'string' ? doc.file_url : null;
+    const metadata = (doc.metadata as Record<string, unknown> | null) ?? null;
+
+    // Attestation / N/A records have no physical file attachment
+    if (!fileUrl) {
+      return { success: true, url: null, metadata };
+    }
+
+    // Generate a 5-minute signed URL — long enough to read a PDF comfortably
+    const { data: signedData, error: signedError } = await supabase.storage
+      .from('facility-documents')
+      .createSignedUrl(fileUrl, 300);
+
+    if (signedError || !signedData?.signedUrl) {
+      console.error('❌ Storage signed URL generation failed:', signedError);
+      return { success: false, error: 'Failed to generate secure document URL' };
+    }
+
+    return { success: true, url: signedData.signedUrl, metadata };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('❌ getSecureDocumentUrl failure:', message);
+    return { success: false, error: message };
+  }
+}
+
 export async function deleteDocumentRecord(documentId: string) {
   try {
     const { userId, orgId } = await getAuthenticatedUserContext();
@@ -970,12 +1209,30 @@ export async function getAllFacilitiesOverview() {
       facilityRows.map(async (facility) => {
         try {
           const compliance = await getRegulatoryStatus(facility.id as string);
+
+          const activeStaffCount = compliance.staffCount;
+          const enrollment = facility.active_enrollment as number | null;
+          const cap = facility.capacity as number | null;
+
+          const capacity_utilization =
+            cap != null && cap > 0 && enrollment != null
+              ? Math.round((enrollment / cap) * 100)
+              : undefined;
+
+          const gross_ratio =
+            enrollment != null && activeStaffCount > 0
+              ? `1 : ${(enrollment / activeStaffCount).toFixed(1)}`
+              : undefined;
+
           return {
             ...facility,
             facilityReadinessScore: compliance.facilityReadinessScore,
             personnelReadinessScore: compliance.personnelReadinessScore,
-            totalPersonnel: compliance.staffCount,
+            totalPersonnel: activeStaffCount,
             gapsCount: compliance.identifiedGaps.length,
+            active_staff_count: activeStaffCount,
+            capacity_utilization,
+            gross_ratio,
           };
         } catch (innerError) {
           console.error('❌ Error fetching compliance for facility', facility.id, innerError);
@@ -985,6 +1242,9 @@ export async function getAllFacilitiesOverview() {
             personnelReadinessScore: 0,
             totalPersonnel: 0,
             gapsCount: 0,
+            active_staff_count: 0,
+            capacity_utilization: undefined,
+            gross_ratio: undefined,
           };
         }
       })

@@ -81,6 +81,8 @@ export const TOGGLES_BY_FACILITY_TYPE: Record<FacilityType, ReadonlyArray<Facili
 
 /**
  * Full Facility model as stored in the `facilities` table.
+ * The three optional fields below are computed at the server-action layer
+ * (getAllFacilitiesOverview) and are never persisted to the database.
  */
 export interface Facility extends FacilityScopeToggles {
   id: string;
@@ -93,6 +95,10 @@ export interface Facility extends FacilityScopeToggles {
   enrollment_updated_at: string | null;
   director_id: string | null;
   created_at?: string;
+  // --- Computed operational metrics ---
+  active_staff_count?: number;
+  capacity_utilization?: number;
+  gross_ratio?: string;
 }
 
 /**

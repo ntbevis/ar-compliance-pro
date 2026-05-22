@@ -16,6 +16,7 @@ import {
   markNotApplicable,
   hashFileBuffer,
   deleteDocument,
+  getSecureDocumentUrl,
 } from 'src/app/actions/compliance';
 import { verifyDocumentWithAI } from 'src/app/actions/ai-verify';
 import type { DocumentComplianceStatus } from '@/lib/types';
@@ -167,6 +168,10 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   const [confirmingDocDelete, setConfirmingDocDelete] = useState(false);
   const [deletingDoc, setDeletingDoc] = useState(false);
 
+  // Secure document viewer state
+  const [docViewerUrl, setDocViewerUrl] = useState<string | null>(null);
+  const [isLoadingDocViewer, setIsLoadingDocViewer] = useState(false);
+
   useEffect(() => {
     async function load() {
       setLoading(true);
@@ -200,6 +205,21 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     }
     loadRoles();
   }, [showAddForm, facilityId]);
+
+  // Fetch a signed URL whenever a document viewer modal opens
+  useEffect(() => {
+    const docId = docManagementItem?.doc.id;
+    if (!docId) {
+      setDocViewerUrl(null);
+      return;
+    }
+    setIsLoadingDocViewer(true);
+    getSecureDocumentUrl(docId, facilityId)
+      .then((result) => {
+        if (result.success) setDocViewerUrl(result.url ?? null);
+      })
+      .finally(() => setIsLoadingDocViewer(false));
+  }, [docManagementItem?.doc.id, facilityId]);
 
   const toggleExpanded = async (person: PersonnelRecord) => {
     if (expandedPersonId === person.id) {
@@ -540,40 +560,87 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         </div>
       )}
 
-      {/* Document Management Modal */}
+      {/* Document Viewer Modal */}
       {docManagementItem && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full">
-            <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 rounded-t-xl flex items-center justify-between">
-              <h2 className="text-lg font-bold text-white">Document Management</h2>
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden"
+            style={{ maxHeight: '90vh' }}
+          >
+            {/* Header */}
+            <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 flex items-center justify-between shrink-0">
+              <div className="min-w-0">
+                <h2 className="text-lg font-bold text-white">Document Viewer</h2>
+                <p className="text-slate-400 text-xs mt-0.5 truncate">
+                  {docManagementItem.req.name}
+                </p>
+              </div>
               <button
-                onClick={() => { setDocManagementItem(null); setConfirmingDocDelete(false); }}
-                className="text-white/70 hover:text-white text-2xl leading-none"
+                onClick={() => { setDocManagementItem(null); setConfirmingDocDelete(false); setDocViewerUrl(null); }}
+                className="ml-4 shrink-0 text-white/70 hover:text-white text-2xl leading-none"
+                aria-label="Close"
               >
                 ×
               </button>
             </div>
-            <div className="p-6 space-y-4">
-              <div className="space-y-1">
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Requirement</p>
-                <p className="font-semibold text-slate-800">{docManagementItem.req.name}</p>
-                <p className="text-[11px] font-mono text-slate-400">{docManagementItem.req.typeKey}</p>
+
+            {/* Two-column body */}
+            <div
+              className="flex-1 grid grid-cols-1 lg:grid-cols-[3fr_2fr] divide-y lg:divide-y-0 lg:divide-x divide-slate-200 overflow-hidden"
+              style={{ minHeight: 0 }}
+            >
+              {/* ── Left / Top: Viewer pane ── */}
+              <div className="bg-slate-950 flex flex-col items-center justify-center min-h-64 overflow-hidden">
+                {isLoadingDocViewer ? (
+                  <div className="flex flex-col items-center gap-3 text-slate-400">
+                    <div className="w-8 h-8 border-4 border-slate-500 border-t-transparent rounded-full animate-spin" />
+                    <p className="text-sm">Loading document…</p>
+                  </div>
+                ) : docViewerUrl ? (
+                  /\.(jpg|jpeg|png|gif|webp)(\?|$)/i.test(docViewerUrl.split('?')[0]) ? (
+                    <img
+                      src={docViewerUrl}
+                      alt={docManagementItem.req.name}
+                      className="w-full h-full object-contain p-4 max-h-[60vh]"
+                    />
+                  ) : (
+                    <iframe
+                      src={docViewerUrl}
+                      title={`${docManagementItem.req.name} — Document`}
+                      className="w-full h-full border-0"
+                      style={{ minHeight: '320px' }}
+                    />
+                  )
+                ) : (
+                  <div className="text-center space-y-3 p-8">
+                    <p className="text-5xl">📝</p>
+                    <p className="text-sm text-slate-400 leading-relaxed">
+                      No file attachment
+                      <br />
+                      <span className="text-slate-500 italic text-xs">
+                        {docManagementItem.doc.file_url
+                          ? 'Could not generate secure URL'
+                          : 'Attestation or N/A record — no file'}
+                      </span>
+                    </p>
+                  </div>
+                )}
               </div>
-              <div className="bg-slate-50 rounded-lg p-4 space-y-2 border border-slate-200 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Upload Date</span>
-                  <span className="font-medium text-slate-800">
-                    {new Date(docManagementItem.doc.created_at).toLocaleDateString()}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Frequency</span>
-                  <span className="font-medium text-slate-800">
-                    {docManagementItem.req.frequency.replace(/_/g, ' ').toUpperCase()}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Current Status</span>
+
+              {/* ── Right / Bottom: Metadata & Actions pane ── */}
+              <div className="p-6 space-y-5 overflow-y-auto bg-white">
+
+                {/* Requirement */}
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                    Requirement
+                  </p>
+                  <p className="font-semibold text-slate-800 text-sm leading-snug">
+                    {docManagementItem.req.name}
+                  </p>
+                  <p className="text-[11px] font-mono text-slate-400 mt-0.5">
+                    {docManagementItem.req.typeKey}
+                  </p>
                   {(() => {
                     const s = calcPersonnelComplianceStatus(
                       docManagementItem.doc.created_at,
@@ -581,7 +648,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                       docManagementItem.doc.metadata
                     );
                     return (
-                      <span className={`font-bold text-xs px-2 py-0.5 rounded-full ${
+                      <span className={`inline-block mt-2 text-xs font-bold px-2.5 py-1 rounded-full ${
                         s === 'expired'
                           ? 'bg-rose-100 text-rose-700'
                           : s === 'expiring_soon'
@@ -593,38 +660,88 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                     );
                   })()}
                 </div>
-              </div>
 
-              {confirmingDocDelete ? (
-                <div className="rounded-xl border-2 border-rose-300 bg-rose-50 p-4 space-y-3">
-                  <p className="text-sm font-bold text-rose-800">
-                    ⚠️ Are you sure? This will permanently delete the document and reset this requirement to &ldquo;Missing.&rdquo;
-                  </p>
-                  <div className="flex gap-3">
-                    <button
-                      onClick={() => setConfirmingDocDelete(false)}
-                      disabled={deletingDoc}
-                      className="flex-1 px-4 py-2 rounded-lg bg-slate-200 text-slate-700 font-medium hover:bg-slate-300 disabled:opacity-50"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleDocDelete}
-                      disabled={deletingDoc}
-                      className="flex-1 px-4 py-2 rounded-lg bg-rose-600 text-white font-medium hover:bg-rose-700 disabled:opacity-50"
-                    >
-                      {deletingDoc ? 'Deleting…' : 'Yes, Delete Document'}
-                    </button>
+                {/* Document details */}
+                <div className="bg-slate-50 rounded-lg p-4 space-y-2.5 border border-slate-200 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Upload Date</span>
+                    <span className="font-medium text-slate-800">
+                      {new Date(docManagementItem.doc.created_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Frequency</span>
+                    <span className="font-medium text-slate-800 capitalize">
+                      {docManagementItem.req.frequency.replace(/_/g, ' ')}
+                    </span>
                   </div>
                 </div>
-              ) : (
-                <button
-                  onClick={() => setConfirmingDocDelete(true)}
-                  className="w-full px-4 py-2.5 bg-rose-600 text-white rounded-lg font-medium hover:bg-rose-700 transition-colors"
-                >
-                  🗑️ Delete &amp; Replace Document
-                </button>
-              )}
+
+                {/* AI Metadata */}
+                {docManagementItem.doc.metadata && (
+                  <div className="bg-violet-50 border border-violet-200 rounded-lg p-4 space-y-2.5 text-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-violet-500">
+                      🤖 AI Metadata
+                    </p>
+                    {typeof docManagementItem.doc.metadata.ai_extracted_expiration === 'string' ? (
+                      <div className="flex justify-between">
+                        <span className="text-violet-600">Expiration (AI)</span>
+                        <span className="font-semibold text-violet-800">
+                          {new Date(
+                            docManagementItem.doc.metadata.ai_extracted_expiration
+                          ).toLocaleDateString()}
+                        </span>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-violet-400 italic">
+                        No expiration date extracted
+                      </p>
+                    )}
+                    {typeof docManagementItem.doc.metadata.upload_source === 'string' && (
+                      <div className="flex justify-between">
+                        <span className="text-violet-600">Source</span>
+                        <span className="font-medium text-violet-800 capitalize">
+                          {String(docManagementItem.doc.metadata.upload_source).replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Delete & Replace */}
+                <div className="pt-1">
+                  {confirmingDocDelete ? (
+                    <div className="rounded-xl border-2 border-rose-300 bg-rose-50 p-4 space-y-3">
+                      <p className="text-sm font-bold text-rose-800">
+                        ⚠️ Permanently delete this document and reset this requirement to &ldquo;Missing.&rdquo;
+                      </p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setConfirmingDocDelete(false)}
+                          disabled={deletingDoc}
+                          className="flex-1 px-3 py-2 rounded-lg bg-slate-200 text-slate-700 font-medium text-sm hover:bg-slate-300 disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleDocDelete}
+                          disabled={deletingDoc}
+                          className="flex-1 px-3 py-2 rounded-lg bg-rose-600 text-white font-medium text-sm hover:bg-rose-700 disabled:opacity-50"
+                        >
+                          {deletingDoc ? 'Deleting…' : 'Yes, Delete'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmingDocDelete(true)}
+                      className="w-full px-4 py-2.5 bg-rose-600 text-white rounded-lg font-medium text-sm hover:bg-rose-700 transition-colors"
+                    >
+                      🗑️ Delete &amp; Replace Document
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>

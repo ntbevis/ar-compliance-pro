@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from 'src/app/utils/supabase/client';
 import {
@@ -9,6 +9,7 @@ import {
   recordDocumentUpload,
   hashFileBuffer,
   deleteDocument,
+  getSecureDocumentUrl,
 } from 'src/app/actions/compliance';
 import { verifyDocumentWithAI } from 'src/app/actions/ai-verify';
 import type { DocumentComplianceStatus, IdentifiedGap } from '@/lib/types';
@@ -107,7 +108,14 @@ function StatusBadge({
   return null;
 }
 
-// ── Document Management Modal ────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function isImageUrl(url: string): boolean {
+  const path = url.split('?')[0].toLowerCase();
+  return /\.(jpg|jpeg|png|gif|webp)$/.test(path);
+}
+
+// ── Document Viewer Modal ─────────────────────────────────────────────────────
 
 function DocManagementModal({
   gap,
@@ -122,6 +130,23 @@ function DocManagementModal({
 }) {
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [documentUrl, setDocumentUrl] = useState<string | null>(null);
+  const [docMetadata, setDocMetadata] = useState<Record<string, unknown> | null>(null);
+  const [isLoadingDoc, setIsLoadingDoc] = useState(false);
+
+  // Fetch a temporary signed URL as soon as the modal opens
+  useEffect(() => {
+    if (!gap.document_id) return;
+    setIsLoadingDoc(true);
+    getSecureDocumentUrl(gap.document_id, facilityId)
+      .then((result) => {
+        if (result.success) {
+          setDocumentUrl(result.url ?? null);
+          setDocMetadata(result.metadata ?? null);
+        }
+      })
+      .finally(() => setIsLoadingDoc(false));
+  }, [gap.document_id, facilityId]);
 
   const handleDelete = async () => {
     if (!gap.document_id) return;
@@ -146,7 +171,6 @@ function DocManagementModal({
     expired: 'Expired',
     missing: 'Missing',
   };
-
   const statusColor: Record<DocumentComplianceStatus, string> = {
     satisfied: 'text-emerald-700 bg-emerald-100',
     expiring_soon: 'text-amber-700 bg-amber-100',
@@ -156,81 +180,167 @@ function DocManagementModal({
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full">
-        <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 rounded-t-xl flex items-center justify-between">
-          <h2 className="text-lg font-bold text-white">Document Management</h2>
+      <div
+        className="bg-white rounded-xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden"
+        style={{ maxHeight: '90vh' }}
+      >
+        {/* ── Header ── */}
+        <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 flex items-center justify-between shrink-0">
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold text-white">Document Viewer</h2>
+            <p className="text-slate-400 text-xs mt-0.5 truncate">{gap.name}</p>
+          </div>
           <button
             onClick={onClose}
-            className="text-white/70 hover:text-white text-2xl leading-none"
+            className="ml-4 shrink-0 text-white/70 hover:text-white text-2xl leading-none"
+            aria-label="Close"
           >
             ×
           </button>
         </div>
 
-        <div className="p-6 space-y-4">
-          {/* Requirement details */}
-          <div className="space-y-2">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Requirement</p>
-                <p className="font-semibold text-slate-800">{gap.name}</p>
-                <p className="text-[11px] font-mono text-slate-400 mt-0.5">{gap.typeKey}</p>
+        {/* ── Two-column body ── */}
+        <div
+          className="flex-1 grid grid-cols-1 lg:grid-cols-[3fr_2fr] divide-y lg:divide-y-0 lg:divide-x divide-slate-200 overflow-hidden"
+          style={{ minHeight: 0 }}
+        >
+          {/* ── Left / Top: Viewer pane ── */}
+          <div className="bg-slate-950 flex flex-col items-center justify-center min-h-64 overflow-hidden">
+            {isLoadingDoc ? (
+              <div className="flex flex-col items-center gap-3 text-slate-400">
+                <div className="w-8 h-8 border-4 border-slate-500 border-t-transparent rounded-full animate-spin" />
+                <p className="text-sm">Loading document…</p>
               </div>
-              <span className={`shrink-0 text-xs font-bold px-2.5 py-1 rounded-full ${statusColor[gap.compliance_status]}`}>
+            ) : documentUrl ? (
+              isImageUrl(documentUrl) ? (
+                <img
+                  src={documentUrl}
+                  alt={gap.name}
+                  className="w-full h-full object-contain p-4 max-h-[60vh]"
+                />
+              ) : (
+                <iframe
+                  src={documentUrl}
+                  title={`${gap.name} — Document`}
+                  className="w-full h-full border-0"
+                  style={{ minHeight: '320px' }}
+                />
+              )
+            ) : (
+              <div className="text-center space-y-3 p-8">
+                <p className="text-5xl">📝</p>
+                <p className="text-sm text-slate-400 leading-relaxed">
+                  No file attachment
+                  <br />
+                  <span className="text-slate-500 italic text-xs">
+                    {gap.completionType === 'attestation'
+                      ? 'Satisfied via digital attestation'
+                      : gap.completionType === 'n/a'
+                      ? 'Marked as Not Applicable'
+                      : 'No document on file'}
+                  </span>
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* ── Right / Bottom: Metadata & Actions pane ── */}
+          <div className="p-6 space-y-5 overflow-y-auto bg-white">
+
+            {/* Requirement */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                Requirement
+              </p>
+              <p className="font-semibold text-slate-800 text-sm leading-snug">{gap.name}</p>
+              <p className="text-[11px] font-mono text-slate-400 mt-0.5">{gap.typeKey}</p>
+              <span className={`inline-block mt-2 text-xs font-bold px-2.5 py-1 rounded-full ${statusColor[gap.compliance_status]}`}>
                 {statusLabel[gap.compliance_status]}
               </span>
             </div>
-          </div>
 
-          <div className="bg-slate-50 rounded-lg p-4 space-y-2 border border-slate-200">
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-500">Frequency</span>
-              <span className="font-medium text-slate-800">
-                {String(gap.frequency).replace(/_/g, ' ').toUpperCase()}
-              </span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-500">Upload Date</span>
-              <span className="font-medium text-slate-800">
-                {gap.document_created_at
-                  ? new Date(gap.document_created_at).toLocaleDateString()
-                  : '—'}
-              </span>
-            </div>
-          </div>
-
-          {/* Inline delete confirmation */}
-          {confirming ? (
-            <div className="rounded-xl border-2 border-rose-300 bg-rose-50 p-4 space-y-3">
-              <p className="text-sm font-bold text-rose-800">
-                ⚠️ Are you sure? This will permanently delete the document and reset this requirement to "Missing."
-              </p>
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setConfirming(false)}
-                  disabled={deleting}
-                  className="flex-1 px-4 py-2 rounded-lg bg-slate-200 text-slate-700 font-medium hover:bg-slate-300 disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDelete}
-                  disabled={deleting}
-                  className="flex-1 px-4 py-2 rounded-lg bg-rose-600 text-white font-medium hover:bg-rose-700 disabled:opacity-50"
-                >
-                  {deleting ? 'Deleting…' : 'Yes, Delete Document'}
-                </button>
+            {/* Document details */}
+            <div className="bg-slate-50 rounded-lg p-4 space-y-2.5 border border-slate-200 text-sm">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Frequency</span>
+                <span className="font-medium text-slate-800 capitalize">
+                  {String(gap.frequency).replace(/_/g, ' ')}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Upload Date</span>
+                <span className="font-medium text-slate-800">
+                  {gap.document_created_at
+                    ? new Date(gap.document_created_at).toLocaleDateString()
+                    : '—'}
+                </span>
               </div>
             </div>
-          ) : (
-            <button
-              onClick={() => setConfirming(true)}
-              disabled={!gap.document_id}
-              className="w-full px-4 py-2.5 bg-rose-600 text-white rounded-lg font-medium hover:bg-rose-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              🗑️ Delete &amp; Replace Document
-            </button>
-          )}
+
+            {/* AI Metadata */}
+            {docMetadata && (
+              <div className="bg-violet-50 border border-violet-200 rounded-lg p-4 space-y-2.5 text-sm">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-violet-500">
+                  🤖 AI Metadata
+                </p>
+                {typeof docMetadata.ai_extracted_expiration === 'string' ? (
+                  <div className="flex justify-between">
+                    <span className="text-violet-600">Expiration (AI)</span>
+                    <span className="font-semibold text-violet-800">
+                      {new Date(docMetadata.ai_extracted_expiration).toLocaleDateString()}
+                    </span>
+                  </div>
+                ) : (
+                  <p className="text-xs text-violet-400 italic">
+                    No expiration date extracted
+                  </p>
+                )}
+                {typeof docMetadata.upload_source === 'string' && (
+                  <div className="flex justify-between">
+                    <span className="text-violet-600">Source</span>
+                    <span className="font-medium text-violet-800 capitalize">
+                      {String(docMetadata.upload_source).replace(/_/g, ' ')}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Delete & Replace */}
+            <div className="pt-1">
+              {confirming ? (
+                <div className="rounded-xl border-2 border-rose-300 bg-rose-50 p-4 space-y-3">
+                  <p className="text-sm font-bold text-rose-800">
+                    ⚠️ Permanently delete this document and reset this requirement to &ldquo;Missing.&rdquo;
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setConfirming(false)}
+                      disabled={deleting}
+                      className="flex-1 px-3 py-2 rounded-lg bg-slate-200 text-slate-700 font-medium text-sm hover:bg-slate-300 disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleDelete}
+                      disabled={deleting}
+                      className="flex-1 px-3 py-2 rounded-lg bg-rose-600 text-white font-medium text-sm hover:bg-rose-700 disabled:opacity-50"
+                    >
+                      {deleting ? 'Deleting…' : 'Yes, Delete'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirming(true)}
+                  disabled={!gap.document_id}
+                  className="w-full px-4 py-2.5 bg-rose-600 text-white rounded-lg font-medium text-sm hover:bg-rose-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  🗑️ Delete &amp; Replace Document
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

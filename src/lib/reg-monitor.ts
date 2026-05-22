@@ -290,11 +290,13 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
   const satisfiedRuleIds = new Set(satisfiedRuleMap.keys());
 
   // 5. THE TWIN-SCORE MATH: separate buckets for facility vs. personnel rules.
+  //    Daily-frequency rules are operational expectations, not verifiable upload events —
+  //    they are intentionally excluded from both score buckets.
   const facilityScoredRules = applicableRules.filter(
-    (r) => r.is_scored && r.score_category === 'facility'
+    (r) => r.is_scored && r.score_category === 'facility' && r.frequency !== 'daily'
   );
   const personnelScoredRules = applicableRules.filter(
-    (r) => r.is_scored && r.score_category === 'personnel'
+    (r) => r.is_scored && r.score_category === 'personnel' && r.frequency !== 'daily'
   );
 
   const facilityVerified = facilityScoredRules.filter((r) => satisfiedRuleIds.has(r.id)).length;
@@ -315,24 +317,27 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
   );
 
   // 6. Build the gap list for the UI.
-  //    We include ALL applicable rules so the UI can render them (checklist vs blueprint).
+  //    Daily-frequency rules are surfaced only in the Operational Blueprints reference manual,
+  //    never as compliance gaps — so they are excluded here.
   //    Rules with an existing (possibly expired) document are still included so the user
   //    can see their expiration status and replace the document if needed.
-  const identifiedGaps: IdentifiedGap[] = applicableRules.map((rule) => {
-    const satisfaction = satisfiedRuleMap.get(rule.id);
-    return {
-      id: rule.id,
-      name: rule.requirement_name,
-      typeKey: rule.required_document_type,
-      severity: rule.severity,
-      frequency: rule.frequency,
-      is_scored: rule.is_scored,
-      score_category: rule.score_category,
-      compliance_status: satisfaction ? satisfaction.status : 'missing',
-      document_id: satisfaction?.docId,
-      document_created_at: satisfaction?.createdAt,
-    };
-  });
+  const identifiedGaps: IdentifiedGap[] = applicableRules
+    .filter((rule) => rule.frequency !== 'daily')
+    .map((rule) => {
+      const satisfaction = satisfiedRuleMap.get(rule.id);
+      return {
+        id: rule.id,
+        name: rule.requirement_name,
+        typeKey: rule.required_document_type,
+        severity: rule.severity,
+        frequency: rule.frequency,
+        is_scored: rule.is_scored,
+        score_category: rule.score_category,
+        compliance_status: satisfaction ? satisfaction.status : 'missing',
+        document_id: satisfaction?.docId,
+        document_created_at: satisfaction?.createdAt,
+      };
+    });
 
   // 7. Active staff count for the personnel headcount widget.
   const { count: personnelCount } = await supabase

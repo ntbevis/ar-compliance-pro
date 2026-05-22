@@ -19,6 +19,7 @@ import DocumentCenterView from 'src/components/DocumentCenterView';
 import OperationalBlueprintsView from 'src/components/OperationalBlueprintsView';
 import FacilitySettingsView from 'src/components/FacilitySettingsView';
 import type { IdentifiedGap } from '@/lib/types';
+import { generateAuditReport } from '@/lib/pdf-generator';
 
 interface FacilitySummary {
   id: string;
@@ -31,6 +32,9 @@ interface FacilitySummary {
   personnelReadinessScore: number;
   totalPersonnel: number;
   gapsCount: number;
+  active_staff_count?: number;
+  capacity_utilization?: number;
+  gross_ratio?: string;
 }
 
 interface ComplianceData {
@@ -81,6 +85,8 @@ export default function DashboardPage() {
 
   const [auditLogs, setAuditLogs] = useState<AuditLogRow[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+
+  const [generatingReport, setGeneratingReport] = useState<boolean>(false);
 
   // Facility management state
   const [showAddFacilityModal, setShowAddFacilityModal] = useState<boolean>(false);
@@ -608,6 +614,78 @@ export default function DashboardPage() {
                   )}
                 </div>
               </div>
+
+              {/* Fleet Operations */}
+              {(() => {
+                const totalStaff = facilitiesData.reduce((s, f) => s + f.totalPersonnel, 0);
+                const totalEnrollment = facilitiesData.reduce(
+                  (s, f) => s + (f.active_enrollment ?? 0),
+                  0
+                );
+                const orgRatio =
+                  totalStaff > 0
+                    ? `1 : ${(totalEnrollment / totalStaff).toFixed(1)}`
+                    : 'N/A';
+                const facilitiesWithUtil = facilitiesData.filter(
+                  (f) => f.capacity_utilization != null
+                );
+                const avgUtil =
+                  facilitiesWithUtil.length > 0
+                    ? Math.round(
+                        facilitiesWithUtil.reduce(
+                          (s, f) => s + (f.capacity_utilization ?? 0),
+                          0
+                        ) / facilitiesWithUtil.length
+                      )
+                    : null;
+
+                return (
+                  <div className="border-t border-slate-200 px-8 py-6">
+                    <p className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4">
+                      Fleet Operations
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="bg-slate-50 rounded-xl p-4 text-center">
+                        <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+                          Total Active Staff
+                        </p>
+                        <p className="text-3xl font-black text-slate-800">{totalStaff}</p>
+                        <p className="text-[10px] text-slate-400 mt-1">Across all facilities</p>
+                      </div>
+                      <div className="bg-slate-50 rounded-xl p-4 text-center">
+                        <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+                          Org-Wide Gross Ratio
+                        </p>
+                        <p className="text-3xl font-black text-slate-800">{orgRatio}</p>
+                        <p className="text-[10px] text-slate-400 mt-1">Enrolled per staff member</p>
+                      </div>
+                      <div className="bg-slate-50 rounded-xl p-4 text-center">
+                        <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+                          Avg. Capacity Utilization
+                        </p>
+                        {avgUtil != null ? (
+                          <>
+                            <p
+                              className={`text-3xl font-black ${
+                                avgUtil > 95 ? 'text-amber-600' : 'text-slate-800'
+                              }`}
+                            >
+                              {avgUtil}%
+                            </p>
+                            {avgUtil > 95 && (
+                              <p className="text-[10px] text-amber-500 mt-1">
+                                ⚠️ Near full capacity
+                              </p>
+                            )}
+                          </>
+                        ) : (
+                          <p className="text-xl font-black text-slate-400 mt-2">N/A</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           );
         })()}
@@ -668,6 +746,28 @@ export default function DashboardPage() {
                       {facility.gapsCount}
                     </span>
                   </div>
+
+                  {(facility.capacity_utilization != null || facility.gross_ratio) && (
+                    <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-100">
+                      {facility.capacity_utilization != null && (
+                        <span
+                          className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full ${
+                            facility.capacity_utilization > 95
+                              ? 'bg-amber-100 text-amber-700'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          📊 {facility.capacity_utilization}% Utilization
+                          {facility.capacity_utilization > 95 && ' ⚠️'}
+                        </span>
+                      )}
+                      {facility.gross_ratio && (
+                        <span className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">
+                          👥 {facility.gross_ratio}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="px-6 pb-6 space-y-2">
@@ -709,17 +809,51 @@ export default function DashboardPage() {
 
   return (
     <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
-      <header>
-        <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
-          DHS Regulatory Engine
-        </p>
-        <h1 className="text-5xl font-bold tracking-tight text-slate-900">
-          {currentView === 'overview' && 'Executive Overview'}
-          {currentView === 'personnel' && 'Personnel Vault'}
-          {currentView === 'documents' && 'Document Center'}
-          {currentView === 'blueprints' && 'Operational Blueprints'}
-          {currentView === 'settings' && 'Facility Settings'}
-        </h1>
+      <header className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
+            DHS Regulatory Engine
+          </p>
+          <h1 className="text-5xl font-bold tracking-tight text-slate-900">
+            {currentView === 'overview' && 'Executive Overview'}
+            {currentView === 'personnel' && 'Personnel Vault'}
+            {currentView === 'documents' && 'Document Center'}
+            {currentView === 'blueprints' && 'Operational Blueprints'}
+            {currentView === 'settings' && 'Facility Settings'}
+          </h1>
+        </div>
+
+        <button
+          onClick={async () => {
+            if (!selectedFacilityId || selectedFacilityId === 'all') return;
+            setGeneratingReport(true);
+            try {
+              await generateAuditReport(selectedFacilityId);
+            } catch (err) {
+              console.error('PDF generation failed:', err);
+              alert('❌ Failed to generate audit report. Please try again.');
+            } finally {
+              setGeneratingReport(false);
+            }
+          }}
+          disabled={generatingReport}
+          className={`flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-sm border-2 transition-all shrink-0 ${
+            generatingReport
+              ? 'border-slate-300 bg-slate-100 text-slate-400 cursor-not-allowed'
+              : 'border-indigo-300 bg-white text-indigo-700 hover:bg-indigo-50 hover:border-indigo-400 shadow-sm'
+          }`}
+        >
+          {generatingReport ? (
+            <>
+              <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+              Generating PDF…
+            </>
+          ) : (
+            <>
+              📄 Generate Audit Report
+            </>
+          )}
+        </button>
       </header>
 
       {currentView === 'overview' && (
@@ -762,6 +896,43 @@ export default function DashboardPage() {
                   ` • Updated ${new Date(compliance.enrollmentUpdatedAt).toLocaleDateString()}`}
               </p>
             </div>
+
+            {/* Operational Metric Badges */}
+            {(() => {
+              const capUtil =
+                compliance.capacity != null &&
+                compliance.capacity > 0 &&
+                compliance.activeEnrollment != null
+                  ? Math.round(
+                      (compliance.activeEnrollment / compliance.capacity) * 100
+                    )
+                  : null;
+              const ratio =
+                compliance.activeEnrollment != null && compliance.totalPersonnel > 0
+                  ? `1 : ${(compliance.activeEnrollment / compliance.totalPersonnel).toFixed(1)}`
+                  : null;
+
+              if (capUtil == null && ratio == null) return null;
+
+              return (
+                <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-slate-100">
+                  {capUtil != null && (
+                    <span
+                      className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full ${
+                        capUtil > 95 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      📊 Utilization: {capUtil}%{capUtil > 95 ? ' ⚠️' : ''}
+                    </span>
+                  )}
+                  {ratio && (
+                    <span className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">
+                      👥 Gross Ratio: {ratio}
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           <ComplianceDashboardClient
