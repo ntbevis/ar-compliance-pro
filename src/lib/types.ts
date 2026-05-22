@@ -150,8 +150,9 @@ export type ComplianceFrequency =
  * - 'satisfied'      → document exists and is not near expiration
  * - 'expiring_soon'  → document exists but expires within 30 days
  * - 'expired'        → document exists but its expiration date has passed
+ * - 'pending_review' → document was uploaded but AI rejected it; awaiting human review
  */
-export type DocumentComplianceStatus = 'missing' | 'satisfied' | 'expiring_soon' | 'expired';
+export type DocumentComplianceStatus = 'missing' | 'satisfied' | 'expiring_soon' | 'expired' | 'pending_review';
 
 /**
  * The shape returned by the Twin-Score Engine for an individual outstanding rule.

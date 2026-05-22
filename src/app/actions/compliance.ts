@@ -173,6 +173,7 @@ export async function recordDocumentUpload(params: {
   userAttestation: boolean;
   personnelId?: string;
   aiExpirationDate?: string;
+  status?: 'approved' | 'pending';
 }) {
   try {
     const { userId, orgId } = await getAuthenticatedUserContext();
@@ -205,7 +206,7 @@ export async function recordDocumentUpload(params: {
     const { error: updateError } = await supabase
       .from('facility_documents')
       .update({
-        status: 'approved',
+        status: params.status ?? 'approved',
         document_type: params.documentType,
         metadata,
       })
@@ -1580,32 +1581,43 @@ export async function getAuditLogs(facilityId?: string) {
     const { userId, orgId, role } = await getAuthenticatedUserContext();
     const supabase = createAdminClient();
 
-    let logsQuery = supabase
+    // 1. Get the facilities this user is allowed to see
+    let facQuery = supabase.from('facilities').select('id, name, director_id').eq('org_id', orgId);
+    if (role === 'director') {
+      facQuery = facQuery.eq('director_id', userId);
+    }
+    const { data: facilities, error: facError } = await facQuery;
+
+    if (facError || !facilities || facilities.length === 0) return [];
+
+    const allowedFacIds = facilities.map(f => f.id);
+    const targetFacIds = facilityId && allowedFacIds.includes(facilityId)
+      ? [facilityId]
+      : allowedFacIds;
+
+    if (targetFacIds.length === 0) return [];
+
+    // 2. Fetch the logs for those facilities
+    const { data: logs, error } = await supabase
       .from('audit_logs')
-      .select('*, facilities!inner(name, org_id, director_id)')
-      .eq('facilities.org_id', orgId)
+      .select('*')
+      .in('facility_id', targetFacIds)
       .order('created_at', { ascending: false })
       .limit(500);
 
-    if (facilityId) {
-      logsQuery = logsQuery.eq('facility_id', facilityId);
-    }
-    if (role === 'director') {
-      logsQuery = logsQuery.eq('facilities.director_id', userId);
-    }
-
-    const { data: logs, error } = await logsQuery;
     if (error) {
       console.error('❌ Error fetching audit logs:', error);
       return [];
     }
 
-    return (logs ?? []).map((log: Record<string, unknown>) => {
-      const facility = log.facilities as { name?: string } | null;
+    // 3. Map facility names to the logs
+    const facMap = new Map(facilities.map(f => [f.id, f.name]));
+
+    return (logs ?? []).map((log) => {
       const metadata = (log.metadata as Record<string, unknown> | null) ?? {};
       return {
         ...log,
-        facility_name: facility?.name ?? 'Unknown Facility',
+        facility_name: facMap.get(log.facility_id) ?? 'Unknown Facility',
         user_name: (metadata.user_name as string | undefined) ?? 'Unknown User',
         user_role: (metadata.user_role as string | undefined) ?? 'unknown',
       };

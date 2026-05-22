@@ -59,6 +59,7 @@ src/
   app/
     actions/
       admin.ts
+      ai-verify.ts
       compliance.ts
       onboarding-save.ts
       onboarding.ts
@@ -90,21 +91,17 @@ src/
     OperationalBlueprintsView.tsx
     PersonnelVaultView.tsx
     Sidebar.tsx
-    UploadButton.tsx
   context/
     FacilityContext.tsx
   lib/
+    pdf-generator.ts
     reg-monitor.ts
     types.ts
   proxy.ts
 .gitignore
 AGENTS.md
 CLAUDE.md
-DATABASE_MIGRATION_RBAC.sql
-DATABASE_MIGRATION_TOGGLES_AND_SCORING.sql
-DEPLOYMENT_READY.md
 eslint.config.mjs
-IMPLEMENTATION_SUMMARY.md
 next.config.ts
 package.json
 postcss.config.js
@@ -628,6 +625,94 @@ const { data: roles } = await supabase
 ```
 </file>
 
+<file path="src/app/actions/ai-verify.ts">
+'use server';
+
+import { generateObject } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import { z } from 'zod';
+
+const VerificationSchema = z.object({
+  is_valid_match: z
+    .boolean()
+    .describe('Does this document fulfill the stated compliance requirement?'),
+  detected_document_type: z
+    .string()
+    .describe('What type of document is this? Be concise (e.g. "CPR Card", "Food Handler Permit").'),
+  confidence_score: z
+    .number()
+    .min(0)
+    .max(100)
+    .describe('Confidence percentage (0-100) that the document matches the requirement.'),
+  expiration_date: z
+    .string()
+    .nullable()
+    .describe(
+      'Expiration or renewal date found on the document in YYYY-MM-DD format. Return null if not present.'
+    ),
+  rejection_reason: z
+    .string()
+    .nullable()
+    .describe(
+      'If is_valid_match is false, a concise, practical explanation of why. Return null when valid.'
+    ),
+});
+
+export type AIVerificationResult = z.infer<typeof VerificationSchema>;
+
+export async function verifyDocumentWithAI(
+  formData: FormData
+): Promise<
+  | { success: true; object: AIVerificationResult }
+  | { success: false; error: string }
+> {
+  try {
+    const file = formData.get('file') as File | null;
+    const requirementName = (formData.get('requirementName') as string | null) ?? 'Unknown requirement';
+
+    if (!file) {
+      return { success: false, error: 'No file provided for verification.' };
+    }
+
+    // Convert the uploaded file to a raw buffer for the VLM
+    const arrayBuffer = await file.arrayBuffer();
+    const imageBuffer = Buffer.from(arrayBuffer);
+    const mediaType = file.type || 'image/jpeg';
+
+    const systemPrompt = `You are an expert but practical Arkansas DHS Compliance Auditor. Analyze the provided image/document. The user claims this document satisfies the requirement: '${requirementName}'. Verify if this is true and extract the requested data.
+
+CRITICAL INSTRUCTION: You must be highly tolerant of real-world upload conditions. Accept photos with glare, angled shots, mobile screenshots, and handwritten forms as long as the core identifying information is reasonably legible. Do not reject a document for poor aesthetic quality. Only return is_valid_match: false if the document is completely unreadable, is missing critical identifying data due to cropping, or is clearly the wrong document type entirely (e.g., an animal photo instead of a CPR card).`;
+
+    const { object } = await generateObject({
+      model: openai('gpt-4o'),
+      schema: VerificationSchema,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: systemPrompt,
+            },
+            {
+              type: 'image',
+              image: imageBuffer,
+              mediaType,
+            },
+          ],
+        },
+      ],
+    });
+
+    return { success: true, object };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown AI verification error';
+    console.error('❌ AI document verification failed:', message);
+    return { success: false, error: message };
+  }
+}
+</file>
+
 <file path="src/app/dashboard/layout.tsx">
 import { FacilityProvider } from 'src/context/FacilityContext';
 import Sidebar from 'src/components/Sidebar';
@@ -1094,182 +1179,470 @@ export default function FacilitySettingsView({ facilityId }: Props) {
 }
 </file>
 
-<file path="src/components/OperationalBlueprintsView.tsx">
-'use client';
+<file path="src/lib/pdf-generator.ts">
+// src/lib/pdf-generator.ts
+// Client-only utility — must only be called inside 'use client' components.
+// jsPDF and jspdf-autotable are dynamically imported to prevent SSR build errors.
 
-import { useEffect, useState } from 'react';
-import { attestDailyBlueprints, getFacilityComplianceData } from 'src/app/actions/compliance';
-import type { IdentifiedGap } from '@/lib/types';
+import {
+  getFacilityComplianceData,
+  getFacilitySettings,
+  getPersonnelData,
+  getLatestOperationalAcknowledgment,
+} from 'src/app/actions/compliance';
+import type { IdentifiedGap } from './types';
 
-interface Props {
-  facilityId: string;
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+type RGB = [number, number, number];
+
+function fmt(isoString: string | null | undefined): string {
+  if (!isoString) return '—';
+  try {
+    return new Date(isoString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch {
+    return '—';
+  }
 }
 
-interface BlueprintItem {
-  id: string;
-  name: string;
-  typeKey: string;
-  severity: 'critical' | 'standard';
-  frequency: string;
-  is_scored: boolean;
+function fmtLong(isoString: string | null | undefined): string {
+  if (!isoString) return 'N/A';
+  try {
+    return new Date(isoString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return 'N/A';
+  }
 }
 
-export default function OperationalBlueprintsView({ facilityId }: Props) {
-  const [items, setItems] = useState<BlueprintItem[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [submitting, setSubmitting] = useState<boolean>(false);
-  const [comment, setComment] = useState<string>('');
-  const [lastAttestation, setLastAttestation] = useState<string | null>(null);
+function statusLabel(status: IdentifiedGap['compliance_status']): string {
+  switch (status) {
+    case 'satisfied':     return 'Satisfied';
+    case 'expiring_soon': return 'Expiring Soon';
+    case 'expired':       return 'Expired';
+    case 'missing':       return 'Missing';
+    default:              return 'Unknown';
+  }
+}
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true);
-      try {
-        const data = await getFacilityComplianceData(facilityId);
-        const gaps = (data.gaps ?? []) as IdentifiedGap[];
-        // Operational blueprints = unscored rules OR rules whose frequency is daily/weekly.
-        const blueprint = gaps.filter(
-          (g) =>
-            g.is_scored === false ||
-            ['daily', 'weekly'].includes(String(g.frequency).toLowerCase())
-        );
-        setItems(
-          blueprint.map((g) => ({
-            id: g.id,
-            name: g.name,
-            typeKey: g.typeKey,
-            severity: g.severity,
-            frequency: String(g.frequency ?? ''),
-            is_scored: g.is_scored,
-          }))
-        );
-      } catch (err) {
-        console.error('Failed to load blueprints:', err);
-        setItems([]);
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, [facilityId]);
+// ---------------------------------------------------------------------------
+// PDF color palette
+// ---------------------------------------------------------------------------
 
-  const handleAttest = async () => {
-    if (!confirm('Confirm that today\'s operational guidelines have been physically verified?')) return;
-    setSubmitting(true);
-    try {
-      const result = await attestDailyBlueprints(facilityId, comment.trim() || null);
-      if (result.success) {
-        setLastAttestation(new Date().toLocaleString());
-        setComment('');
-        alert(`✅ ${result.message}`);
-      } else {
-        alert(`❌ Attestation failed: ${result.error}`);
-      }
-    } finally {
-      setSubmitting(false);
-    }
+const C = {
+  navy:     [15,  23,  42]  as RGB,
+  slate800: [30,  41,  59]  as RGB,
+  slate700: [51,  65,  85]  as RGB,
+  slate500: [100, 116, 139] as RGB,
+  slate300: [203, 213, 225] as RGB,
+  slate100: [241, 245, 249] as RGB,
+  slate50:  [248, 250, 252] as RGB,
+  white:    [255, 255, 255] as RGB,
+  green:    [22,  163, 74]  as RGB,
+  greenBg:  [236, 253, 245] as RGB,
+  greenBd:  [167, 243, 208] as RGB,
+  amber:    [217, 119, 6]   as RGB,
+  amberBg:  [255, 251, 235] as RGB,
+  red:      [220, 38,  38]  as RGB,
+  redBg:    [254, 242, 242] as RGB,
+  redBd:    [254, 202, 202] as RGB,
+  indigo:   [67,  56,  202] as RGB,
+};
+
+// ---------------------------------------------------------------------------
+// Main export
+// ---------------------------------------------------------------------------
+
+export async function generateAuditReport(facilityId: string): Promise<void> {
+  // Dynamic imports keep jsPDF out of the SSR/Node bundle
+  const { jsPDF } = await import('jspdf');
+  const { default: autoTable } = await import('jspdf-autotable');
+
+  // Fetch all required data in parallel
+  const [settingsResult, complianceData, personnel, acknowledgment] = await Promise.all([
+    getFacilitySettings(facilityId),
+    getFacilityComplianceData(facilityId),
+    getPersonnelData(facilityId),
+    getLatestOperationalAcknowledgment(facilityId),
+  ]);
+
+  // Safe facility field access (Supabase returns untyped Record)
+  const fac = settingsResult.facility as Record<string, unknown> | null;
+  const facilityName   = typeof fac?.name            === 'string' ? fac.name            : 'Unknown Facility';
+  const licenseNumber  = typeof fac?.license_number  === 'string' ? fac.license_number  : 'N/A';
+  const facilityType   = typeof fac?.facility_type   === 'string' ? fac.facility_type   : '';
+  const facilityTypeLabel = facilityType === 'childcare_center' ? 'Childcare Center' : 'Nursing Home';
+  const capacity       = typeof fac?.capacity        === 'number' ? String(fac.capacity) : 'N/A';
+  const enrollment     = complianceData.activeEnrollment != null  ? String(complianceData.activeEnrollment) : 'Not Set';
+
+  const today     = new Date();
+  const todayLong = today.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const fileDate  = today.toISOString().split('T')[0];
+
+  // ---------------------------------------------------------------------------
+  // Document setup
+  // ---------------------------------------------------------------------------
+
+  const doc    = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageW  = doc.internal.pageSize.getWidth();
+  const pageH  = doc.internal.pageSize.getHeight();
+  const MARGIN = 18;
+  const COL_W  = pageW - MARGIN * 2;
+
+  // Shorthand color setters (avoids spread-arg TS overload ambiguity)
+  const fill  = (c: RGB) => doc.setFillColor(c[0], c[1], c[2]);
+  const draw  = (c: RGB) => doc.setDrawColor(c[0], c[1], c[2]);
+  const tint  = (c: RGB) => doc.setTextColor(c[0], c[1], c[2]);
+
+  let y = 0;
+
+  // ---------------------------------------------------------------------------
+  // HEADER BANNER
+  // ---------------------------------------------------------------------------
+
+  fill(C.navy);
+  doc.rect(0, 0, pageW, 40, 'F');
+
+  tint(C.white);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(18);
+  doc.text('AR COMPLIANCE GUARD', MARGIN, 15);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  tint([148, 163, 184]); // slate-400
+  doc.text('OFFICIAL AUDIT REPORT  —  CONFIDENTIAL', MARGIN, 22);
+
+  tint([148, 163, 184]);
+  doc.setFontSize(7.5);
+  doc.text(`Generated: ${todayLong}`, pageW - MARGIN, 15, { align: 'right' });
+  doc.text('For official use only', pageW - MARGIN, 22, { align: 'right' });
+
+  y = 50;
+
+  // ---------------------------------------------------------------------------
+  // FACILITY DETAILS  (2-column grid)
+  // ---------------------------------------------------------------------------
+
+  tint(C.slate500);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.text('FACILITY DETAILS', MARGIN, y);
+  y += 3;
+
+  draw(C.slate100);
+  doc.setLineWidth(0.25);
+  doc.line(MARGIN, y, pageW - MARGIN, y);
+  y += 5;
+
+  const halfW = COL_W / 2;
+  const detailPair = (
+    lLabel: string, lVal: string,
+    rLabel: string, rVal: string,
+    rowY: number
+  ) => {
+    tint(C.slate500);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.text(lLabel, MARGIN, rowY);
+    doc.text(rLabel, MARGIN + halfW + 4, rowY);
+
+    tint(C.slate800);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text(lVal, MARGIN, rowY + 5);
+    doc.text(rVal, MARGIN + halfW + 4, rowY + 5);
   };
 
-  const grouped = items.reduce<Record<string, BlueprintItem[]>>((acc, item) => {
-    const key = (item.frequency || 'unscheduled').toLowerCase();
-    (acc[key] ??= []).push(item);
-    return acc;
-  }, {});
+  detailPair('FACILITY NAME', facilityName, 'FACILITY TYPE', facilityTypeLabel, y);
+  y += 14;
+  detailPair('LICENSE NUMBER', licenseNumber, 'LICENSED CAPACITY', capacity, y);
+  y += 14;
+  detailPair('ACTIVE ENROLLMENT', enrollment, 'ACTIVE STAFF COUNT', String(complianceData.totalPersonnel), y);
+  y += 18;
 
-  return (
-    <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm max-w-6xl mx-auto text-slate-800 space-y-6">
-      <header className="space-y-2">
-        <h2 className="text-2xl font-bold">📖 Operational Blueprints &amp; Daily Guidelines</h2>
-        <p className="text-sm text-slate-600">
-          This is your digital manual. The items below are non-scored guidelines and daily/weekly checks.
-          They are not graded — but they must be physically verified each day for survey readiness.
-        </p>
-      </header>
+  // ---------------------------------------------------------------------------
+  // OPERATIONAL ACKNOWLEDGMENT STAMP
+  // ---------------------------------------------------------------------------
 
-      <section className="bg-indigo-50 border-2 border-indigo-300 rounded-xl p-6">
-        <h3 className="text-sm font-bold uppercase tracking-wider text-indigo-700 mb-2">
-          ✓ Daily Operational Attestation
-        </h3>
-        <p className="text-sm text-indigo-900 mb-4">
-          Once you have physically verified the daily guidelines below, log a timestamped attestation.
-        </p>
-        <textarea
-          value={comment}
-          onChange={(e) => setComment(e.target.value)}
-          placeholder="Optional notes about today's verification (incidents, deviations, etc.)"
-          className="w-full px-3 py-2 border border-indigo-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm bg-white"
-          rows={3}
-        />
-        <div className="flex items-center justify-between gap-4 mt-4 flex-wrap">
-          <p className="text-xs text-indigo-700">
-            {lastAttestation
-              ? `✅ Last attestation logged: ${lastAttestation}`
-              : 'No attestation logged yet this session.'}
-          </p>
-          <button
-            onClick={handleAttest}
-            disabled={submitting}
-            className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all ${
-              submitting
-                ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md'
-            }`}
-          >
-            {submitting ? 'Logging…' : 'Attest Daily Guidelines Met'}
-          </button>
-        </div>
-      </section>
+  const ackBg: RGB = acknowledgment ? C.greenBg : C.redBg;
+  const ackBd: RGB = acknowledgment ? C.greenBd : C.redBd;
+  const ackTxt: RGB = acknowledgment ? C.green : C.red;
 
-      {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <div className="flex items-center gap-3 text-indigo-600">
-            <div className="w-6 h-6 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-            <span className="font-medium">Loading blueprints…</span>
-          </div>
-        </div>
-      ) : items.length === 0 ? (
-        <div className="border border-dashed border-slate-200 rounded-xl p-12 text-center italic text-slate-400 text-sm bg-slate-50">
-          No unscored or daily/weekly guidelines apply to this facility profile.
-        </div>
-      ) : (
-        Object.entries(grouped).map(([frequency, group]) => (
-          <section key={frequency} className="border border-slate-200 rounded-xl overflow-hidden">
-            <div className="bg-slate-100 px-6 py-3">
-              <h3 className="text-sm font-bold uppercase tracking-wider text-slate-700">
-                {frequency.toUpperCase()} ({group.length})
-              </h3>
-            </div>
-            <ul className="divide-y divide-slate-100">
-              {group.map((item) => (
-                <li key={item.id} className="px-6 py-4 flex items-start justify-between gap-4">
-                  <div>
-                    <p className="font-semibold text-sm text-slate-800">{item.name}</p>
-                    <p className="text-[11px] font-mono text-slate-400 mt-0.5">{item.typeKey}</p>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span
-                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
-                        item.severity === 'critical'
-                          ? 'bg-rose-100 text-rose-700'
-                          : 'bg-slate-100 text-slate-600'
-                      }`}
-                    >
-                      {item.severity.toUpperCase()}
-                    </span>
-                    {!item.is_scored && (
-                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700">
-                        UNSCORED
-                      </span>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ))
-      )}
-    </div>
+  fill(ackBg);
+  draw(ackBd);
+  doc.setLineWidth(0.4);
+  doc.roundedRect(MARGIN, y, COL_W, acknowledgment ? 17 : 12, 2, 2, 'FD');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  tint(ackTxt);
+
+  if (acknowledgment) {
+    doc.text(
+      `OPERATIONAL STANDARDS ACKNOWLEDGED BY: ${acknowledgment.user_name.toUpperCase()}`,
+      MARGIN + 5, y + 7
+    );
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    tint(C.slate500);
+    doc.text(`Signed on: ${fmtLong(acknowledgment.created_at)}`, MARGIN + 5, y + 13);
+  } else {
+    doc.text('⚠  OPERATIONAL ACKNOWLEDGMENT: MISSING / PENDING', MARGIN + 5, y + 7.5);
+  }
+
+  y += (acknowledgment ? 17 : 12) + 10;
+
+  // ---------------------------------------------------------------------------
+  // COMPLIANCE SCORES
+  // ---------------------------------------------------------------------------
+
+  tint(C.slate500);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.text('COMPLIANCE SCORES', MARGIN, y);
+  y += 3;
+
+  draw(C.slate100);
+  doc.setLineWidth(0.25);
+  doc.line(MARGIN, y, pageW - MARGIN, y);
+  y += 4;
+
+  const scoreBox = (label: string, score: number, x: number, bY: number) => {
+    const boxW = halfW - 2;
+    const color: RGB = score >= 80 ? C.green : score >= 50 ? C.amber : C.red;
+
+    fill(C.slate50);
+    draw(C.slate100);
+    doc.setLineWidth(0.25);
+    doc.roundedRect(x, bY, boxW, 20, 2, 2, 'FD');
+
+    tint(C.slate500);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.text(label, x + 4, bY + 7);
+
+    tint(color);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.text(`${score}%`, x + 4, bY + 17);
+  };
+
+  scoreBox('Facility Readiness Score',   complianceData.facilityReadinessScore,   MARGIN, y);
+  scoreBox('Personnel Readiness Score', complianceData.personnelReadinessScore, MARGIN + halfW + 4, y);
+  y += 28;
+
+  // ---------------------------------------------------------------------------
+  // Helper: section header + divider
+  // ---------------------------------------------------------------------------
+
+  const sectionHeader = (title: string, curY: number): number => {
+    tint(C.slate500);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.5);
+    doc.text(title, MARGIN, curY);
+    curY += 2.5;
+    draw(C.slate100);
+    doc.setLineWidth(0.25);
+    doc.line(MARGIN, curY, pageW - MARGIN, curY);
+    return curY + 2;
+  };
+
+  // ---------------------------------------------------------------------------
+  // FACILITY COMPLIANCE REQUIREMENTS TABLE
+  // ---------------------------------------------------------------------------
+
+  const facilityGaps = complianceData.gaps.filter(
+    (g) => g.score_category === 'facility'
   );
+
+  y = sectionHeader(
+    `FACILITY COMPLIANCE REQUIREMENTS  (${facilityGaps.filter(g => g.compliance_status !== 'missing').length} / ${facilityGaps.length} satisfied)`,
+    y
+  );
+
+  const facilityBody = facilityGaps.map((g) => [
+    g.name,
+    g.severity.toUpperCase(),
+    statusLabel(g.compliance_status),
+    g.document_created_at ? fmt(g.document_created_at) : '—',
+  ]);
+
+  autoTable(doc, {
+    startY: y,
+    head: [['Requirement', 'Severity', 'Status', 'Document Date']],
+    body: facilityBody.length > 0 ? facilityBody : [['No facility requirements configured.', '', '', '']],
+    margin: { left: MARGIN, right: MARGIN },
+    styles:      { fontSize: 8, cellPadding: 2.8, textColor: C.slate800, lineColor: C.slate100, lineWidth: 0.2 },
+    headStyles:  { fillColor: C.navy, textColor: C.white, fontStyle: 'bold', fontSize: 7.5 },
+    alternateRowStyles: { fillColor: C.slate50 },
+    columnStyles: {
+      0: { cellWidth: COL_W * 0.50 },
+      1: { cellWidth: COL_W * 0.14, halign: 'center' },
+      2: { cellWidth: COL_W * 0.20, halign: 'center' },
+      3: { cellWidth: COL_W * 0.16, halign: 'center' },
+    },
+    didParseCell: (data) => {
+      if (data.section !== 'body') return;
+      if (data.column.index === 1) {
+        if (String(data.cell.raw) === 'CRITICAL') data.cell.styles.textColor = C.red;
+      }
+      if (data.column.index === 2) {
+        const v = String(data.cell.raw);
+        if (v === 'Satisfied')     data.cell.styles.textColor = C.green;
+        else if (v === 'Expiring Soon') data.cell.styles.textColor = C.amber;
+        else if (v === 'Expired')  data.cell.styles.textColor = C.red;
+        else if (v === 'Missing')  data.cell.styles.textColor = C.red;
+      }
+    },
+  });
+
+  const docRef = doc as unknown as { lastAutoTable?: { finalY?: number } };
+  y = (docRef.lastAutoTable?.finalY ?? y + 30) + 10;
+
+  // ---------------------------------------------------------------------------
+  // PERSONNEL LICENSING REQUIREMENTS TABLE
+  // ---------------------------------------------------------------------------
+
+  const personnelGaps = complianceData.gaps.filter(
+    (g) => g.score_category === 'personnel'
+  );
+
+  if (personnelGaps.length > 0) {
+    if (y > pageH - 60) { doc.addPage(); y = 20; }
+
+    y = sectionHeader(
+      `PERSONNEL LICENSING REQUIREMENTS  (${personnelGaps.filter(g => g.compliance_status !== 'missing').length} / ${personnelGaps.length} satisfied)`,
+      y
+    );
+
+    const personnelLicBody = personnelGaps.map((g) => [
+      g.name,
+      g.severity.toUpperCase(),
+      statusLabel(g.compliance_status),
+      g.document_created_at ? fmt(g.document_created_at) : '—',
+    ]);
+
+    autoTable(doc, {
+      startY: y,
+      head: [['Requirement', 'Severity', 'Status', 'Document Date']],
+      body: personnelLicBody,
+      margin: { left: MARGIN, right: MARGIN },
+      styles:      { fontSize: 8, cellPadding: 2.8, textColor: C.slate800, lineColor: C.slate100, lineWidth: 0.2 },
+      headStyles:  { fillColor: C.indigo, textColor: C.white, fontStyle: 'bold', fontSize: 7.5 },
+      alternateRowStyles: { fillColor: C.slate50 },
+      columnStyles: {
+        0: { cellWidth: COL_W * 0.50 },
+        1: { cellWidth: COL_W * 0.14, halign: 'center' },
+        2: { cellWidth: COL_W * 0.20, halign: 'center' },
+        3: { cellWidth: COL_W * 0.16, halign: 'center' },
+      },
+      didParseCell: (data) => {
+        if (data.section !== 'body') return;
+        if (data.column.index === 1) {
+          if (String(data.cell.raw) === 'CRITICAL') data.cell.styles.textColor = C.red;
+        }
+        if (data.column.index === 2) {
+          const v = String(data.cell.raw);
+          if (v === 'Satisfied')          data.cell.styles.textColor = C.green;
+          else if (v === 'Expiring Soon') data.cell.styles.textColor = C.amber;
+          else if (v === 'Expired')       data.cell.styles.textColor = C.red;
+          else if (v === 'Missing')       data.cell.styles.textColor = C.red;
+        }
+      },
+    });
+
+    y = (docRef.lastAutoTable?.finalY ?? y + 30) + 10;
+  }
+
+  // ---------------------------------------------------------------------------
+  // ACTIVE PERSONNEL ROSTER TABLE
+  // ---------------------------------------------------------------------------
+
+  if (y > pageH - 60) { doc.addPage(); y = 20; }
+
+  y = sectionHeader(
+    `ACTIVE PERSONNEL ROSTER  (${(personnel as unknown[]).length} employees)`,
+    y
+  );
+
+  type PersonnelRow = {
+    name: string;
+    role: string;
+    clearance_status: string;
+    hire_date: string | null;
+  };
+
+  const rosterBody = (personnel as PersonnelRow[]).map((p) => [
+    p.name  ?? 'Unknown',
+    p.role  ?? 'Unassigned',
+    (p.clearance_status ?? 'pending').toUpperCase(),
+    fmt(p.hire_date),
+  ]);
+
+  autoTable(doc, {
+    startY: y,
+    head: [['Employee Name', 'Role', 'Clearance Status', 'Hire Date']],
+    body: rosterBody.length > 0 ? rosterBody : [['No active personnel on record.', '', '', '']],
+    margin: { left: MARGIN, right: MARGIN },
+    styles:      { fontSize: 8, cellPadding: 2.8, textColor: C.slate800, lineColor: C.slate100, lineWidth: 0.2 },
+    headStyles:  { fillColor: C.slate700, textColor: C.white, fontStyle: 'bold', fontSize: 7.5 },
+    alternateRowStyles: { fillColor: C.slate50 },
+    columnStyles: {
+      0: { cellWidth: COL_W * 0.28 },
+      1: { cellWidth: COL_W * 0.32 },
+      2: { cellWidth: COL_W * 0.22, halign: 'center' },
+      3: { cellWidth: COL_W * 0.18, halign: 'center' },
+    },
+    didParseCell: (data) => {
+      if (data.section !== 'body' || data.column.index !== 2) return;
+      const v = String(data.cell.raw);
+      if (v === 'CLEARED')  data.cell.styles.textColor = C.green;
+      else if (v === 'PENDING') data.cell.styles.textColor = C.amber;
+      else if (v === 'FLAGGED') data.cell.styles.textColor = C.red;
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // FOOTER (every page)
+  // ---------------------------------------------------------------------------
+
+  const totalPages = doc.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+
+    // Thin rule
+    draw(C.slate300);
+    doc.setLineWidth(0.2);
+    doc.line(MARGIN, pageH - 12, pageW - MARGIN, pageH - 12);
+
+    tint(C.slate500);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.5);
+    doc.text(
+      `AR Compliance Guard  •  ${facilityName}  •  Page ${i} of ${totalPages}`,
+      pageW / 2, pageH - 7.5, { align: 'center' }
+    );
+    doc.text('CONFIDENTIAL — FOR OFFICIAL USE ONLY', pageW / 2, pageH - 4, { align: 'center' });
+  }
+
+  // ---------------------------------------------------------------------------
+  // SAVE
+  // ---------------------------------------------------------------------------
+
+  const safeName = facilityName.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_');
+  doc.save(`${safeName}_Audit_Report_${fileDate}.pdf`);
 }
 </file>
 
@@ -1404,138 +1777,6 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 <file path="CLAUDE.md">
 @AGENTS.md
-</file>
-
-<file path="DATABASE_MIGRATION_RBAC.sql">
--- =====================================================
--- DATABASE MIGRATION: RBAC & DIRECTOR ASSIGNMENTS
--- =====================================================
--- This migration adds Role-Based Access Control (RBAC) support
--- and director-to-facility assignment tracking.
---
--- Run these SQL commands in your Supabase SQL Editor or migration tool.
--- =====================================================
-
--- STEP 1: Add 'role' column to user_profiles (or profiles) table
--- This column stores the user's role: 'owner' or 'director'
-ALTER TABLE profiles 
-ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'director' CHECK (role IN ('owner', 'director', 'admin'));
-
--- Add comment to document the role column
-COMMENT ON COLUMN profiles.role IS 'User role for RBAC: owner (full access), director (facility-specific), admin (organization admin)';
-
--- STEP 2: Add 'director_id' column to facilities table
--- This column links a facility to a specific director user
-ALTER TABLE facilities 
-ADD COLUMN IF NOT EXISTS director_id UUID REFERENCES profiles(id) ON DELETE SET NULL;
-
--- Add comment to document the director_id column
-COMMENT ON COLUMN facilities.director_id IS 'UUID of the director user assigned to this facility. NULL means no specific director assigned.';
-
--- Add index for performance on director_id lookups
-CREATE INDEX IF NOT EXISTS idx_facilities_director_id ON facilities(director_id);
-
--- STEP 3: Add 'full_name' column to profiles table for audit trail attribution
--- This ensures we can always attribute actions to the correct user
-ALTER TABLE profiles
-ADD COLUMN IF NOT EXISTS full_name TEXT;
-
-COMMENT ON COLUMN profiles.full_name IS 'Full name of the user for audit trail attribution and display purposes';
-
--- STEP 4: Set default role for existing users (optional - adjust as needed)
--- Uncomment the following line to set all existing users to 'owner' role
--- UPDATE profiles SET role = 'owner' WHERE role IS NULL;
-
--- =====================================================
--- VERIFICATION QUERIES
--- =====================================================
--- Run these to verify the migration was successful:
--- SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'profiles' AND column_name IN ('role', 'full_name');
--- SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'facilities' AND column_name = 'director_id';
-</file>
-
-<file path="DATABASE_MIGRATION_TOGGLES_AND_SCORING.sql">
--- =====================================================
--- DATABASE MIGRATION: Facility Scope Toggles + Twin-Score Taxonomy
--- =====================================================
--- This migration adds:
---   1. Boolean "scope toggle" columns to the `facilities` table
---   2. `is_scored` and `score_category` columns to `compliance_criteria`
---   3. (Optional) Drops the legacy `is_personnel_requirement` column once data is migrated
---
--- Run this in the Supabase SQL Editor.
--- =====================================================
-
--- ---------------------------------------------------------------
--- 1. Add boolean scope toggles to `facilities` (default FALSE)
--- ---------------------------------------------------------------
-ALTER TABLE facilities
-  ADD COLUMN IF NOT EXISTS infant_toddler  BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS transportation  BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS food_service    BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS water_activities BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS pets            BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS special_needs   BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS sick_care       BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS school_age      BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS night_care      BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS private_water   BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS memory_care     BOOLEAN NOT NULL DEFAULT FALSE;
-
--- ---------------------------------------------------------------
--- 2. Update `compliance_criteria` to support the Twin-Score Engine
--- ---------------------------------------------------------------
-ALTER TABLE compliance_criteria
-  ADD COLUMN IF NOT EXISTS is_scored      BOOLEAN NOT NULL DEFAULT TRUE,
-  ADD COLUMN IF NOT EXISTS score_category TEXT
-    CHECK (score_category IN ('facility', 'personnel'));
-
--- Backfill score_category from legacy is_personnel_requirement (if column exists)
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'compliance_criteria'
-      AND column_name = 'is_personnel_requirement'
-  ) THEN
-    UPDATE compliance_criteria
-    SET score_category = CASE
-      WHEN is_personnel_requirement = TRUE THEN 'personnel'
-      ELSE 'facility'
-    END
-    WHERE score_category IS NULL;
-  END IF;
-END $$;
-
--- Optional once you have verified the data:
--- ALTER TABLE compliance_criteria DROP COLUMN IF EXISTS is_personnel_requirement;
-
--- ---------------------------------------------------------------
--- 3. Update `facility_type` constraint (if previously 'childcare')
--- ---------------------------------------------------------------
--- Normalize legacy 'childcare' value to 'childcare_center'
-UPDATE facilities         SET facility_type = 'childcare_center' WHERE facility_type = 'childcare';
-UPDATE compliance_criteria SET facility_type = 'childcare_center' WHERE facility_type = 'childcare';
-UPDATE regulatory_roles   SET facility_type = 'childcare_center' WHERE facility_type = 'childcare';
-
--- ---------------------------------------------------------------
--- 4. Helpful indexes
--- ---------------------------------------------------------------
-CREATE INDEX IF NOT EXISTS idx_compliance_criteria_facility_type  ON compliance_criteria(facility_type);
-CREATE INDEX IF NOT EXISTS idx_compliance_criteria_score_category ON compliance_criteria(score_category);
-CREATE INDEX IF NOT EXISTS idx_compliance_criteria_is_scored      ON compliance_criteria(is_scored);
-
--- =====================================================
--- VERIFICATION QUERIES
--- =====================================================
--- SELECT column_name, data_type, column_default FROM information_schema.columns
--- WHERE table_name = 'facilities' AND column_name IN (
---   'infant_toddler','transportation','food_service','water_activities','pets',
---   'special_needs','sick_care','school_age','night_care','private_water','memory_care'
--- );
---
--- SELECT facility_type, score_category, COUNT(*) FROM compliance_criteria
--- GROUP BY facility_type, score_category ORDER BY 1,2;
 </file>
 
 <file path="eslint.config.mjs">
@@ -1827,261 +2068,318 @@ export async function submitRegistrationRequest(formData: {
 }
 </file>
 
-<file path="src/components/UploadButton.tsx">
+<file path="src/components/OperationalBlueprintsView.tsx">
 'use client';
-import { useState } from 'react';
-import { createClient } from 'src/app/utils/supabase/client';
 
-interface UploadButtonProps {
+import { useEffect, useState } from 'react';
+import {
+  getOperationalBlueprints,
+  signOperationalAcknowledgment,
+  getLatestOperationalAcknowledgment,
+  type BlueprintRule,
+} from 'src/app/actions/compliance';
+
+interface Props {
   facilityId: string;
-  requirementType: string;
-  onUploadSuccess: () => void;
 }
 
-export default function UploadButton({ facilityId, requirementType, onUploadSuccess }: UploadButtonProps) {
-  const [uploading, setUploading] = useState(false);
+interface LastAcknowledgment {
+  created_at: string;
+  user_name: string;
+}
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+const FREQUENCY_ORDER = [
+  'daily',
+  'weekly',
+  'monthly',
+  'quarterly',
+  'biannual',
+  'annual',
+  '2_years',
+  '3_years',
+  '5_years',
+  '10_years',
+  'one-time',
+  'ongoing',
+];
 
-    setUploading(true);
-    const supabase = createClient();
+function sortedFrequencyEntries(
+  grouped: Record<string, BlueprintRule[]>
+): [string, BlueprintRule[]][] {
+  return Object.entries(grouped).sort(([a], [b]) => {
+    const ia = FREQUENCY_ORDER.indexOf(a);
+    const ib = FREQUENCY_ORDER.indexOf(b);
+    if (ia === -1 && ib === -1) return a.localeCompare(b);
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  });
+}
 
+function formatAckDate(isoString: string): string {
+  try {
+    return new Date(isoString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return isoString;
+  }
+}
+
+export default function OperationalBlueprintsView({ facilityId }: Props) {
+  const [items, setItems] = useState<BlueprintRule[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [lastAck, setLastAck] = useState<LastAcknowledgment | null>(null);
+  const [acknowledged, setAcknowledged] = useState<boolean>(false);
+  const [submitting, setSubmitting] = useState<boolean>(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      try {
+        const [rules, ack] = await Promise.all([
+          getOperationalBlueprints(facilityId),
+          getLatestOperationalAcknowledgment(facilityId),
+        ]);
+        if (!cancelled) {
+          setItems(rules);
+          setLastAck(ack);
+        }
+      } catch (err) {
+        console.error('Failed to load operational blueprints:', err);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [facilityId]);
+
+  const handleSign = async () => {
+    if (!acknowledged || submitting) return;
+    setSubmitting(true);
     try {
-      // 1. Pathing: Organization / Facility / RequirementName-RandomID.pdf
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${facilityId}/${requirementType}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-      
-      // 2. Upload to Storage
-      const { error: storageError } = await supabase.storage
-        .from('facility-documents')
-        .upload(fileName, file);
-
-      if (storageError) throw storageError;
-
-      // 3. Insert metadata into the database — operator-confirmed, no AI verification.
-      const { error: dbError } = await supabase
-        .from('facility_documents')
-        .insert([{
-          facility_id: facilityId,
-          document_type: requirementType,
-          file_url: fileName,
-          status: 'approved',
-        }]);
-
-      if (dbError) throw dbError;
-
-      onUploadSuccess();
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      alert('Error: ' + message);
+      const result = await signOperationalAcknowledgment(facilityId);
+      if (result.success) {
+        setLastAck(result.acknowledgment);
+        setAcknowledged(false);
+      } else {
+        alert(`❌ ${result.error}`);
+      }
     } finally {
-      setUploading(false);
+      setSubmitting(false);
     }
   };
 
+  const grouped = items.reduce<Record<string, BlueprintRule[]>>((acc, item) => {
+    const key = (item.frequency || 'unscheduled').toLowerCase();
+    (acc[key] ??= []).push(item);
+    return acc;
+  }, {});
+
   return (
-    <label className="cursor-pointer group">
-      <div className={`px-4 py-2 rounded-xl border transition-all flex items-center gap-2 ${
-        uploading ? 'bg-gray-800 border-gray-700' : 'bg-blue-600 border-blue-500 hover:bg-blue-500'
-      }`}>
-        <span className="text-[10px] font-black uppercase tracking-widest text-white">
-          {uploading ? 'Syncing...' : 'Upload Evidence'}
-        </span>
-        {!uploading && <span className="text-white opacity-50">↑</span>}
+    <div className="space-y-8 max-w-6xl mx-auto">
+
+      {/* ── Liability & Operations Acknowledgment ─────────────────────────── */}
+      <div className="bg-white rounded-2xl border border-indigo-200 shadow-sm overflow-hidden">
+        <div className="bg-gradient-to-r from-indigo-900 to-indigo-700 px-8 py-5">
+          <p className="text-indigo-300 text-xs font-bold uppercase tracking-widest mb-1">
+            Facility Director
+          </p>
+          <h2 className="text-2xl font-bold text-white">
+            Liability &amp; Operations Acknowledgment
+          </h2>
+          <p className="text-indigo-300 text-sm mt-1">
+            A formal, timestamped record that the director accepts responsibility for
+            upholding these operational standards.
+          </p>
+        </div>
+
+        <div className="p-8">
+          {lastAck ? (
+            <div className="space-y-5">
+              {/* Current acknowledgment status */}
+              <div className="flex items-start gap-4 bg-emerald-50 border border-emerald-200 rounded-xl p-5">
+                <span className="text-2xl mt-0.5">✅</span>
+                <div>
+                  <p className="font-bold text-slate-800">
+                    Acknowledged by {lastAck.user_name}
+                  </p>
+                  <p className="text-sm text-slate-500 mt-0.5">
+                    {formatAckDate(lastAck.created_at)}
+                  </p>
+                  <p className="text-xs text-emerald-700 mt-2 italic">
+                    &ldquo;I acknowledge that maintaining these operational standards is my
+                    responsibility as the facility director.&rdquo;
+                  </p>
+                </div>
+              </div>
+
+              {/* Re-sign option */}
+              <div className="border-t border-slate-100 pt-5">
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">
+                  Update Acknowledgment
+                </p>
+                <label className="flex items-start gap-3 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={acknowledged}
+                    onChange={(e) => setAcknowledged(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 accent-indigo-600 cursor-pointer"
+                  />
+                  <span className="text-sm text-slate-700 group-hover:text-slate-900">
+                    I acknowledge that maintaining these operational standards is my
+                    responsibility as the facility director.
+                  </span>
+                </label>
+                {acknowledged && (
+                  <button
+                    onClick={handleSign}
+                    disabled={submitting}
+                    className={`mt-4 px-5 py-2 rounded-lg font-bold text-sm transition-all ${
+                      submitting
+                        ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                        : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm'
+                    }`}
+                  >
+                    {submitting ? 'Signing…' : 'Update Acknowledgment'}
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5">
+                <p className="text-sm text-indigo-900 leading-relaxed">
+                  Review the operational standards below, then sign this acknowledgment.
+                  Your name and timestamp will be recorded in the facility&apos;s compliance
+                  audit trail.
+                </p>
+              </div>
+
+              <label className="flex items-start gap-3 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={acknowledged}
+                  onChange={(e) => setAcknowledged(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 accent-indigo-600 cursor-pointer"
+                />
+                <span className="text-sm text-slate-700 group-hover:text-slate-900">
+                  I acknowledge that maintaining these operational standards is my
+                  responsibility as the facility director.
+                </span>
+              </label>
+
+              <button
+                onClick={handleSign}
+                disabled={!acknowledged || submitting}
+                className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all ${
+                  !acknowledged || submitting
+                    ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                    : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md'
+                }`}
+              >
+                {submitting ? 'Signing…' : 'Sign Operational Acknowledgment'}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
-      <input 
-        type="file" 
-        className="hidden" 
-        onChange={handleUpload} 
-        disabled={uploading} 
-        accept=".pdf,.jpg,.jpeg,.png"
-      />
-    </label>
+
+      {/* ── Reference Manual ──────────────────────────────────────────────── */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-8 py-5">
+          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1">
+            Reference Manual
+          </p>
+          <h2 className="text-2xl font-bold text-white">📖 Operational Standards</h2>
+          <p className="text-slate-400 text-sm mt-1">
+            All compliance requirements for this facility. Standards shown in bold are scored;
+            operational guidelines are informational.
+          </p>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-16">
+            <div className="flex items-center gap-3 text-indigo-600">
+              <div className="w-6 h-6 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+              <span className="font-medium text-sm">Loading standards…</span>
+            </div>
+          </div>
+        ) : items.length === 0 ? (
+          <div className="py-16 text-center italic text-slate-400 text-sm">
+            No compliance standards are configured for this facility profile.
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {sortedFrequencyEntries(grouped).map(([frequency, group]) => (
+              <div key={frequency}>
+                {/* Frequency group header */}
+                <div className="bg-slate-50 px-8 py-3 flex items-center gap-3">
+                  <span className="text-xs font-bold uppercase tracking-widest text-slate-500">
+                    {frequency.replace(/_/g, ' ')}
+                  </span>
+                  <span className="text-xs text-slate-400 bg-slate-200 rounded-full px-2 py-0.5 font-medium">
+                    {group.length}
+                  </span>
+                </div>
+
+                {/* Rule cards */}
+                <ul className="divide-y divide-slate-100">
+                  {group.map((item) => (
+                    <li key={item.id} className="px-8 py-4 flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <p
+                          className={`text-sm text-slate-800 ${
+                            item.is_scored ? 'font-semibold' : 'font-normal'
+                          }`}
+                        >
+                          {item.name}
+                        </p>
+                        <p className="text-[11px] font-mono text-slate-400 mt-0.5 truncate">
+                          {item.typeKey}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            item.severity === 'critical'
+                              ? 'bg-rose-100 text-rose-700'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          {item.severity.toUpperCase()}
+                        </span>
+                        {!item.is_scored && (
+                          <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
+                            OPERATIONAL
+                          </span>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!loading && items.length > 0 && (
+          <div className="px-8 py-4 bg-slate-50 border-t border-slate-200 text-right">
+            <p className="text-xs text-slate-400">
+              {items.length} standard{items.length !== 1 ? 's' : ''} •{' '}
+              {items.filter((i) => i.severity === 'critical').length} critical
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
   );
-}
-</file>
-
-<file path="src/lib/types.ts">
-// src/lib/types.ts
-// Central strict-typed schema definitions. The source of truth for our pristine taxonomy.
-
-/**
- * Top-level regulatory authority domain.
- * Aligns with the `facility_type` column in the `facilities` and `compliance_criteria` tables.
- */
-export type FacilityType = 'childcare_center' | 'nursing_home';
-
-/**
- * Sub-classification toggles persisted as boolean columns on the `facilities` table.
- * These are the "scope tags" that activate/deactivate specific rules and roles.
- */
-export interface FacilityScopeToggles {
-  // --- Childcare Center toggles ---
-  infant_toddler: boolean;
-  transportation: boolean;
-  food_service: boolean;
-  water_activities: boolean;
-  pets: boolean;
-  special_needs: boolean;
-  sick_care: boolean;
-  school_age: boolean;
-  night_care: boolean;
-
-  // --- Nursing Home toggles ---
-  private_water: boolean;
-  memory_care: boolean;
-}
-
-export const FACILITY_TOGGLE_KEYS: ReadonlyArray<keyof FacilityScopeToggles> = [
-  'infant_toddler',
-  'transportation',
-  'food_service',
-  'water_activities',
-  'pets',
-  'special_needs',
-  'sick_care',
-  'school_age',
-  'night_care',
-  'private_water',
-  'memory_care',
-] as const;
-
-export type FacilityToggleKey = keyof FacilityScopeToggles;
-
-/**
- * Display labels for the boolean toggles surfaced in onboarding/settings UI.
- */
-export const FACILITY_TOGGLE_LABELS: Record<FacilityToggleKey, string> = {
-  infant_toddler: 'Infants / Toddlers',
-  transportation: 'Transportation',
-  food_service: 'Food Service',
-  water_activities: 'Water Activities',
-  pets: 'Pets On-Site',
-  special_needs: 'Special Needs Care',
-  sick_care: 'Sick Care',
-  school_age: 'School Age Program',
-  night_care: 'Night Care',
-  private_water: 'Private Water Source',
-  memory_care: "Alzheimer's / Memory Care Unit",
-};
-
-/**
- * Which toggles apply to which facility type. Used to filter the UI.
- */
-export const TOGGLES_BY_FACILITY_TYPE: Record<FacilityType, ReadonlyArray<FacilityToggleKey>> = {
-  childcare_center: [
-    'infant_toddler',
-    'transportation',
-    'food_service',
-    'water_activities',
-    'pets',
-    'special_needs',
-    'sick_care',
-    'school_age',
-    'night_care',
-  ],
-  nursing_home: ['private_water', 'memory_care'],
-};
-
-/**
- * Full Facility model as stored in the `facilities` table.
- */
-export interface Facility extends FacilityScopeToggles {
-  id: string;
-  org_id: string;
-  name: string;
-  facility_type: FacilityType;
-  license_number: string | null;
-  capacity: number | null;
-  active_enrollment: number | null;
-  enrollment_updated_at: string | null;
-  director_id: string | null;
-  created_at?: string;
-}
-
-/**
- * A "score category" classifies which of the twin dials a rule contributes to.
- * - 'facility' rolls into the 🏢 Facility Operations Score
- * - 'personnel' rolls into the 👥 Personnel & Licensing Upkeep score
- * - null means the rule is informational/operational and does not factor into either dial
- */
-export type ScoreCategory = 'facility' | 'personnel' | null;
-
-/**
- * A compliance rule as stored in `compliance_criteria`.
- * Note the deliberate removal of `is_personnel_requirement` in favor of `score_category`.
- */
-export interface ComplianceRule {
-  id: string;
-  facility_type: FacilityType;
-  sub_classification: FacilityToggleKey | null;
-  requirement_name: string;
-  required_document_type: string;
-  severity: 'critical' | 'standard';
-  frequency: ComplianceFrequency;
-  is_scored: boolean;
-  score_category: ScoreCategory;
-}
-
-/**
- * Frequencies we treat as first-class strings throughout the engine.
- * Any string is accepted at runtime, but these are the canonical values.
- */
-export type ComplianceFrequency =
-  | 'one-time'
-  | 'daily'
-  | 'weekly'
-  | 'monthly'
-  | 'quarterly'
-  | 'biannual'
-  | 'annual'
-  | '2_years'
-  | '3_years'
-  | '5_years'
-  | '10_years'
-  | 'ongoing'
-  | string;
-
-/**
- * The compliance status of a single requirement for the UI.
- * - 'missing'        → no matching document exists
- * - 'satisfied'      → document exists and is not near expiration
- * - 'expiring_soon'  → document exists but expires within 30 days
- * - 'expired'        → document exists but its expiration date has passed
- */
-export type DocumentComplianceStatus = 'missing' | 'satisfied' | 'expiring_soon' | 'expired';
-
-/**
- * The shape returned by the Twin-Score Engine for an individual outstanding rule.
- */
-export interface IdentifiedGap {
-  id: string;
-  name: string;
-  typeKey: string;
-  severity: 'critical' | 'standard';
-  frequency: ComplianceFrequency;
-  is_scored: boolean;
-  score_category: ScoreCategory;
-  compliance_status: DocumentComplianceStatus;
-  document_id?: string;
-  document_created_at?: string;
-  completed?: boolean;
-  completionType?: 'document' | 'attestation' | 'n/a';
-}
-
-/**
- * Aggregated payload returned to the dashboard.
- */
-export interface RegulatoryStatus {
-  facilityReadinessScore: number;
-  personnelReadinessScore: number;
-  identifiedGaps: IdentifiedGap[];
-  staffCount: number;
-  capacity: number | null;
-  activeEnrollment: number | null;
-  enrollmentUpdatedAt: string | null;
 }
 </file>
 
@@ -3577,46 +3875,6 @@ export default function LandingPage() {
 }
 </file>
 
-<file path="src/components/FacilitySelector.tsx">
-'use client';
-
-// 1. Define the blueprint for what a Facility and the Props look like
-interface Facility {
-  id: string;
-  name: string;
-}
-
-interface FacilitySelectorProps {
-  facilities: Facility[];
-  selectedFacilityId: string | null;
-  onSelect: (value: string) => void;
-}
-
-// 2. Apply that blueprint to the function parameters with explicit Safari text-color safeguards
-export default function FacilitySelector({ facilities, selectedFacilityId, onSelect }: FacilitySelectorProps) {
-  return (
-    <div className="p-4 border-b border-gray-800">
-      <label className="text-xs uppercase text-gray-500 font-bold tracking-widest">Select Facility</label>
-      <select
-        value={selectedFacilityId || 'all'}
-        onChange={(e) => onSelect(e.target.value)}
-        className="w-full mt-2 bg-black text-white border border-gray-700 rounded-md p-2 cursor-pointer focus:outline-none focus:border-blue-500"
-      >
-        {/* Forcing explicit dark charcoal text on white backgrounds inside the expanded native Safari menus */}
-        <option value="all" className="text-slate-900 bg-white">
-          Master View (All Facilities)
-        </option>
-        {facilities.map((f) => (
-          <option key={f.id} value={f.id} className="text-slate-900 bg-white">
-            {f.name}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-</file>
-
 <file path="src/context/FacilityContext.tsx">
 'use client';
 import React, { createContext, useContext, useState } from 'react';
@@ -3667,563 +3925,192 @@ export const useFacility = () => {
 };
 </file>
 
-<file path="DEPLOYMENT_READY.md">
-# 🎉 AR Compliance Guard - Major Re-Engineering COMPLETE
-
-## Executive Summary
-
-**All 5 phases of the comprehensive architectural re-engineering have been successfully completed.** The application now features:
-
-✅ **Fixed Missing Rules Bug** - All compliance rules now load correctly  
-✅ **Frequency-Based Scoring** - Daily/weekly requirements excluded from audit scores  
-✅ **Role-Based Access Control (RBAC)** - Owner and Director role separation  
-✅ **Bulk Daily Attestations** - Owner-only fleet-wide attestation widget  
-✅ **Comprehensive Audit Trail** - Full compliance action logging with user attribution  
-
----
-
-## 🚨 CRITICAL: Database Migration Required Before Deployment
-
-**You MUST run the database migration before deploying the code changes.**
-
-### Run This SQL in Supabase SQL Editor:
-
-```sql
--- File: DATABASE_MIGRATION_RBAC.sql
--- Run this entire file in your Supabase SQL Editor
-
--- Add role column to profiles
-ALTER TABLE profiles 
-ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'director' CHECK (role IN ('owner', 'director', 'admin'));
-
--- Add director_id to facilities
-ALTER TABLE facilities 
-ADD COLUMN IF NOT EXISTS director_id UUID REFERENCES profiles(id) ON DELETE SET NULL;
-
--- Add full_name for audit attribution
-ALTER TABLE profiles
-ADD COLUMN IF NOT EXISTS full_name TEXT;
-
--- Add index for performance
-CREATE INDEX IF NOT EXISTS idx_facilities_director_id ON facilities(director_id);
-
--- Set existing users to owner role (adjust as needed)
-UPDATE profiles SET role = 'owner' WHERE role IS NULL;
-```
-
----
-
-## What Changed - Quick Reference
-
-### Backend Changes
-
-| File | What Changed |
-|------|-------------|
-| `src/lib/reg-monitor.ts` | • **CRITICAL FIX**: "Dumb Fetch + Smart Filter" pattern prevents UI crashes<br>• Query fetches ALL rules (no filters) for maximum stability<br>• Graceful error handling - no more throw on query failure<br>• TypeScript filtering applied after fetch<br>• Scoring excludes daily/weekly requirements<br>• Accurate frequency passthrough to frontend |
-| `src/app/actions/compliance.ts` | • Added RBAC to `getAllFacilitiesOverview()`<br>• Enhanced audit logs with user names/roles<br>• New: `submitBulkDailyAttestation()`<br>• New: `getDailyRequirements()`<br>• New: `getAuditLogs()`<br>• New: `getCurrentUserRole()` |
-
-### Frontend Changes
-
-| File | What Changed |
-|------|-------------|
-| `src/components/ComplianceDashboardClient.tsx` | • Daily requirements: ONLY attestation button<br>• Weekly requirements: "Not Scored" badge<br>• Core requirements: Normal rendering |
-| `src/app/dashboard/page.tsx` | • RBAC: Directors redirected from Master View<br>• Bulk Attestation Widget (owner only)<br>• Audit Logs view with full attribution<br>• User role loading on mount |
-| `src/context/FacilityContext.tsx` | • Added `'audit_logs'` view type |
-
----
-
-## New Features Explained
-
-### 1. Frequency-Based Compliance Scoring
-
-**Old Behavior**: All requirements counted toward compliance score  
-**New Behavior**: Only monthly, annual, and one-time critical requirements affect the score
-
-**Why**: Daily and weekly operational logs are important for operations but shouldn't artificially inflate/deflate audit readiness scores.
-
-**UI Impact**:
-- Daily requirements show "Sign Daily Log" button only
-- Weekly requirements show "⚠️ WEEKLY - Not Scored" badge
-- Core requirements (monthly/annual) render normally
-
-### 2. Role-Based Access Control (RBAC)
-
-**Owner Role**:
-- See all facilities in organization
-- Access Master View
-- Use Bulk Attestation Widget
-- See all audit logs
-
-**Director Role**:
-- See ONLY assigned facilities (via `director_id`)
-- Auto-redirected from Master View to first facility
-- See ONLY audit logs for assigned facilities
-- Cannot access bulk attestation
-
-**How to Assign**:
-```sql
--- Make a user an owner
-UPDATE profiles SET role = 'owner' WHERE email = 'boss@example.com';
-
--- Make a user a director and assign facilities
-UPDATE profiles SET role = 'director' WHERE email = 'manager@example.com';
-UPDATE facilities SET director_id = (SELECT id FROM profiles WHERE email = 'manager@example.com') WHERE name = 'Facility A';
-```
-
-### 3. Bulk Daily Attestations (Owner Only)
-
-**Purpose**: Sign off on daily operational logs across multiple facilities at once
-
-**How It Works**:
-1. Owner navigates to Master View
-2. "Daily Operations Attestation" widget appears
-3. Select facilities (checkbox list)
-4. Select daily requirements (checkbox list)
-5. Add attestation note (e.g., "All logs verified by manager on duty")
-6. Click "Sign Bulk Attestation"
-7. System creates individual attestation records for each facility-requirement combination
-8. Full audit trail logged for each attestation
-
-### 4. Audit Trail & Compliance Logs
-
-**New View**: "Audit Logs" (add to navigation)
-
-**What It Shows**:
-- All compliance actions with full attribution
-- User name + role at time of action
-- Facility name
-- Timestamp (to the second)
-- Action-specific metadata:
-  - Document uploads: filename, size
-  - Attestations: requirement name, frequency
-  - Enrollment updates: before → after values
-  - Deletions: document name
-  - Bulk attestations: scope and notes
-
-**RBAC Applied**: Directors only see logs for their facilities
-
----
-
-## Testing Guide
-
-### Test as Owner
-
-1. **Master View Access**
-   - Login as owner
-   - Should see "all" facilities option
-   - Should see fleet overview grid
-
-2. **Bulk Attestation**
-   - Navigate to Master View
-   - Should see "Daily Operations Attestation" widget
-   - Select 2 facilities
-   - Select 1 daily requirement
-   - Add note: "Test attestation"
-   - Submit → Should create 2 attestation records
-
-3. **Audit Logs**
-   - Navigate to Audit Logs view
-   - Should see bulk attestation entries
-   - Should see all facility logs
-
-### Test as Director
-
-1. **Master View Redirect**
-   - Login as director
-   - Try to select "all" facilities
-   - Should auto-redirect to first assigned facility
-   - Master View should be inaccessible
-
-2. **Limited Audit Logs**
-   - Navigate to Audit Logs view
-   - Should ONLY see logs for assigned facilities
-   - Cannot see other facilities' logs
-
-3. **No Bulk Attestation**
-   - Navigate to Master View (if accessible)
-   - Should NOT see bulk attestation widget
-
-### Test Frequency-Based UI
-
-1. **Daily Requirements**
-   - Find a daily frequency requirement
-   - Should ONLY see "Sign Daily Log" button
-   - Should NOT see upload button
-   - Should see "Daily physical log requirement" note
-
-2. **Weekly Requirements**
-   - Find a weekly frequency requirement
-   - Should see "⚠️ WEEKLY - Not Scored" badge
-   - Should see attestation button
-
-3. **Score Calculation**
-   - Upload documents to satisfy daily/weekly requirements
-   - Check compliance score → Should NOT change
-   - Upload monthly/annual documents → Score SHOULD change
-
----
-
-## Troubleshooting
-
-### Issue: All compliance rules disappeared from UI
-**Cause**: Supabase query failures were throwing errors and crashing the function
-**Solution**: ✅ FIXED - "Dumb Fetch + Smart Filter" pattern implemented
-- Query now fetches ALL rules (no filters that can fail)
-- Errors are logged but don't crash the function
-- Filtering happens safely in TypeScript
-**Verification**: Check browser console - should see "📋 Loaded X total rules, filtered to Y applicable rules for facility type: childcare"
-
-### Issue: "Column 'role' does not exist"
-**Solution**: Run the database migration SQL
-
-### Issue: Directors can still see Master View
-**Solution**: Check `profiles.role` is set to 'director' for that user
-
-### Issue: Bulk attestation not showing
-**Solution**: 
-1. Verify user role is 'owner'
-2. Verify there are daily requirements in the database
-3. Check browser console for errors
-
-### Issue: Audit logs empty
-**Solution**:
-1. Perform some actions (upload document, sign attestation)
-2. Navigate to Audit Logs view
-3. Check `audit_logs` table in Supabase
-
-### Issue: Score not changing when uploading documents
-**Solution**: 
-1. Check if document frequency is daily/weekly (these don't affect score)
-2. Check if requirement severity is 'critical' (only critical affects score)
-3. Check console logs for score calculation
-
----
-
-## Support & Documentation
-
-- **Implementation Details**: See `IMPLEMENTATION_SUMMARY.md`
-- **Database Schema**: See `DATABASE_MIGRATION_RBAC.sql`
-- **All code changes**: Zero TypeScript errors, production-ready
-
----
-
-## Deployment Checklist
-
-- [ ] Run database migration in Supabase
-- [ ] Set user roles (`owner` or `director`)
-- [ ] Assign directors to facilities (set `director_id`)
-- [ ] Add `full_name` to user profiles
-- [ ] Deploy code changes
-- [ ] Test as owner user
-- [ ] Test as director user
-- [ ] Verify daily/weekly UI changes
-- [ ] Verify compliance score calculation
-- [ ] Test bulk attestation (owner)
-- [ ] Verify audit logs display
-
----
-
-**🎯 Status**: READY FOR PRODUCTION DEPLOYMENT
-
-**📊 Code Quality**: Zero TypeScript errors, fully tested logic
-
-**🔒 Security**: RBAC implemented, audit trail complete
-
-**📝 Documentation**: Comprehensive, deployment instructions included
-</file>
-
-<file path="IMPLEMENTATION_SUMMARY.md">
-# AR Compliance Guard - Major Re-Engineering Implementation Summary
-
-## Overview
-This document summarizes the comprehensive architectural re-engineering completed for the AR_Compliance_Guard application, implementing RBAC, frequency-based compliance scoring, and enhanced audit capabilities.
-
----
-
-## ✅ PHASE 1: Fixed Missing Rules Bug & Frequency Scoring Math
-
-### Changes Made to `src/lib/reg-monitor.ts`:
-
-1. **Fixed Critical Query Failure Using "Dumb Fetch + Smart Filter" Pattern**
-   - **Problem**: Supabase query failures were crashing the entire UI (including dynamic staffing rules)
-   - **Solution**: Implemented fail-safe architecture
-   - **THE DUMB FETCH**: Query fetches ALL rules with zero filters
-     ```typescript
-     const { data: allRules, error: rulesError } = await supabase
-       .from('compliance_criteria')
-       .select('*');
-     ```
-   - **Graceful Error Handling**: Does NOT throw on query error (logs only)
-   - **THE SMART FILTER**: Filters rules in TypeScript after fetch
-     ```typescript
-     const activeRules = (allRules || []).filter(rule => {
-       return rule.facility_type === currentType && rule.is_personnel_requirement === false;
-     });
-     ```
-   - **Result**: Query failures no longer crash the UI; staffing ratio logic always runs
-
-2. **Updated Scoring Logic to Exclude Daily/Weekly**
-   - Daily and weekly frequency rules are NOW EXCLUDED from the `calculatedScore`
-   - Score is ONLY based on: monthly, annual, one-time, 2_years, 5_years, or undefined frequency critical requirements
-   - Staffing ratio deficit penalty still applies (-25 points, floors at 0%)
-
-3. **Frequency Property Passed to Frontend**
-   - All `identifiedGaps` now include accurate `frequency` field
-   - Frontend can differentiate between daily, weekly, monthly, annual, etc.
-
----
-
-## ✅ PHASE 2: Database Additions for RBAC & Bulk Attestations
-
-### Database Migration File Created: `DATABASE_MIGRATION_RBAC.sql`
-
-**Required Schema Changes:**
-```sql
--- Add role column to profiles table
-ALTER TABLE profiles ADD COLUMN role TEXT DEFAULT 'director' CHECK (role IN ('owner', 'director', 'admin'));
-
--- Add director_id to facilities table
-ALTER TABLE facilities ADD COLUMN director_id UUID REFERENCES profiles(id);
-
--- Add full_name to profiles for audit attribution
-ALTER TABLE profiles ADD COLUMN full_name TEXT;
-```
-
-### Changes Made to `src/app/actions/compliance.ts`:
-
-1. **Updated `getAllFacilitiesOverview()` with RBAC**
-   - Directors: ONLY see facilities where `director_id` matches their user ID
-   - Owners/Admins: See ALL facilities in their organization
-   - Prevents cross-facility data exposure
-
-2. **Enhanced `createAuditLog()` Function**
-   - Now fetches user's `full_name` from profiles table
-   - Stores `user_name` and `user_role` in audit log metadata
-   - Provides perfect historical attribution even if user is deleted
-
-3. **Added `submitBulkDailyAttestation()` Server Action**
-   - Owner-only feature for bulk signing daily requirements
-   - Accepts: `facilityIds[]`, `requirementIds[]`, `attestationNote`
-   - Creates attestation records for all facility-requirement combinations
-   - Generates comprehensive audit logs for each action
-
-4. **Added `getAuditLogs()` Server Action**
-   - Fetches audit logs with RBAC filtering
-   - Directors: Only see logs for their assigned facilities
-   - Owners/Admins: See all organization logs
-   - Returns up to 500 most recent entries with facility names and user attribution
-
----
-
-## ✅ PHASE 3: Facility View UI (Frequency-Based UI)
-
-### Changes Made to `src/components/ComplianceDashboardClient.tsx`:
-
-**Updated Button Rendering Logic:**
-
-1. **DAILY Requirements**
-   - ✅ COMPLETELY HIDE "Upload Document" button
-   - ✅ ONLY show "Sign Daily Log" attestation button
-   - ✅ Display subtle UI note: "Daily physical log requirement"
-
-2. **WEEKLY Requirements**
-   - ✅ Show "Sign Attestation" button
-   - ✅ Display prominent warning badge: "⚠️ WEEKLY - Not Scored"
-   - ✅ Indicates these don't impact Audit Readiness Score
-
-3. **CORE Requirements (Monthly/Annual/One-time)**
-   - ✅ Render normally with full functionality
-   - ✅ Monthly: Show "Sign Digital Attestation" button
-   - ✅ All core requirements: Show "Mark N/A" button
-   - ✅ These requirements ACTUALLY impact the score
-
-**Applied to Both:**
-- Critical Requirements section
-- Standard Requirements (Administrative Housekeeping) section
-
----
-
-## ✅ PHASE 4: Master View & Bulk Daily Attestations
-
-### Changes Made to `src/app/dashboard/page.tsx`:
-
-1. **RBAC UI Logic Implemented**
-   - ✅ Directors are automatically redirected to their first assigned facility
-   - ✅ Directors cannot access "Master View" (selectedFacilityId === 'all')
-   - ✅ Only owners and admins see the full Master View with all facilities
-   - ✅ Added `getCurrentUserRole()` server action to fetch user role on mount
-
-2. **Bulk Attestation Widget (Owner Only) - Fully Implemented**
-   - ✅ New "Daily Operations Attestation" section added to Master View
-   - ✅ Fetches all active `daily` compliance requirements via `getDailyRequirements()`
-   - ✅ Dual-column checklist:
-     - Left: Facility selection (with "Select All" option)
-     - Right: Daily requirement selection (with "Select All" option)
-   - ✅ Text area for "Attestation Note/Comment" (required field)
-   - ✅ "Sign Bulk Attestation" button wired to `submitBulkDailyAttestation()`
-   - ✅ Shows total attestations to be created: facilities × requirements
-   - ✅ Confirmation dialog before submission
-   - ✅ Success/error handling with user feedback
-
----
-
-## ✅ PHASE 5: Official Audit Report & Logs View
-
-### Changes Made to `src/app/dashboard/page.tsx` & `src/context/FacilityContext.tsx`:
-
-1. **Added "Audit Logs" View State**
-   - ✅ New view type: `'audit_logs'` added to `FacilityContext.tsx`
-   - ✅ View state alongside Master, Facilities, Documents, Personnel
-   - ✅ Can be accessed via navigation (add to side nav in layout/wrapper)
-
-2. **Built Audit Report Panel - Fully Functional**
-   - ✅ Fetches from `audit_logs` table via `getAuditLogs()` server action
-   - ✅ Applies RBAC filtering (directors see only their facilities)
-   - ✅ Orders by `created_at` DESC (most recent first)
-   - ✅ Professional data table with columns:
-     - **Timestamp**: Full date/time with seconds
-     - **Facility Name**: From joined facilities table
-     - **Action Type**: Color-coded badges for each action type
-       - Blue: Document Upload
-       - Emerald: Digital Attestation
-       - Rose: Document Deletion
-       - Amber: Enrollment Update
-       - Indigo: Bulk Attestation
-     - **User**: Full name + role badge (stored in audit metadata)
-     - **Details**: Context-aware metadata display
-   - ✅ Special handling for enrollment_update logs (shows before → after values)
-   - ✅ Highlights N/A markings with reasons
-   - ✅ Shows bulk attestation scope (facility count × requirement count)
-   - ✅ Displays user attestation certifications
-   - ✅ Loading state with spinner
-   - ✅ Empty state when no logs found
-   - ✅ Shows up to 500 most recent entries
-
----
-
-## Technical Benefits
-
-1. **Performance**: Client-side TypeScript filtering is faster than complex PostgREST queries
-2. **Accuracy**: All applicable rules (general + sub-classification) are now correctly included
-3. **Compliance**: Daily/weekly operational logs don't artificially inflate audit scores
-4. **Security**: RBAC prevents unauthorized cross-facility data access
-5. **Auditability**: Full user attribution in audit logs for legal compliance
-6. **UX**: Clear visual differentiation between daily, weekly, and scored requirements
-
----
-
-## Testing Checklist
-
-- [x] `reg-monitor.ts` - No TypeScript errors
-- [x] `compliance.ts` - No TypeScript errors
-- [x] `ComplianceDashboardClient.tsx` - No TypeScript errors
-- [x] `dashboard/page.tsx` - No TypeScript errors
-- [x] `FacilityContext.tsx` - No TypeScript errors
-- [ ] **CRITICAL**: Run database migration: `DATABASE_MIGRATION_RBAC.sql`
-- [ ] Test facility fetch with director role (should only see assigned facilities)
-- [ ] Test facility fetch with owner role (should see all org facilities)
-- [ ] Verify daily requirements show ONLY attestation button (no upload)
-- [ ] Verify weekly requirements show "Not Scored" badge
-- [ ] Test bulk attestation widget (owner only)
-- [ ] Test audit logs view with RBAC filtering
-- [ ] Verify compliance score excludes daily/weekly requirements
-- [ ] Test director auto-redirect from Master View
-- [ ] Test enrollment_update audit logs display correct before/after values
-
----
-
-## 🚀 DEPLOYMENT INSTRUCTIONS
-
-### Step 1: Run Database Migration (REQUIRED)
-
-**Execute the SQL migration in your Supabase SQL Editor:**
-
-```bash
-# Navigate to Supabase Dashboard → SQL Editor
-# Paste and run: app/ar-compliance-pro/DATABASE_MIGRATION_RBAC.sql
-```
-
-This will add:
-- `role` column to `profiles` table
-- `director_id` column to `facilities` table  
-- `full_name` column to `profiles` table
-- Required indexes for performance
-
-### Step 2: Populate User Data
-
-**Set roles for existing users:**
-
-```sql
--- Set all existing users to 'owner' role (adjust as needed)
-UPDATE profiles SET role = 'owner' WHERE role IS NULL;
-
--- Or set specific users as directors
-UPDATE profiles SET role = 'director' WHERE email = 'director@example.com';
-
--- Add full names for audit attribution
-UPDATE profiles SET full_name = 'John Smith' WHERE email = 'john@example.com';
-```
-
-### Step 3: Assign Directors to Facilities (if applicable)
-
-```sql
--- Link a director to specific facilities
-UPDATE facilities 
-SET director_id = (SELECT id FROM profiles WHERE email = 'director@example.com')
-WHERE name IN ('Facility A', 'Facility B');
-```
-
-### Step 4: Deploy Code Changes
-
-All code changes are complete and TypeScript-safe. Deploy to your environment:
-
-```bash
-# If using Vercel/Next.js deployment
-npm run build
-# Check for any build errors
-
-# Deploy via your CI/CD pipeline or manual deployment
-```
-
-### Step 5: Verify Functionality
-
-Test each feature with different user roles:
-
-1. **Owner Login**:
-   - ✓ Can see Master View with all facilities
-   - ✓ Can access Bulk Attestation Widget
-   - ✓ Can see all audit logs
-
-2. **Director Login**:
-   - ✓ Automatically redirected to assigned facility
-   - ✓ Cannot see Master View
-   - ✓ Can only see logs for assigned facilities
-
-3. **Daily Requirements**:
-   - ✓ Show "Sign Daily Log" button only (no upload)
-   - ✓ Display "Daily physical log requirement" note
-
-4. **Weekly Requirements**:
-   - ✓ Show "⚠️ WEEKLY - Not Scored" badge
-   - ✓ Display attestation button
-
-5. **Scoring**:
-   - ✓ Verify compliance score excludes daily/weekly requirements
-   - ✓ Score only based on monthly/annual/one-time critical requirements
-
----
-
-## Files Modified (All Phases Complete)
-
-- ✅ `src/lib/reg-monitor.ts` (PHASE 1)
-- ✅ `src/app/actions/compliance.ts` (PHASES 2, 4, 5)
-- ✅ `src/components/ComplianceDashboardClient.tsx` (PHASE 3)
-- ✅ `src/app/dashboard/page.tsx` (PHASES 4, 5)
-- ✅ `src/context/FacilityContext.tsx` (PHASE 5)
-- ✅ `DATABASE_MIGRATION_RBAC.sql` (created)
-- ✅ `IMPLEMENTATION_SUMMARY.md` (documentation)
-
-**Status**: ✅ ALL PHASES COMPLETE (1-5) | READY FOR DATABASE MIGRATION & DEPLOYMENT
+<file path="src/lib/types.ts">
+// src/lib/types.ts
+// Central strict-typed schema definitions. The source of truth for our pristine taxonomy.
+
+/**
+ * Top-level regulatory authority domain.
+ * Aligns with the `facility_type` column in the `facilities` and `compliance_criteria` tables.
+ */
+export type FacilityType = 'childcare_center' | 'nursing_home';
+
+/**
+ * Sub-classification toggles persisted as boolean columns on the `facilities` table.
+ * These are the "scope tags" that activate/deactivate specific rules and roles.
+ */
+export interface FacilityScopeToggles {
+  // --- Childcare Center toggles ---
+  infant_toddler: boolean;
+  transportation: boolean;
+  food_service: boolean;
+  water_activities: boolean;
+  pets: boolean;
+  special_needs: boolean;
+  sick_care: boolean;
+  school_age: boolean;
+  night_care: boolean;
+
+  // --- Nursing Home toggles ---
+  private_water: boolean;
+  memory_care: boolean;
+}
+
+export const FACILITY_TOGGLE_KEYS: ReadonlyArray<keyof FacilityScopeToggles> = [
+  'infant_toddler',
+  'transportation',
+  'food_service',
+  'water_activities',
+  'pets',
+  'special_needs',
+  'sick_care',
+  'school_age',
+  'night_care',
+  'private_water',
+  'memory_care',
+] as const;
+
+export type FacilityToggleKey = keyof FacilityScopeToggles;
+
+/**
+ * Display labels for the boolean toggles surfaced in onboarding/settings UI.
+ */
+export const FACILITY_TOGGLE_LABELS: Record<FacilityToggleKey, string> = {
+  infant_toddler: 'Infants / Toddlers',
+  transportation: 'Transportation',
+  food_service: 'Food Service',
+  water_activities: 'Water Activities',
+  pets: 'Pets On-Site',
+  special_needs: 'Special Needs Care',
+  sick_care: 'Sick Care',
+  school_age: 'School Age Program',
+  night_care: 'Night Care',
+  private_water: 'Private Water Source',
+  memory_care: "Alzheimer's / Memory Care Unit",
+};
+
+/**
+ * Which toggles apply to which facility type. Used to filter the UI.
+ */
+export const TOGGLES_BY_FACILITY_TYPE: Record<FacilityType, ReadonlyArray<FacilityToggleKey>> = {
+  childcare_center: [
+    'infant_toddler',
+    'transportation',
+    'food_service',
+    'water_activities',
+    'pets',
+    'special_needs',
+    'sick_care',
+    'school_age',
+    'night_care',
+  ],
+  nursing_home: ['private_water', 'memory_care'],
+};
+
+/**
+ * Full Facility model as stored in the `facilities` table.
+ * The three optional fields below are computed at the server-action layer
+ * (getAllFacilitiesOverview) and are never persisted to the database.
+ */
+export interface Facility extends FacilityScopeToggles {
+  id: string;
+  org_id: string;
+  name: string;
+  facility_type: FacilityType;
+  license_number: string | null;
+  capacity: number | null;
+  active_enrollment: number | null;
+  enrollment_updated_at: string | null;
+  director_id: string | null;
+  created_at?: string;
+  // --- Computed operational metrics ---
+  active_staff_count?: number;
+  capacity_utilization?: number;
+  gross_ratio?: string;
+}
+
+/**
+ * A "score category" classifies which of the twin dials a rule contributes to.
+ * - 'facility' rolls into the 🏢 Facility Operations Score
+ * - 'personnel' rolls into the 👥 Personnel & Licensing Upkeep score
+ * - null means the rule is informational/operational and does not factor into either dial
+ */
+export type ScoreCategory = 'facility' | 'personnel' | null;
+
+/**
+ * A compliance rule as stored in `compliance_criteria`.
+ * Note the deliberate removal of `is_personnel_requirement` in favor of `score_category`.
+ */
+export interface ComplianceRule {
+  id: string;
+  facility_type: FacilityType;
+  sub_classification: FacilityToggleKey | null;
+  requirement_name: string;
+  required_document_type: string;
+  severity: 'critical' | 'standard';
+  frequency: ComplianceFrequency;
+  is_scored: boolean;
+  score_category: ScoreCategory;
+}
+
+/**
+ * Frequencies we treat as first-class strings throughout the engine.
+ * Any string is accepted at runtime, but these are the canonical values.
+ */
+export type ComplianceFrequency =
+  | 'one-time'
+  | 'daily'
+  | 'weekly'
+  | 'monthly'
+  | 'quarterly'
+  | 'biannual'
+  | 'annual'
+  | '2_years'
+  | '3_years'
+  | '5_years'
+  | '10_years'
+  | 'ongoing'
+  | string;
+
+/**
+ * The compliance status of a single requirement for the UI.
+ * - 'missing'        → no matching document exists
+ * - 'satisfied'      → document exists and is not near expiration
+ * - 'expiring_soon'  → document exists but expires within 30 days
+ * - 'expired'        → document exists but its expiration date has passed
+ */
+export type DocumentComplianceStatus = 'missing' | 'satisfied' | 'expiring_soon' | 'expired';
+
+/**
+ * The shape returned by the Twin-Score Engine for an individual outstanding rule.
+ */
+export interface IdentifiedGap {
+  id: string;
+  name: string;
+  typeKey: string;
+  severity: 'critical' | 'standard';
+  frequency: ComplianceFrequency;
+  is_scored: boolean;
+  score_category: ScoreCategory;
+  compliance_status: DocumentComplianceStatus;
+  document_id?: string;
+  document_created_at?: string;
+  completed?: boolean;
+  completionType?: 'document' | 'attestation' | 'n/a';
+}
+
+/**
+ * Aggregated payload returned to the dashboard.
+ */
+export interface RegulatoryStatus {
+  facilityReadinessScore: number;
+  personnelReadinessScore: number;
+  identifiedGaps: IdentifiedGap[];
+  staffCount: number;
+  capacity: number | null;
+  activeEnrollment: number | null;
+  enrollmentUpdatedAt: string | null;
+}
 </file>
 
 <file path="next.config.ts">
@@ -4245,6 +4132,123 @@ const nextConfig: NextConfig = {
 export default nextConfig;
 </file>
 
+<file path="src/components/FacilitySelector.tsx">
+'use client';
+
+import type { Facility } from '@/lib/types';
+
+interface FacilitySelectorProps {
+  facilities: Pick<Facility, 'id' | 'name'>[];
+  selectedFacilityId: string | null;
+  onSelect: (value: string) => void;
+}
+
+export default function FacilitySelector({ facilities, selectedFacilityId, onSelect }: FacilitySelectorProps) {
+  return (
+    <div className="p-4 border-b border-gray-800">
+      <label className="text-xs uppercase text-gray-500 font-bold tracking-widest">Select Facility</label>
+      <select
+        value={selectedFacilityId || 'all'}
+        onChange={(e) => onSelect(e.target.value)}
+        className="w-full mt-2 bg-black text-white border border-gray-700 rounded-md p-2 cursor-pointer focus:outline-none focus:border-blue-500"
+      >
+        {/* Forcing explicit dark charcoal text on white backgrounds inside the expanded native Safari menus */}
+        <option value="all" className="text-slate-900 bg-white">
+          Master View (All Facilities)
+        </option>
+        {facilities.map((f) => (
+          <option key={f.id} value={f.id} className="text-slate-900 bg-white">
+            {f.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/Sidebar.tsx">
+'use client';
+import { useFacility, type ViewType } from 'src/context/FacilityContext';
+import FacilitySelector from './FacilitySelector';
+import { useState, useEffect } from 'react';
+import { createClient } from 'src/app/utils/supabase/client';
+
+export default function Sidebar() {
+  const { selectedFacilityId, setSelectedFacilityId, currentView, setCurrentView } = useFacility();
+  const [facilities, setFacilities] = useState<Array<{ id: string; name: string }>>([]);
+
+  useEffect(() => {
+    const fetchFacilities = async () => {
+      const supabase = createClient();
+      const { data } = await supabase.from('facilities').select('id, name');
+      if (data) setFacilities(data);
+    };
+    fetchFacilities();
+  }, []);
+
+  const isMasterView = selectedFacilityId === 'all' || !selectedFacilityId;
+
+  const navItem = (label: string, view: ViewType, disabled = false) => {
+    const isActive = currentView === view;
+    return (
+      <button
+        onClick={() => !disabled && setCurrentView(view)}
+        disabled={disabled}
+        className={`w-full text-left p-3 rounded-xl font-bold transition-all border ${
+          disabled
+            ? 'opacity-50 cursor-not-allowed text-gray-600 border-transparent'
+            : isActive
+            ? 'bg-blue-600/10 text-blue-500 border-blue-600/20'
+            : 'text-gray-500 border-transparent hover:bg-gray-900'
+        }`}
+      >
+        {label}
+      </button>
+    );
+  };
+
+  return (
+    <aside className="w-64 border-r border-gray-800 flex flex-col bg-black">
+      <div className="p-6">
+        <h2 className="text-blue-500 font-black tracking-tighter text-xl italic">AR_GUARD</h2>
+      </div>
+
+      <FacilitySelector
+        facilities={facilities}
+        selectedFacilityId={selectedFacilityId}
+        onSelect={(id) => {
+          setSelectedFacilityId(id);
+          if (id === 'all') setCurrentView('overview');
+        }}
+      />
+
+      <nav className="flex-1 p-4 space-y-2 mt-4">
+        <div className="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-4 px-2">
+          Navigation
+        </div>
+        {navItem('Executive Overview', 'overview')}
+        {navItem('Personnel Vault', 'personnel', isMasterView)}
+        {navItem('Document Center', 'documents', isMasterView)}
+        {navItem('Operational Blueprints', 'blueprints', isMasterView)}
+        {navItem('Facility Settings', 'settings', isMasterView)}
+        {navItem('Audit Trail', 'audit_logs')}
+      </nav>
+
+      <div className="p-4 border-t border-gray-800">
+        <div className="flex items-center gap-3 p-2">
+          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600" />
+          <div className="text-xs">
+            <p className="font-bold text-white">Admin User</p>
+            <p className="text-gray-500">Settings</p>
+          </div>
+        </div>
+      </div>
+    </aside>
+  );
+}
+</file>
+
 <file path="src/components/PersonnelVaultView.tsx">
 'use client';
 
@@ -4264,7 +4268,9 @@ import {
   markNotApplicable,
   hashFileBuffer,
   deleteDocument,
+  getSecureDocumentUrl,
 } from 'src/app/actions/compliance';
+import { verifyDocumentWithAI } from 'src/app/actions/ai-verify';
 import type { DocumentComplianceStatus } from '@/lib/types';
 
 interface Props {
@@ -4300,26 +4306,55 @@ interface PersonnelDocument {
 }
 
 // Client-side expiration helper (mirrors server logic in reg-monitor.ts)
+
+/** Safely parse a date string; returns null if absent or invalid. */
+function safeParseDate(value: string | null | undefined): Date | null {
+  if (!value || typeof value !== 'string') return null;
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Calculates compliance status for a personnel document.
+ *
+ * Priority:
+ *   1. `doc.metadata.ai_extracted_expiration` — the printed expiration date extracted by the AI.
+ *   2. Fall back to `createdAt + frequency` calculation when no AI date is present.
+ */
 function calcPersonnelComplianceStatus(
   createdAt: string,
-  frequency: string
+  frequency: string,
+  metadata?: Record<string, unknown> | null
 ): DocumentComplianceStatus {
-  const created = new Date(createdAt);
-  if (isNaN(created.getTime())) return 'satisfied';
+  // Priority 1: AI-extracted printed expiration
+  const aiRaw =
+    typeof metadata?.ai_extracted_expiration === 'string'
+      ? metadata.ai_extracted_expiration
+      : null;
+  const aiExpiry = safeParseDate(aiRaw);
 
-  const expiry = new Date(created);
-  switch (frequency) {
-    case 'daily':     expiry.setDate(expiry.getDate() + 1); break;
-    case 'weekly':    expiry.setDate(expiry.getDate() + 7); break;
-    case 'monthly':   expiry.setMonth(expiry.getMonth() + 1); break;
-    case 'quarterly': expiry.setMonth(expiry.getMonth() + 3); break;
-    case 'biannual':  expiry.setMonth(expiry.getMonth() + 6); break;
-    case 'annual':    expiry.setFullYear(expiry.getFullYear() + 1); break;
-    case '2_years':   expiry.setFullYear(expiry.getFullYear() + 2); break;
-    case '3_years':   expiry.setFullYear(expiry.getFullYear() + 3); break;
-    case '5_years':   expiry.setFullYear(expiry.getFullYear() + 5); break;
-    case '10_years':  expiry.setFullYear(expiry.getFullYear() + 10); break;
-    default:          return 'satisfied'; // one-time / ongoing — never expires
+  let expiry: Date | null = aiExpiry;
+
+  // Priority 2: calculated from upload date + renewal frequency
+  if (!expiry) {
+    const created = safeParseDate(createdAt);
+    if (!created) return 'satisfied';
+
+    const d = new Date(created);
+    switch (frequency) {
+      case 'daily':     d.setDate(d.getDate() + 1); break;
+      case 'weekly':    d.setDate(d.getDate() + 7); break;
+      case 'monthly':   d.setMonth(d.getMonth() + 1); break;
+      case 'quarterly': d.setMonth(d.getMonth() + 3); break;
+      case 'biannual':  d.setMonth(d.getMonth() + 6); break;
+      case 'annual':    d.setFullYear(d.getFullYear() + 1); break;
+      case '2_years':   d.setFullYear(d.getFullYear() + 2); break;
+      case '3_years':   d.setFullYear(d.getFullYear() + 3); break;
+      case '5_years':   d.setFullYear(d.getFullYear() + 5); break;
+      case '10_years':  d.setFullYear(d.getFullYear() + 10); break;
+      default:          return 'satisfied'; // one-time / ongoing — never expires
+    }
+    expiry = d;
   }
 
   const daysLeft = (expiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
@@ -4363,9 +4398,18 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   const [personnelDocuments, setPersonnelDocuments] = useState<PersonnelDocument[]>([]);
   const [userAttestation, setUserAttestation] = useState<boolean>(false);
   const [uploadingReqId, setUploadingReqId] = useState<string | null>(null);
+  const [verifyingReqId, setVerifyingReqId] = useState<string | null>(null);
   const [signingReqId, setSigningReqId] = useState<string | null>(null);
   const [markingNAReqId, setMarkingNAReqId] = useState<string | null>(null);
   const [personnelToArchive, setPersonnelToArchive] = useState<PersonnelRecord | null>(null);
+
+  // AI rejection modal
+  const [personnelRejectionModal, setPersonnelRejectionModal] = useState<{
+    requirementName: string;
+    detectedType: string;
+    confidence: number;
+    reason: string;
+  } | null>(null);
 
   // Document management modal state
   const [docManagementItem, setDocManagementItem] = useState<{
@@ -4375,6 +4419,10 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   } | null>(null);
   const [confirmingDocDelete, setConfirmingDocDelete] = useState(false);
   const [deletingDoc, setDeletingDoc] = useState(false);
+
+  // Secure document viewer state
+  const [docViewerUrl, setDocViewerUrl] = useState<string | null>(null);
+  const [isLoadingDocViewer, setIsLoadingDocViewer] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -4409,6 +4457,21 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     }
     loadRoles();
   }, [showAddForm, facilityId]);
+
+  // Fetch a signed URL whenever a document viewer modal opens
+  useEffect(() => {
+    const docId = docManagementItem?.doc.id;
+    if (!docId) {
+      setDocViewerUrl(null);
+      return;
+    }
+    setIsLoadingDocViewer(true);
+    getSecureDocumentUrl(docId, facilityId)
+      .then((result) => {
+        if (result.success) setDocViewerUrl(result.url ?? null);
+      })
+      .finally(() => setIsLoadingDocViewer(false));
+  }, [docManagementItem?.doc.id, facilityId]);
 
   const toggleExpanded = async (person: PersonnelRecord) => {
     if (expandedPersonId === person.id) {
@@ -4509,8 +4572,35 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       return;
     }
 
-    setUploadingReqId(requirement.id);
+    // ── Step 1: AI Verification ───────────────────────────────────────────────
+    setVerifyingReqId(requirement.id);
     try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('requirementName', requirement.name);
+
+      const aiResult = await verifyDocumentWithAI(formData);
+
+      if (!aiResult.success) {
+        console.warn('⚠️ AI verification service unavailable, proceeding with upload:', aiResult.error);
+      } else if (!aiResult.object.is_valid_match) {
+        setPersonnelRejectionModal({
+          requirementName: requirement.name,
+          detectedType: aiResult.object.detected_document_type,
+          confidence: aiResult.object.confidence_score,
+          reason: aiResult.object.rejection_reason ?? 'The document did not match the requirement.',
+        });
+        return;
+      }
+
+      const aiExpirationDate = aiResult.success
+        ? (aiResult.object.expiration_date ?? undefined)
+        : undefined;
+
+      // ── Step 2: Storage Upload ──────────────────────────────────────────────
+      setVerifyingReqId(null);
+      setUploadingReqId(requirement.id);
+
       const documentId = crypto.randomUUID();
       const fileExtension = file.name.split('.').pop()?.toLowerCase() ?? 'bin';
       const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
@@ -4527,7 +4617,11 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         status: 'approved',
         file_url: storagePath,
         name: file.name,
-        metadata: { upload_source: 'personnel_vault', personnel_id: personnelId },
+        metadata: {
+          upload_source: 'personnel_vault',
+          personnel_id: personnelId,
+          ...(aiExpirationDate ? { ai_extracted_expiration: aiExpirationDate } : {}),
+        },
       });
       if (insertError) throw insertError;
 
@@ -4544,6 +4638,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         fileHash,
         userAttestation,
         personnelId,
+        aiExpirationDate,
       });
 
       if (!result.success) {
@@ -4558,6 +4653,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       alert(`❌ Upload failed: ${message}`);
     } finally {
+      setVerifyingReqId(null);
       setUploadingReqId(null);
     }
   };
@@ -4660,86 +4756,244 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         </div>
       )}
 
-      {/* Document Management Modal */}
-      {docManagementItem && (
+      {/* AI Rejection Modal */}
+      {personnelRejectionModal && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full">
-            <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 rounded-t-xl flex items-center justify-between">
-              <h2 className="text-lg font-bold text-white">Document Management</h2>
+            <div className="bg-gradient-to-r from-rose-600 to-rose-700 px-6 py-4 rounded-t-xl flex items-center gap-3">
+              <span className="text-2xl" aria-hidden>🤖</span>
+              <div>
+                <h2 className="text-lg font-bold text-white leading-tight">AI Verification Failed</h2>
+                <p className="text-rose-200 text-xs">Document does not match the requirement</p>
+              </div>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-slate-50 rounded-lg p-4 space-y-3 border border-slate-200">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500 font-medium">Requirement</span>
+                  <span className="text-slate-800 font-semibold text-right max-w-[60%]">
+                    {personnelRejectionModal.requirementName}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500 font-medium">Document Detected</span>
+                  <span className="text-slate-800 font-semibold">{personnelRejectionModal.detectedType}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500 font-medium">AI Confidence</span>
+                  <span className={`font-bold text-xs px-2 py-0.5 rounded-full ${
+                    personnelRejectionModal.confidence >= 70
+                      ? 'bg-amber-100 text-amber-700'
+                      : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {personnelRejectionModal.confidence}%
+                  </span>
+                </div>
+              </div>
+              <div className="bg-rose-50 border border-rose-200 rounded-lg p-4">
+                <p className="text-xs font-bold uppercase tracking-wider text-rose-700 mb-1">
+                  Rejection Reason
+                </p>
+                <p className="text-sm text-rose-900 leading-relaxed">
+                  {personnelRejectionModal.reason}
+                </p>
+              </div>
+              <p className="text-xs text-slate-500 italic">
+                Please upload the correct document and try again. If you believe this is an error, use &ldquo;Attest&rdquo; to manually certify compliance.
+              </p>
               <button
-                onClick={() => { setDocManagementItem(null); setConfirmingDocDelete(false); }}
-                className="text-white/70 hover:text-white text-2xl leading-none"
+                onClick={() => setPersonnelRejectionModal(null)}
+                className="w-full px-4 py-2.5 bg-slate-800 text-white rounded-lg font-medium hover:bg-slate-700 transition-colors"
+              >
+                Dismiss &amp; Try Again
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Document Viewer Modal */}
+      {docManagementItem && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden"
+            style={{ maxHeight: '90vh' }}
+          >
+            {/* Header */}
+            <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 flex items-center justify-between shrink-0">
+              <div className="min-w-0">
+                <h2 className="text-lg font-bold text-white">Document Viewer</h2>
+                <p className="text-slate-400 text-xs mt-0.5 truncate">
+                  {docManagementItem.req.name}
+                </p>
+              </div>
+              <button
+                onClick={() => { setDocManagementItem(null); setConfirmingDocDelete(false); setDocViewerUrl(null); }}
+                className="ml-4 shrink-0 text-white/70 hover:text-white text-2xl leading-none"
+                aria-label="Close"
               >
                 ×
               </button>
             </div>
-            <div className="p-6 space-y-4">
-              <div className="space-y-1">
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Requirement</p>
-                <p className="font-semibold text-slate-800">{docManagementItem.req.name}</p>
-                <p className="text-[11px] font-mono text-slate-400">{docManagementItem.req.typeKey}</p>
-              </div>
-              <div className="bg-slate-50 rounded-lg p-4 space-y-2 border border-slate-200 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Upload Date</span>
-                  <span className="font-medium text-slate-800">
-                    {new Date(docManagementItem.doc.created_at).toLocaleDateString()}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Frequency</span>
-                  <span className="font-medium text-slate-800">
-                    {docManagementItem.req.frequency.replace(/_/g, ' ').toUpperCase()}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Current Status</span>
-                  <span className={`font-bold text-xs px-2 py-0.5 rounded-full ${
-                    calcPersonnelComplianceStatus(docManagementItem.doc.created_at, docManagementItem.req.frequency) === 'expired'
-                      ? 'bg-rose-100 text-rose-700'
-                      : calcPersonnelComplianceStatus(docManagementItem.doc.created_at, docManagementItem.req.frequency) === 'expiring_soon'
-                      ? 'bg-amber-100 text-amber-700'
-                      : 'bg-emerald-100 text-emerald-700'
-                  }`}>
-                    {calcPersonnelComplianceStatus(docManagementItem.doc.created_at, docManagementItem.req.frequency) === 'expired'
-                      ? '🔴 Expired'
-                      : calcPersonnelComplianceStatus(docManagementItem.doc.created_at, docManagementItem.req.frequency) === 'expiring_soon'
-                      ? '🟡 Expiring Soon'
-                      : '✅ Satisfied'}
-                  </span>
-                </div>
+
+            {/* Two-column body */}
+            <div
+              className="flex-1 grid grid-cols-1 lg:grid-cols-[3fr_2fr] divide-y lg:divide-y-0 lg:divide-x divide-slate-200 overflow-hidden"
+              style={{ minHeight: 0 }}
+            >
+              {/* ── Left / Top: Viewer pane ── */}
+              <div className="bg-slate-950 flex flex-col items-center justify-center min-h-64 overflow-hidden">
+                {isLoadingDocViewer ? (
+                  <div className="flex flex-col items-center gap-3 text-slate-400">
+                    <div className="w-8 h-8 border-4 border-slate-500 border-t-transparent rounded-full animate-spin" />
+                    <p className="text-sm">Loading document…</p>
+                  </div>
+                ) : docViewerUrl ? (
+                  /\.(jpg|jpeg|png|gif|webp)(\?|$)/i.test(docViewerUrl.split('?')[0]) ? (
+                    <img
+                      src={docViewerUrl}
+                      alt={docManagementItem.req.name}
+                      className="w-full h-full object-contain p-4 max-h-[60vh]"
+                    />
+                  ) : (
+                    <iframe
+                      src={docViewerUrl}
+                      title={`${docManagementItem.req.name} — Document`}
+                      className="w-full h-full border-0"
+                      style={{ minHeight: '320px' }}
+                    />
+                  )
+                ) : (
+                  <div className="text-center space-y-3 p-8">
+                    <p className="text-5xl">📝</p>
+                    <p className="text-sm text-slate-400 leading-relaxed">
+                      No file attachment
+                      <br />
+                      <span className="text-slate-500 italic text-xs">
+                        {docManagementItem.doc.file_url
+                          ? 'Could not generate secure URL'
+                          : 'Attestation or N/A record — no file'}
+                      </span>
+                    </p>
+                  </div>
+                )}
               </div>
 
-              {confirmingDocDelete ? (
-                <div className="rounded-xl border-2 border-rose-300 bg-rose-50 p-4 space-y-3">
-                  <p className="text-sm font-bold text-rose-800">
-                    ⚠️ Are you sure? This will permanently delete the document and reset this requirement to &ldquo;Missing.&rdquo;
+              {/* ── Right / Bottom: Metadata & Actions pane ── */}
+              <div className="p-6 space-y-5 overflow-y-auto bg-white">
+
+                {/* Requirement */}
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                    Requirement
                   </p>
-                  <div className="flex gap-3">
-                    <button
-                      onClick={() => setConfirmingDocDelete(false)}
-                      disabled={deletingDoc}
-                      className="flex-1 px-4 py-2 rounded-lg bg-slate-200 text-slate-700 font-medium hover:bg-slate-300 disabled:opacity-50"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleDocDelete}
-                      disabled={deletingDoc}
-                      className="flex-1 px-4 py-2 rounded-lg bg-rose-600 text-white font-medium hover:bg-rose-700 disabled:opacity-50"
-                    >
-                      {deletingDoc ? 'Deleting…' : 'Yes, Delete Document'}
-                    </button>
+                  <p className="font-semibold text-slate-800 text-sm leading-snug">
+                    {docManagementItem.req.name}
+                  </p>
+                  <p className="text-[11px] font-mono text-slate-400 mt-0.5">
+                    {docManagementItem.req.typeKey}
+                  </p>
+                  {(() => {
+                    const s = calcPersonnelComplianceStatus(
+                      docManagementItem.doc.created_at,
+                      docManagementItem.req.frequency,
+                      docManagementItem.doc.metadata
+                    );
+                    return (
+                      <span className={`inline-block mt-2 text-xs font-bold px-2.5 py-1 rounded-full ${
+                        s === 'expired'
+                          ? 'bg-rose-100 text-rose-700'
+                          : s === 'expiring_soon'
+                          ? 'bg-amber-100 text-amber-700'
+                          : 'bg-emerald-100 text-emerald-700'
+                      }`}>
+                        {s === 'expired' ? '🔴 Expired' : s === 'expiring_soon' ? '🟡 Expiring Soon' : '✅ Satisfied'}
+                      </span>
+                    );
+                  })()}
+                </div>
+
+                {/* Document details */}
+                <div className="bg-slate-50 rounded-lg p-4 space-y-2.5 border border-slate-200 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Upload Date</span>
+                    <span className="font-medium text-slate-800">
+                      {new Date(docManagementItem.doc.created_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Frequency</span>
+                    <span className="font-medium text-slate-800 capitalize">
+                      {docManagementItem.req.frequency.replace(/_/g, ' ')}
+                    </span>
                   </div>
                 </div>
-              ) : (
-                <button
-                  onClick={() => setConfirmingDocDelete(true)}
-                  className="w-full px-4 py-2.5 bg-rose-600 text-white rounded-lg font-medium hover:bg-rose-700 transition-colors"
-                >
-                  🗑️ Delete &amp; Replace Document
-                </button>
-              )}
+
+                {/* AI Metadata */}
+                {docManagementItem.doc.metadata && (
+                  <div className="bg-violet-50 border border-violet-200 rounded-lg p-4 space-y-2.5 text-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-violet-500">
+                      🤖 AI Metadata
+                    </p>
+                    {typeof docManagementItem.doc.metadata.ai_extracted_expiration === 'string' ? (
+                      <div className="flex justify-between">
+                        <span className="text-violet-600">Expiration (AI)</span>
+                        <span className="font-semibold text-violet-800">
+                          {new Date(
+                            docManagementItem.doc.metadata.ai_extracted_expiration
+                          ).toLocaleDateString()}
+                        </span>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-violet-400 italic">
+                        No expiration date extracted
+                      </p>
+                    )}
+                    {typeof docManagementItem.doc.metadata.upload_source === 'string' && (
+                      <div className="flex justify-between">
+                        <span className="text-violet-600">Source</span>
+                        <span className="font-medium text-violet-800 capitalize">
+                          {String(docManagementItem.doc.metadata.upload_source).replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Delete & Replace */}
+                <div className="pt-1">
+                  {confirmingDocDelete ? (
+                    <div className="rounded-xl border-2 border-rose-300 bg-rose-50 p-4 space-y-3">
+                      <p className="text-sm font-bold text-rose-800">
+                        ⚠️ Permanently delete this document and reset this requirement to &ldquo;Missing.&rdquo;
+                      </p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setConfirmingDocDelete(false)}
+                          disabled={deletingDoc}
+                          className="flex-1 px-3 py-2 rounded-lg bg-slate-200 text-slate-700 font-medium text-sm hover:bg-slate-300 disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleDocDelete}
+                          disabled={deletingDoc}
+                          className="flex-1 px-3 py-2 rounded-lg bg-rose-600 text-white font-medium text-sm hover:bg-rose-700 disabled:opacity-50"
+                        >
+                          {deletingDoc ? 'Deleting…' : 'Yes, Delete'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmingDocDelete(true)}
+                      className="w-full px-4 py-2.5 bg-rose-600 text-white rounded-lg font-medium text-sm hover:bg-rose-700 transition-colors"
+                    >
+                      🗑️ Delete &amp; Replace Document
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -4962,10 +5216,12 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                         {requirements.map((req) => {
                           const matchingDoc = getMatchingPersonnelDoc(person.id, req.typeKey);
                           const complianceStatus: DocumentComplianceStatus = matchingDoc
-                            ? calcPersonnelComplianceStatus(matchingDoc.created_at, req.frequency)
+                            ? calcPersonnelComplianceStatus(matchingDoc.created_at, req.frequency, matchingDoc.metadata)
                             : 'missing';
                           const isMissing = complianceStatus === 'missing';
+                          const isVerifyingThis = verifyingReqId === req.id;
                           const isBusy =
+                            isVerifyingThis ||
                             uploadingReqId === req.id ||
                             signingReqId === req.id ||
                             markingNAReqId === req.id;
@@ -5025,10 +5281,15 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                   >
                                     {statusBadgeLabel[complianceStatus]}
                                   </button>
+                                ) : isVerifyingThis ? (
+                                  <div className="flex items-center gap-2 text-violet-600 font-bold text-xs animate-pulse">
+                                    <span className="w-3 h-3 border-2 border-violet-600 border-t-transparent rounded-full animate-spin"></span>
+                                    🤖 AI verifying…
+                                  </div>
                                 ) : isBusy ? (
                                   <div className="flex items-center gap-2 text-indigo-600 font-bold text-xs animate-pulse">
                                     <span className="w-3 h-3 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></span>
-                                    Working…
+                                    Uploading…
                                   </div>
                                 ) : !showArchive ? (
                                   <>
@@ -5100,88 +5361,6 @@ export default function PersonnelVaultView({ facilityId }: Props) {
 }
 </file>
 
-<file path="src/components/Sidebar.tsx">
-'use client';
-import { useFacility, type ViewType } from 'src/context/FacilityContext';
-import FacilitySelector from './FacilitySelector';
-import { useState, useEffect } from 'react';
-import { createClient } from 'src/app/utils/supabase/client';
-
-export default function Sidebar() {
-  const { selectedFacilityId, setSelectedFacilityId, currentView, setCurrentView } = useFacility();
-  const [facilities, setFacilities] = useState<Array<{ id: string; name: string }>>([]);
-
-  useEffect(() => {
-    const fetchFacilities = async () => {
-      const supabase = createClient();
-      const { data } = await supabase.from('facilities').select('id, name');
-      if (data) setFacilities(data);
-    };
-    fetchFacilities();
-  }, []);
-
-  const isMasterView = selectedFacilityId === 'all' || !selectedFacilityId;
-
-  const navItem = (label: string, view: ViewType, disabled = false) => {
-    const isActive = currentView === view;
-    return (
-      <button
-        onClick={() => !disabled && setCurrentView(view)}
-        disabled={disabled}
-        className={`w-full text-left p-3 rounded-xl font-bold transition-all border ${
-          disabled
-            ? 'opacity-50 cursor-not-allowed text-gray-600 border-transparent'
-            : isActive
-            ? 'bg-blue-600/10 text-blue-500 border-blue-600/20'
-            : 'text-gray-500 border-transparent hover:bg-gray-900'
-        }`}
-      >
-        {label}
-      </button>
-    );
-  };
-
-  return (
-    <aside className="w-64 border-r border-gray-800 flex flex-col bg-black">
-      <div className="p-6">
-        <h2 className="text-blue-500 font-black tracking-tighter text-xl italic">AR_GUARD</h2>
-      </div>
-
-      <FacilitySelector
-        facilities={facilities}
-        selectedFacilityId={selectedFacilityId}
-        onSelect={(id) => {
-          setSelectedFacilityId(id);
-          if (id === 'all') setCurrentView('overview');
-        }}
-      />
-
-      <nav className="flex-1 p-4 space-y-2 mt-4">
-        <div className="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-4 px-2">
-          Navigation
-        </div>
-        {navItem('Executive Overview', 'overview')}
-        {navItem('Personnel Vault', 'personnel', isMasterView)}
-        {navItem('Document Center', 'documents', isMasterView)}
-        {navItem('Operational Blueprints', 'blueprints', isMasterView)}
-        {navItem('Facility Settings', 'settings', isMasterView)}
-        {navItem('Audit Trail', 'audit_logs')}
-      </nav>
-
-      <div className="p-4 border-t border-gray-800">
-        <div className="flex items-center gap-3 p-2">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600" />
-          <div className="text-xs">
-            <p className="font-bold text-white">Admin User</p>
-            <p className="text-gray-500">Settings</p>
-          </div>
-        </div>
-      </div>
-    </aside>
-  );
-}
-</file>
-
 <file path="package.json">
 {
   "name": "ar-compliance-pro",
@@ -5194,8 +5373,12 @@ export default function Sidebar() {
     "lint": "eslint"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^3.0.65",
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.105.4",
+    "ai": "^6.0.190",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "next": "16.2.6",
     "react": "19.2.4",
     "react-dom": "19.2.4",
@@ -5209,7 +5392,6 @@ export default function Sidebar() {
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
     "tailwindcss": "^4",
-    "tsx": "^4.22.3",
     "typescript": "^5"
   }
 }
@@ -5218,7 +5400,7 @@ export default function Sidebar() {
 <file path="src/components/ComplianceDashboardClient.tsx">
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from 'src/app/utils/supabase/client';
 import {
@@ -5227,7 +5409,9 @@ import {
   recordDocumentUpload,
   hashFileBuffer,
   deleteDocument,
+  getSecureDocumentUrl,
 } from 'src/app/actions/compliance';
+import { verifyDocumentWithAI } from 'src/app/actions/ai-verify';
 import type { DocumentComplianceStatus, IdentifiedGap } from '@/lib/types';
 
 interface DashboardProps {
@@ -5324,7 +5508,14 @@ function StatusBadge({
   return null;
 }
 
-// ── Document Management Modal ────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function isImageUrl(url: string): boolean {
+  const path = url.split('?')[0].toLowerCase();
+  return /\.(jpg|jpeg|png|gif|webp)$/.test(path);
+}
+
+// ── Document Viewer Modal ─────────────────────────────────────────────────────
 
 function DocManagementModal({
   gap,
@@ -5339,6 +5530,23 @@ function DocManagementModal({
 }) {
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [documentUrl, setDocumentUrl] = useState<string | null>(null);
+  const [docMetadata, setDocMetadata] = useState<Record<string, unknown> | null>(null);
+  const [isLoadingDoc, setIsLoadingDoc] = useState(false);
+
+  // Fetch a temporary signed URL as soon as the modal opens
+  useEffect(() => {
+    if (!gap.document_id) return;
+    setIsLoadingDoc(true);
+    getSecureDocumentUrl(gap.document_id, facilityId)
+      .then((result) => {
+        if (result.success) {
+          setDocumentUrl(result.url ?? null);
+          setDocMetadata(result.metadata ?? null);
+        }
+      })
+      .finally(() => setIsLoadingDoc(false));
+  }, [gap.document_id, facilityId]);
 
   const handleDelete = async () => {
     if (!gap.document_id) return;
@@ -5363,7 +5571,6 @@ function DocManagementModal({
     expired: 'Expired',
     missing: 'Missing',
   };
-
   const statusColor: Record<DocumentComplianceStatus, string> = {
     satisfied: 'text-emerald-700 bg-emerald-100',
     expiring_soon: 'text-amber-700 bg-amber-100',
@@ -5373,81 +5580,167 @@ function DocManagementModal({
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full">
-        <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 rounded-t-xl flex items-center justify-between">
-          <h2 className="text-lg font-bold text-white">Document Management</h2>
+      <div
+        className="bg-white rounded-xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden"
+        style={{ maxHeight: '90vh' }}
+      >
+        {/* ── Header ── */}
+        <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 flex items-center justify-between shrink-0">
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold text-white">Document Viewer</h2>
+            <p className="text-slate-400 text-xs mt-0.5 truncate">{gap.name}</p>
+          </div>
           <button
             onClick={onClose}
-            className="text-white/70 hover:text-white text-2xl leading-none"
+            className="ml-4 shrink-0 text-white/70 hover:text-white text-2xl leading-none"
+            aria-label="Close"
           >
             ×
           </button>
         </div>
 
-        <div className="p-6 space-y-4">
-          {/* Requirement details */}
-          <div className="space-y-2">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Requirement</p>
-                <p className="font-semibold text-slate-800">{gap.name}</p>
-                <p className="text-[11px] font-mono text-slate-400 mt-0.5">{gap.typeKey}</p>
+        {/* ── Two-column body ── */}
+        <div
+          className="flex-1 grid grid-cols-1 lg:grid-cols-[3fr_2fr] divide-y lg:divide-y-0 lg:divide-x divide-slate-200 overflow-hidden"
+          style={{ minHeight: 0 }}
+        >
+          {/* ── Left / Top: Viewer pane ── */}
+          <div className="bg-slate-950 flex flex-col items-center justify-center min-h-64 overflow-hidden">
+            {isLoadingDoc ? (
+              <div className="flex flex-col items-center gap-3 text-slate-400">
+                <div className="w-8 h-8 border-4 border-slate-500 border-t-transparent rounded-full animate-spin" />
+                <p className="text-sm">Loading document…</p>
               </div>
-              <span className={`shrink-0 text-xs font-bold px-2.5 py-1 rounded-full ${statusColor[gap.compliance_status]}`}>
+            ) : documentUrl ? (
+              isImageUrl(documentUrl) ? (
+                <img
+                  src={documentUrl}
+                  alt={gap.name}
+                  className="w-full h-full object-contain p-4 max-h-[60vh]"
+                />
+              ) : (
+                <iframe
+                  src={documentUrl}
+                  title={`${gap.name} — Document`}
+                  className="w-full h-full border-0"
+                  style={{ minHeight: '320px' }}
+                />
+              )
+            ) : (
+              <div className="text-center space-y-3 p-8">
+                <p className="text-5xl">📝</p>
+                <p className="text-sm text-slate-400 leading-relaxed">
+                  No file attachment
+                  <br />
+                  <span className="text-slate-500 italic text-xs">
+                    {gap.completionType === 'attestation'
+                      ? 'Satisfied via digital attestation'
+                      : gap.completionType === 'n/a'
+                      ? 'Marked as Not Applicable'
+                      : 'No document on file'}
+                  </span>
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* ── Right / Bottom: Metadata & Actions pane ── */}
+          <div className="p-6 space-y-5 overflow-y-auto bg-white">
+
+            {/* Requirement */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                Requirement
+              </p>
+              <p className="font-semibold text-slate-800 text-sm leading-snug">{gap.name}</p>
+              <p className="text-[11px] font-mono text-slate-400 mt-0.5">{gap.typeKey}</p>
+              <span className={`inline-block mt-2 text-xs font-bold px-2.5 py-1 rounded-full ${statusColor[gap.compliance_status]}`}>
                 {statusLabel[gap.compliance_status]}
               </span>
             </div>
-          </div>
 
-          <div className="bg-slate-50 rounded-lg p-4 space-y-2 border border-slate-200">
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-500">Frequency</span>
-              <span className="font-medium text-slate-800">
-                {String(gap.frequency).replace(/_/g, ' ').toUpperCase()}
-              </span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-500">Upload Date</span>
-              <span className="font-medium text-slate-800">
-                {gap.document_created_at
-                  ? new Date(gap.document_created_at).toLocaleDateString()
-                  : '—'}
-              </span>
-            </div>
-          </div>
-
-          {/* Inline delete confirmation */}
-          {confirming ? (
-            <div className="rounded-xl border-2 border-rose-300 bg-rose-50 p-4 space-y-3">
-              <p className="text-sm font-bold text-rose-800">
-                ⚠️ Are you sure? This will permanently delete the document and reset this requirement to "Missing."
-              </p>
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setConfirming(false)}
-                  disabled={deleting}
-                  className="flex-1 px-4 py-2 rounded-lg bg-slate-200 text-slate-700 font-medium hover:bg-slate-300 disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDelete}
-                  disabled={deleting}
-                  className="flex-1 px-4 py-2 rounded-lg bg-rose-600 text-white font-medium hover:bg-rose-700 disabled:opacity-50"
-                >
-                  {deleting ? 'Deleting…' : 'Yes, Delete Document'}
-                </button>
+            {/* Document details */}
+            <div className="bg-slate-50 rounded-lg p-4 space-y-2.5 border border-slate-200 text-sm">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Frequency</span>
+                <span className="font-medium text-slate-800 capitalize">
+                  {String(gap.frequency).replace(/_/g, ' ')}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Upload Date</span>
+                <span className="font-medium text-slate-800">
+                  {gap.document_created_at
+                    ? new Date(gap.document_created_at).toLocaleDateString()
+                    : '—'}
+                </span>
               </div>
             </div>
-          ) : (
-            <button
-              onClick={() => setConfirming(true)}
-              disabled={!gap.document_id}
-              className="w-full px-4 py-2.5 bg-rose-600 text-white rounded-lg font-medium hover:bg-rose-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              🗑️ Delete &amp; Replace Document
-            </button>
-          )}
+
+            {/* AI Metadata */}
+            {docMetadata && (
+              <div className="bg-violet-50 border border-violet-200 rounded-lg p-4 space-y-2.5 text-sm">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-violet-500">
+                  🤖 AI Metadata
+                </p>
+                {typeof docMetadata.ai_extracted_expiration === 'string' ? (
+                  <div className="flex justify-between">
+                    <span className="text-violet-600">Expiration (AI)</span>
+                    <span className="font-semibold text-violet-800">
+                      {new Date(docMetadata.ai_extracted_expiration).toLocaleDateString()}
+                    </span>
+                  </div>
+                ) : (
+                  <p className="text-xs text-violet-400 italic">
+                    No expiration date extracted
+                  </p>
+                )}
+                {typeof docMetadata.upload_source === 'string' && (
+                  <div className="flex justify-between">
+                    <span className="text-violet-600">Source</span>
+                    <span className="font-medium text-violet-800 capitalize">
+                      {String(docMetadata.upload_source).replace(/_/g, ' ')}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Delete & Replace */}
+            <div className="pt-1">
+              {confirming ? (
+                <div className="rounded-xl border-2 border-rose-300 bg-rose-50 p-4 space-y-3">
+                  <p className="text-sm font-bold text-rose-800">
+                    ⚠️ Permanently delete this document and reset this requirement to &ldquo;Missing.&rdquo;
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setConfirming(false)}
+                      disabled={deleting}
+                      className="flex-1 px-3 py-2 rounded-lg bg-slate-200 text-slate-700 font-medium text-sm hover:bg-slate-300 disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleDelete}
+                      disabled={deleting}
+                      className="flex-1 px-3 py-2 rounded-lg bg-rose-600 text-white font-medium text-sm hover:bg-rose-700 disabled:opacity-50"
+                    >
+                      {deleting ? 'Deleting…' : 'Yes, Delete'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirming(true)}
+                  disabled={!gap.document_id}
+                  className="w-full px-4 py-2.5 bg-rose-600 text-white rounded-lg font-medium text-sm hover:bg-rose-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  🗑️ Delete &amp; Replace Document
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -5471,11 +5764,20 @@ export default function ComplianceDashboardClient({
   const [activeTab, setActiveTab] = useState<ChecklistTab>('facility');
   const [userAttestation, setUserAttestation] = useState<boolean>(false);
   const [uploadingId, setUploadingId] = useState<string | null>(null);
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [signingAttestationId, setSigningAttestationId] = useState<string | null>(null);
   const [markingNAId, setMarkingNAId] = useState<string | null>(null);
 
   // Document management modal
   const [docManagementGap, setDocManagementGap] = useState<DashboardGap | null>(null);
+
+  // AI rejection modal
+  const [rejectionModal, setRejectionModal] = useState<{
+    requirementName: string;
+    detectedType: string;
+    confidence: number;
+    reason: string;
+  } | null>(null);
 
   // Scored rules partitioned by category
   const scoredGaps = gaps.filter((g) => g.is_scored);
@@ -5547,8 +5849,38 @@ export default function ComplianceDashboardClient({
       return;
     }
 
-    setUploadingId(gap.id);
+    // ── Step 1: AI Verification ───────────────────────────────────────────────
+    setVerifyingId(gap.id);
     try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('requirementName', gap.name);
+
+      const aiResult = await verifyDocumentWithAI(formData);
+
+      if (!aiResult.success) {
+        // AI service error — fail open with a warning so users aren't blocked
+        console.warn('⚠️ AI verification service unavailable, proceeding with upload:', aiResult.error);
+      } else if (!aiResult.object.is_valid_match) {
+        // AI rejected the document — show rejection modal and abort
+        setRejectionModal({
+          requirementName: gap.name,
+          detectedType: aiResult.object.detected_document_type,
+          confidence: aiResult.object.confidence_score,
+          reason: aiResult.object.rejection_reason ?? 'The document did not match the requirement.',
+        });
+        return;
+      }
+
+      // AI approved — extract expiration date if available
+      const aiExpirationDate = aiResult.success
+        ? (aiResult.object.expiration_date ?? undefined)
+        : undefined;
+
+      // ── Step 2: Storage Upload ──────────────────────────────────────────────
+      setVerifyingId(null);
+      setUploadingId(gap.id);
+
       const documentId = crypto.randomUUID();
       const fileExtension = file.name.split('.').pop()?.toLowerCase() ?? 'bin';
       const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
@@ -5565,7 +5897,10 @@ export default function ComplianceDashboardClient({
         status: 'approved',
         file_url: storagePath,
         name: file.name,
-        metadata: { upload_source: 'compliance_checklist' },
+        metadata: {
+          upload_source: 'compliance_checklist',
+          ...(aiExpirationDate ? { ai_extracted_expiration: aiExpirationDate } : {}),
+        },
       });
       if (insertError) throw insertError;
 
@@ -5581,6 +5916,7 @@ export default function ComplianceDashboardClient({
         fileSize: file.size,
         fileHash,
         userAttestation,
+        aiExpirationDate,
       });
 
       if (!result.success) {
@@ -5594,6 +5930,7 @@ export default function ComplianceDashboardClient({
       const message = error instanceof Error ? error.message : 'Unknown error';
       alert(`❌ Upload failed: ${message}`);
     } finally {
+      setVerifyingId(null);
       setUploadingId(null);
     }
   };
@@ -5647,7 +5984,9 @@ export default function ComplianceDashboardClient({
   // ── Row renderer ──────────────────────────────────────────────────────────
 
   const renderGapRow = (gap: DashboardGap) => {
+    const isVerifying = verifyingId === gap.id;
     const isBusy =
+      isVerifying ||
       uploadingId === gap.id ||
       signingAttestationId === gap.id ||
       markingNAId === gap.id;
@@ -5702,10 +6041,15 @@ export default function ComplianceDashboardClient({
               status={status}
               onClick={() => setDocManagementGap(gap)}
             />
+          ) : isVerifying ? (
+            <div className="flex items-center gap-2 text-violet-600 font-bold text-xs animate-pulse">
+              <span className="w-3.5 h-3.5 border-2 border-violet-600 border-t-transparent rounded-full animate-spin"></span>
+              🤖 AI verifying…
+            </div>
           ) : isBusy ? (
             <div className="flex items-center gap-2 text-indigo-600 font-bold text-xs animate-pulse">
               <span className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></span>
-              Working…
+              Uploading…
             </div>
           ) : (
             <>
@@ -5767,6 +6111,58 @@ export default function ComplianceDashboardClient({
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto text-slate-800">
+      {/* AI Rejection Modal */}
+      {rejectionModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full">
+            <div className="bg-gradient-to-r from-rose-600 to-rose-700 px-6 py-4 rounded-t-xl flex items-center gap-3">
+              <span className="text-2xl" aria-hidden>🤖</span>
+              <div>
+                <h2 className="text-lg font-bold text-white leading-tight">AI Verification Failed</h2>
+                <p className="text-rose-200 text-xs">Document does not match the requirement</p>
+              </div>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-slate-50 rounded-lg p-4 space-y-3 border border-slate-200">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500 font-medium">Requirement</span>
+                  <span className="text-slate-800 font-semibold text-right max-w-[60%]">
+                    {rejectionModal.requirementName}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500 font-medium">Document Detected</span>
+                  <span className="text-slate-800 font-semibold">{rejectionModal.detectedType}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500 font-medium">AI Confidence</span>
+                  <span className={`font-bold text-xs px-2 py-0.5 rounded-full ${
+                    rejectionModal.confidence >= 70 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {rejectionModal.confidence}%
+                  </span>
+                </div>
+              </div>
+              <div className="bg-rose-50 border border-rose-200 rounded-lg p-4">
+                <p className="text-xs font-bold uppercase tracking-wider text-rose-700 mb-1">
+                  Rejection Reason
+                </p>
+                <p className="text-sm text-rose-900 leading-relaxed">{rejectionModal.reason}</p>
+              </div>
+              <p className="text-xs text-slate-500 italic">
+                Please upload the correct document and try again. If you believe this is an error, use &ldquo;Sign Attestation&rdquo; to manually certify compliance.
+              </p>
+              <button
+                onClick={() => setRejectionModal(null)}
+                className="w-full px-4 py-2.5 bg-slate-800 text-white rounded-lg font-medium hover:bg-slate-700 transition-colors"
+              >
+                Dismiss & Try Again
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Document Management Modal */}
       {docManagementGap && (
         <DocManagementModal
@@ -5872,327 +6268,6 @@ export default function ComplianceDashboardClient({
 }
 </file>
 
-<file path="src/lib/reg-monitor.ts">
-// src/lib/reg-monitor.ts
-import { createAdminClient } from 'src/app/utils/supabase/admin';
-import type {
-  ComplianceRule,
-  ComplianceFrequency,
-  DocumentComplianceStatus,
-  Facility,
-  FacilityToggleKey,
-  IdentifiedGap,
-  RegulatoryStatus,
-  ScoreCategory,
-} from './types';
-import { FACILITY_TOGGLE_KEYS } from './types';
-
-/**
- * String normalization helper for resilient fuzzy matching against uploaded documents.
- */
-function normalizeDocumentKey(input: string | null | undefined): string {
-  if (!input) return '';
-  return input
-    .toLowerCase()
-    .trim()
-    .replace(/[\s\-]+/g, '_')
-    .replace(/[^a-z0-9_]/g, '');
-}
-
-/**
- * Fuzzy token matching helper. Returns true if a rule's slug overlaps with an uploaded
- * document's classified document_type.
- */
-function tokensMatch(ruleKey: string, docKey: string): boolean {
-  const normalizedRule = normalizeDocumentKey(ruleKey);
-  const normalizedDoc = normalizeDocumentKey(docKey);
-
-  if (!normalizedRule || !normalizedDoc) return false;
-  if (normalizedRule === normalizedDoc) return true;
-  if (normalizedRule.includes(normalizedDoc) || normalizedDoc.includes(normalizedRule)) {
-    return true;
-  }
-
-  const ruleTokens = normalizedRule.split('_').filter((t) => t.length > 2);
-  const docTokens = normalizedDoc.split('_').filter((t) => t.length > 2);
-  const sharedTokens = ruleTokens.filter((token) => docTokens.includes(token));
-  return sharedTokens.length >= 2;
-}
-
-/**
- * Returns the list of toggle keys that are TRUE on a given facility.
- * These represent the activated scope flags that a rule's sub_classification can match.
- */
-function activeToggleKeys(facility: Pick<Facility, FacilityToggleKey>): Set<string> {
-  const activated = new Set<string>();
-  for (const key of FACILITY_TOGGLE_KEYS) {
-    if (facility[key]) activated.add(key);
-  }
-  return activated;
-}
-
-/**
- * THE SMART FILTER.
- *
- * A rule applies to a facility IF:
- *   - rule.facility_type === facility.facility_type, AND
- *   - rule.sub_classification IS NULL, OR
- *   - rule.sub_classification matches a toggle currently set to TRUE on the facility profile.
- */
-export function ruleAppliesToFacility(
-  rule: Pick<ComplianceRule, 'facility_type' | 'sub_classification'>,
-  facility: Pick<Facility, 'facility_type' | FacilityToggleKey>
-): boolean {
-  if (rule.facility_type !== facility.facility_type) return false;
-  if (
-    rule.sub_classification === null ||
-    rule.sub_classification === undefined ||
-    String(rule.sub_classification) === 'null'
-  ) {
-    return true;
-  }
-  const activated = activeToggleKeys(facility);
-  return activated.has(rule.sub_classification);
-}
-
-/**
- * Resolve the score category for a rule, gracefully handling legacy `is_personnel_requirement`
- * rows that have not yet been backfilled with `score_category`.
- */
-function resolveScoreCategory(rule: Record<string, unknown>): ScoreCategory {
-  const raw = rule.score_category;
-  if (raw === 'facility' || raw === 'personnel') return raw;
-  if (rule.is_personnel_requirement === true) return 'personnel';
-  if (rule.is_personnel_requirement === false) return 'facility';
-  return null;
-}
-
-/**
- * Resolve whether a rule should be included in the twin-score math, with safe defaults
- * for rows missing `is_scored` (treat them as scored).
- */
-function resolveIsScored(rule: Record<string, unknown>): boolean {
-  if (typeof rule.is_scored === 'boolean') return rule.is_scored;
-  return true;
-}
-
-/**
- * Calculates the expiration date for a document given the rule's frequency and upload date.
- * Returns null for frequencies that do not have a calculable expiration (e.g. 'ongoing').
- */
-function calcExpirationDate(createdAt: string, frequency: ComplianceFrequency): Date | null {
-  const created = new Date(createdAt);
-  if (isNaN(created.getTime())) return null;
-
-  const d = new Date(created);
-  switch (frequency) {
-    case 'daily':      d.setDate(d.getDate() + 1); break;
-    case 'weekly':     d.setDate(d.getDate() + 7); break;
-    case 'monthly':    d.setMonth(d.getMonth() + 1); break;
-    case 'quarterly':  d.setMonth(d.getMonth() + 3); break;
-    case 'biannual':   d.setMonth(d.getMonth() + 6); break;
-    case 'annual':     d.setFullYear(d.getFullYear() + 1); break;
-    case '2_years':    d.setFullYear(d.getFullYear() + 2); break;
-    case '3_years':    d.setFullYear(d.getFullYear() + 3); break;
-    case '5_years':    d.setFullYear(d.getFullYear() + 5); break;
-    case '10_years':   d.setFullYear(d.getFullYear() + 10); break;
-    // one-time, ongoing, and unknown frequencies do not expire
-    default:           return null;
-  }
-  return d;
-}
-
-/**
- * Determines the compliance status of a satisfied requirement based on
- * when its document was uploaded and the rule's renewal frequency.
- */
-function calcComplianceStatus(
-  createdAt: string,
-  frequency: ComplianceFrequency
-): DocumentComplianceStatus {
-  const expiration = calcExpirationDate(createdAt, frequency);
-  if (!expiration) return 'satisfied'; // ongoing / one-time — never expires
-
-  const now = new Date();
-  const msUntilExpiry = expiration.getTime() - now.getTime();
-  const daysUntilExpiry = msUntilExpiry / (1000 * 60 * 60 * 24);
-
-  if (daysUntilExpiry < 0) return 'expired';
-  if (daysUntilExpiry <= 30) return 'expiring_soon';
-  return 'satisfied';
-}
-
-/**
- * Reads from our database to calculate twin-score metrics for the dashboard.
- *
- * Returns:
- *   - facilityReadinessScore:    (uploaded documents / total scored rules where score_category === 'facility') * 100
- *   - personnelReadinessScore:   (uploaded documents / total scored rules where score_category === 'personnel') * 100
- *   - identifiedGaps:            dynamically filtered list of outstanding rules
- *   - staffCount, capacity, activeEnrollment, enrollmentUpdatedAt
- *
- * The "dumb fetch + smart filter" pattern keeps the UI alive even if Supabase has issues.
- */
-export async function getRegulatoryStatus(facilityId: string): Promise<RegulatoryStatus> {
-  const supabase = createAdminClient();
-
-  // 1. Fetch the facility profile with capacity, active_enrollment, and ALL scope toggle columns
-  const { data: facility, error: facilityError } = await supabase
-    .from('facilities')
-    .select(
-      [
-        'id',
-        'facility_type',
-        'capacity',
-        'active_enrollment',
-        'enrollment_updated_at',
-        ...FACILITY_TOGGLE_KEYS,
-      ].join(', ')
-    )
-    .eq('id', facilityId)
-    .single();
-
-  if (facilityError || !facility) {
-    console.error('❌ Failed to load facility profile for compliance scoring:', facilityError);
-    return {
-      facilityReadinessScore: 0,
-      personnelReadinessScore: 0,
-      identifiedGaps: [],
-      staffCount: 0,
-      capacity: null,
-      activeEnrollment: null,
-      enrollmentUpdatedAt: null,
-    };
-  }
-
-  const facilityProfile = facility as unknown as Facility;
-
-  // 2. THE DUMB FETCH: pull every rule. We will filter in TypeScript.
-  const { data: allRules, error: rulesError } = await supabase
-    .from('compliance_criteria')
-    .select('*');
-
-  if (rulesError) {
-    console.error('❌ Supabase fetch error on compliance_criteria:', rulesError);
-    // Fail gracefully so dependent UI (staffing math, blueprints) still renders.
-  }
-
-  // 3. THE SMART FILTER: keep rules that match the facility type AND scope toggles.
-  const applicableRules: ComplianceRule[] = (allRules || [])
-    .filter((rule: Record<string, unknown>) =>
-      ruleAppliesToFacility(rule as unknown as ComplianceRule, facilityProfile)
-    )
-    .map((rule: Record<string, unknown>) => ({
-      id: rule.id as string,
-      facility_type: rule.facility_type as ComplianceRule['facility_type'],
-      sub_classification: (rule.sub_classification ?? null) as ComplianceRule['sub_classification'],
-      requirement_name: (rule.requirement_name as string) ?? '',
-      required_document_type: (rule.required_document_type as string) ?? '',
-      severity: ((rule.severity as ComplianceRule['severity']) ?? 'standard'),
-      frequency: (rule.frequency as ComplianceRule['frequency']) ?? 'annual',
-      is_scored: resolveIsScored(rule),
-      score_category: resolveScoreCategory(rule),
-    }));
-
-  console.log(
-    `📋 Compliance Engine: ${allRules?.length ?? 0} total rules → ${applicableRules.length} applicable for ${facilityProfile.facility_type}.`
-  );
-
-  // 4. Fetch approved facility documents to compute satisfied requirements.
-  const { data: uploadedDocs } = await supabase
-    .from('facility_documents')
-    .select('id, document_type, status, created_at')
-    .eq('facility_id', facilityId)
-    .eq('status', 'approved')
-    .order('created_at', { ascending: false }); // newest first so we pick the freshest match
-
-  type UploadedDoc = { id: string; document_type: string | null; status: string; created_at: string };
-  const docs: UploadedDoc[] = (uploadedDocs || []) as UploadedDoc[];
-
-  // Map from rule id → the best matching document (most recent)
-  const satisfiedRuleMap = new Map<string, { docId: string; createdAt: string; status: DocumentComplianceStatus }>();
-
-  for (const rule of applicableRules) {
-    const matchingDoc = docs.find(
-      (d) => d.document_type && tokensMatch(rule.required_document_type, d.document_type)
-    );
-    if (matchingDoc) {
-      const status = calcComplianceStatus(matchingDoc.created_at, rule.frequency);
-      satisfiedRuleMap.set(rule.id, {
-        docId: matchingDoc.id,
-        createdAt: matchingDoc.created_at,
-        status,
-      });
-    }
-  }
-
-  // A rule is "satisfied enough" for score purposes if the doc exists (even if expired/expiring)
-  const satisfiedRuleIds = new Set(satisfiedRuleMap.keys());
-
-  // 5. THE TWIN-SCORE MATH: separate buckets for facility vs. personnel rules.
-  const facilityScoredRules = applicableRules.filter(
-    (r) => r.is_scored && r.score_category === 'facility'
-  );
-  const personnelScoredRules = applicableRules.filter(
-    (r) => r.is_scored && r.score_category === 'personnel'
-  );
-
-  const facilityVerified = facilityScoredRules.filter((r) => satisfiedRuleIds.has(r.id)).length;
-  const personnelVerified = personnelScoredRules.filter((r) => satisfiedRuleIds.has(r.id)).length;
-
-  const facilityReadinessScore =
-    facilityScoredRules.length > 0
-      ? Math.round((facilityVerified / facilityScoredRules.length) * 100)
-      : 100;
-
-  const personnelReadinessScore =
-    personnelScoredRules.length > 0
-      ? Math.round((personnelVerified / personnelScoredRules.length) * 100)
-      : 100;
-
-  console.log(
-    `📊 Twin-Score → Facility: ${facilityVerified}/${facilityScoredRules.length} = ${facilityReadinessScore}% | Personnel: ${personnelVerified}/${personnelScoredRules.length} = ${personnelReadinessScore}%`
-  );
-
-  // 6. Build the gap list for the UI.
-  //    We include ALL applicable rules so the UI can render them (checklist vs blueprint).
-  //    Rules with an existing (possibly expired) document are still included so the user
-  //    can see their expiration status and replace the document if needed.
-  const identifiedGaps: IdentifiedGap[] = applicableRules.map((rule) => {
-    const satisfaction = satisfiedRuleMap.get(rule.id);
-    return {
-      id: rule.id,
-      name: rule.requirement_name,
-      typeKey: rule.required_document_type,
-      severity: rule.severity,
-      frequency: rule.frequency,
-      is_scored: rule.is_scored,
-      score_category: rule.score_category,
-      compliance_status: satisfaction ? satisfaction.status : 'missing',
-      document_id: satisfaction?.docId,
-      document_created_at: satisfaction?.createdAt,
-    };
-  });
-
-  // 7. Active staff count for the personnel headcount widget.
-  const { count: personnelCount } = await supabase
-    .from('personnel')
-    .select('*', { count: 'exact', head: true })
-    .eq('facility_id', facilityId)
-    .eq('status', 'active');
-
-  return {
-    facilityReadinessScore,
-    personnelReadinessScore,
-    identifiedGaps,
-    staffCount: personnelCount ?? 0,
-    capacity: facilityProfile.capacity ?? null,
-    activeEnrollment: facilityProfile.active_enrollment ?? null,
-    enrollmentUpdatedAt: facilityProfile.enrollment_updated_at ?? null,
-  };
-}
-</file>
-
 <file path="src/app/dashboard/page.tsx">
 'use client';
 
@@ -6215,6 +6290,7 @@ import DocumentCenterView from 'src/components/DocumentCenterView';
 import OperationalBlueprintsView from 'src/components/OperationalBlueprintsView';
 import FacilitySettingsView from 'src/components/FacilitySettingsView';
 import type { IdentifiedGap } from '@/lib/types';
+import { generateAuditReport } from '@/lib/pdf-generator';
 
 interface FacilitySummary {
   id: string;
@@ -6227,6 +6303,9 @@ interface FacilitySummary {
   personnelReadinessScore: number;
   totalPersonnel: number;
   gapsCount: number;
+  active_staff_count?: number;
+  capacity_utilization?: number;
+  gross_ratio?: string;
 }
 
 interface ComplianceData {
@@ -6277,6 +6356,8 @@ export default function DashboardPage() {
 
   const [auditLogs, setAuditLogs] = useState<AuditLogRow[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+
+  const [generatingReport, setGeneratingReport] = useState<boolean>(false);
 
   // Facility management state
   const [showAddFacilityModal, setShowAddFacilityModal] = useState<boolean>(false);
@@ -6804,6 +6885,78 @@ export default function DashboardPage() {
                   )}
                 </div>
               </div>
+
+              {/* Fleet Operations */}
+              {(() => {
+                const totalStaff = facilitiesData.reduce((s, f) => s + f.totalPersonnel, 0);
+                const totalEnrollment = facilitiesData.reduce(
+                  (s, f) => s + (f.active_enrollment ?? 0),
+                  0
+                );
+                const orgRatio =
+                  totalStaff > 0
+                    ? `1 : ${(totalEnrollment / totalStaff).toFixed(1)}`
+                    : 'N/A';
+                const facilitiesWithUtil = facilitiesData.filter(
+                  (f) => f.capacity_utilization != null
+                );
+                const avgUtil =
+                  facilitiesWithUtil.length > 0
+                    ? Math.round(
+                        facilitiesWithUtil.reduce(
+                          (s, f) => s + (f.capacity_utilization ?? 0),
+                          0
+                        ) / facilitiesWithUtil.length
+                      )
+                    : null;
+
+                return (
+                  <div className="border-t border-slate-200 px-8 py-6">
+                    <p className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4">
+                      Fleet Operations
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="bg-slate-50 rounded-xl p-4 text-center">
+                        <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+                          Total Active Staff
+                        </p>
+                        <p className="text-3xl font-black text-slate-800">{totalStaff}</p>
+                        <p className="text-[10px] text-slate-400 mt-1">Across all facilities</p>
+                      </div>
+                      <div className="bg-slate-50 rounded-xl p-4 text-center">
+                        <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+                          Org-Wide Gross Ratio
+                        </p>
+                        <p className="text-3xl font-black text-slate-800">{orgRatio}</p>
+                        <p className="text-[10px] text-slate-400 mt-1">Enrolled per staff member</p>
+                      </div>
+                      <div className="bg-slate-50 rounded-xl p-4 text-center">
+                        <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+                          Avg. Capacity Utilization
+                        </p>
+                        {avgUtil != null ? (
+                          <>
+                            <p
+                              className={`text-3xl font-black ${
+                                avgUtil > 95 ? 'text-amber-600' : 'text-slate-800'
+                              }`}
+                            >
+                              {avgUtil}%
+                            </p>
+                            {avgUtil > 95 && (
+                              <p className="text-[10px] text-amber-500 mt-1">
+                                ⚠️ Near full capacity
+                              </p>
+                            )}
+                          </>
+                        ) : (
+                          <p className="text-xl font-black text-slate-400 mt-2">N/A</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           );
         })()}
@@ -6864,6 +7017,28 @@ export default function DashboardPage() {
                       {facility.gapsCount}
                     </span>
                   </div>
+
+                  {(facility.capacity_utilization != null || facility.gross_ratio) && (
+                    <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-100">
+                      {facility.capacity_utilization != null && (
+                        <span
+                          className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full ${
+                            facility.capacity_utilization > 95
+                              ? 'bg-amber-100 text-amber-700'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          📊 {facility.capacity_utilization}% Utilization
+                          {facility.capacity_utilization > 95 && ' ⚠️'}
+                        </span>
+                      )}
+                      {facility.gross_ratio && (
+                        <span className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">
+                          👥 {facility.gross_ratio}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="px-6 pb-6 space-y-2">
@@ -6905,17 +7080,51 @@ export default function DashboardPage() {
 
   return (
     <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
-      <header>
-        <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
-          DHS Regulatory Engine
-        </p>
-        <h1 className="text-5xl font-bold tracking-tight text-slate-900">
-          {currentView === 'overview' && 'Executive Overview'}
-          {currentView === 'personnel' && 'Personnel Vault'}
-          {currentView === 'documents' && 'Document Center'}
-          {currentView === 'blueprints' && 'Operational Blueprints'}
-          {currentView === 'settings' && 'Facility Settings'}
-        </h1>
+      <header className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
+            DHS Regulatory Engine
+          </p>
+          <h1 className="text-5xl font-bold tracking-tight text-slate-900">
+            {currentView === 'overview' && 'Executive Overview'}
+            {currentView === 'personnel' && 'Personnel Vault'}
+            {currentView === 'documents' && 'Document Center'}
+            {currentView === 'blueprints' && 'Operational Blueprints'}
+            {currentView === 'settings' && 'Facility Settings'}
+          </h1>
+        </div>
+
+        <button
+          onClick={async () => {
+            if (!selectedFacilityId || selectedFacilityId === 'all') return;
+            setGeneratingReport(true);
+            try {
+              await generateAuditReport(selectedFacilityId);
+            } catch (err) {
+              console.error('PDF generation failed:', err);
+              alert('❌ Failed to generate audit report. Please try again.');
+            } finally {
+              setGeneratingReport(false);
+            }
+          }}
+          disabled={generatingReport}
+          className={`flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-sm border-2 transition-all shrink-0 ${
+            generatingReport
+              ? 'border-slate-300 bg-slate-100 text-slate-400 cursor-not-allowed'
+              : 'border-indigo-300 bg-white text-indigo-700 hover:bg-indigo-50 hover:border-indigo-400 shadow-sm'
+          }`}
+        >
+          {generatingReport ? (
+            <>
+              <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+              Generating PDF…
+            </>
+          ) : (
+            <>
+              📄 Generate Audit Report
+            </>
+          )}
+        </button>
       </header>
 
       {currentView === 'overview' && (
@@ -6958,6 +7167,43 @@ export default function DashboardPage() {
                   ` • Updated ${new Date(compliance.enrollmentUpdatedAt).toLocaleDateString()}`}
               </p>
             </div>
+
+            {/* Operational Metric Badges */}
+            {(() => {
+              const capUtil =
+                compliance.capacity != null &&
+                compliance.capacity > 0 &&
+                compliance.activeEnrollment != null
+                  ? Math.round(
+                      (compliance.activeEnrollment / compliance.capacity) * 100
+                    )
+                  : null;
+              const ratio =
+                compliance.activeEnrollment != null && compliance.totalPersonnel > 0
+                  ? `1 : ${(compliance.activeEnrollment / compliance.totalPersonnel).toFixed(1)}`
+                  : null;
+
+              if (capUtil == null && ratio == null) return null;
+
+              return (
+                <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-slate-100">
+                  {capUtil != null && (
+                    <span
+                      className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full ${
+                        capUtil > 95 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      📊 Utilization: {capUtil}%{capUtil > 95 ? ' ⚠️' : ''}
+                    </span>
+                  )}
+                  {ratio && (
+                    <span className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">
+                      👥 Gross Ratio: {ratio}
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           <ComplianceDashboardClient
@@ -6979,17 +7225,378 @@ export default function DashboardPage() {
 }
 </file>
 
+<file path="src/lib/reg-monitor.ts">
+// src/lib/reg-monitor.ts
+import { createAdminClient } from 'src/app/utils/supabase/admin';
+import type {
+  ComplianceRule,
+  ComplianceFrequency,
+  DocumentComplianceStatus,
+  Facility,
+  FacilityToggleKey,
+  IdentifiedGap,
+  RegulatoryStatus,
+  ScoreCategory,
+} from './types';
+import { FACILITY_TOGGLE_KEYS } from './types';
+
+/**
+ * String normalization helper for resilient fuzzy matching against uploaded documents.
+ */
+function normalizeDocumentKey(input: string | null | undefined): string {
+  if (!input) return '';
+  return input
+    .toLowerCase()
+    .trim()
+    .replace(/[\s\-]+/g, '_')
+    .replace(/[^a-z0-9_]/g, '');
+}
+
+/**
+ * Fuzzy token matching helper. Returns true if a rule's slug overlaps with an uploaded
+ * document's classified document_type.
+ */
+function tokensMatch(ruleKey: string, docKey: string): boolean {
+  const normalizedRule = normalizeDocumentKey(ruleKey);
+  const normalizedDoc = normalizeDocumentKey(docKey);
+
+  if (!normalizedRule || !normalizedDoc) return false;
+  if (normalizedRule === normalizedDoc) return true;
+  if (normalizedRule.includes(normalizedDoc) || normalizedDoc.includes(normalizedRule)) {
+    return true;
+  }
+
+  const ruleTokens = normalizedRule.split('_').filter((t) => t.length > 2);
+  const docTokens = normalizedDoc.split('_').filter((t) => t.length > 2);
+  const sharedTokens = ruleTokens.filter((token) => docTokens.includes(token));
+  return sharedTokens.length >= 2;
+}
+
+/**
+ * Returns the list of toggle keys that are TRUE on a given facility.
+ * These represent the activated scope flags that a rule's sub_classification can match.
+ */
+function activeToggleKeys(facility: Pick<Facility, FacilityToggleKey>): Set<string> {
+  const activated = new Set<string>();
+  for (const key of FACILITY_TOGGLE_KEYS) {
+    if (facility[key]) activated.add(key);
+  }
+  return activated;
+}
+
+/**
+ * THE SMART FILTER.
+ *
+ * A rule applies to a facility IF:
+ *   - rule.facility_type === facility.facility_type, AND
+ *   - rule.sub_classification IS NULL, OR
+ *   - rule.sub_classification matches a toggle currently set to TRUE on the facility profile.
+ */
+export function ruleAppliesToFacility(
+  rule: Pick<ComplianceRule, 'facility_type' | 'sub_classification'>,
+  facility: Pick<Facility, 'facility_type' | FacilityToggleKey>
+): boolean {
+  if (rule.facility_type !== facility.facility_type) return false;
+  if (
+    rule.sub_classification === null ||
+    rule.sub_classification === undefined ||
+    String(rule.sub_classification) === 'null'
+  ) {
+    return true;
+  }
+  const activated = activeToggleKeys(facility);
+  return activated.has(rule.sub_classification);
+}
+
+/**
+ * Resolve the score category for a rule, gracefully handling legacy `is_personnel_requirement`
+ * rows that have not yet been backfilled with `score_category`.
+ */
+function resolveScoreCategory(rule: Record<string, unknown>): ScoreCategory {
+  const raw = rule.score_category;
+  if (raw === 'facility' || raw === 'personnel') return raw;
+  if (rule.is_personnel_requirement === true) return 'personnel';
+  if (rule.is_personnel_requirement === false) return 'facility';
+  return null;
+}
+
+/**
+ * Resolve whether a rule should be included in the twin-score math, with safe defaults
+ * for rows missing `is_scored` (treat them as scored).
+ */
+function resolveIsScored(rule: Record<string, unknown>): boolean {
+  if (typeof rule.is_scored === 'boolean') return rule.is_scored;
+  return true;
+}
+
+/**
+ * Safely parses a date string to a Date object.
+ * Returns null if the string is missing, empty, or does not produce a valid Date.
+ */
+function safeParseDate(value: string | null | undefined): Date | null {
+  if (!value || typeof value !== 'string') return null;
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Calculates the expiration date for a document.
+ *
+ * Priority:
+ *   1. `aiExpirationDate` — the printed expiration extracted by the AI (YYYY-MM-DD).
+ *   2. Fall back to `createdAt + frequency` calculation if no AI date is available.
+ *
+ * Returns null for frequencies with no defined expiration (e.g. 'ongoing', 'one-time').
+ */
+function calcExpirationDate(
+  createdAt: string,
+  frequency: ComplianceFrequency,
+  aiExpirationDate?: string | null
+): Date | null {
+  // Priority 1: AI-extracted printed expiration date
+  const aiDate = safeParseDate(aiExpirationDate);
+  if (aiDate) return aiDate;
+
+  // Priority 2: calculate from upload date + renewal frequency
+  const created = safeParseDate(createdAt);
+  if (!created) return null;
+
+  const d = new Date(created);
+  switch (frequency) {
+    case 'daily':      d.setDate(d.getDate() + 1); break;
+    case 'weekly':     d.setDate(d.getDate() + 7); break;
+    case 'monthly':    d.setMonth(d.getMonth() + 1); break;
+    case 'quarterly':  d.setMonth(d.getMonth() + 3); break;
+    case 'biannual':   d.setMonth(d.getMonth() + 6); break;
+    case 'annual':     d.setFullYear(d.getFullYear() + 1); break;
+    case '2_years':    d.setFullYear(d.getFullYear() + 2); break;
+    case '3_years':    d.setFullYear(d.getFullYear() + 3); break;
+    case '5_years':    d.setFullYear(d.getFullYear() + 5); break;
+    case '10_years':   d.setFullYear(d.getFullYear() + 10); break;
+    // one-time, ongoing, and unknown frequencies do not expire
+    default:           return null;
+  }
+  return d;
+}
+
+/**
+ * Determines the compliance status of a satisfied requirement based on:
+ *   1. The AI-extracted expiration date stored in `metadata.ai_extracted_expiration` (preferred), OR
+ *   2. The rule's renewal frequency applied to the document's upload date (fallback).
+ */
+function calcComplianceStatus(
+  createdAt: string,
+  frequency: ComplianceFrequency,
+  docMetadata?: Record<string, unknown> | null
+): DocumentComplianceStatus {
+  const aiExpirationDate =
+    typeof docMetadata?.ai_extracted_expiration === 'string'
+      ? docMetadata.ai_extracted_expiration
+      : null;
+
+  const expiration = calcExpirationDate(createdAt, frequency, aiExpirationDate);
+  if (!expiration) return 'satisfied'; // ongoing / one-time — never expires
+
+  const daysUntilExpiry = (expiration.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+
+  if (daysUntilExpiry < 0) return 'expired';
+  if (daysUntilExpiry <= 30) return 'expiring_soon';
+  return 'satisfied';
+}
+
+/**
+ * Reads from our database to calculate twin-score metrics for the dashboard.
+ *
+ * Returns:
+ *   - facilityReadinessScore:    (uploaded documents / total scored rules where score_category === 'facility') * 100
+ *   - personnelReadinessScore:   (uploaded documents / total scored rules where score_category === 'personnel') * 100
+ *   - identifiedGaps:            dynamically filtered list of outstanding rules
+ *   - staffCount, capacity, activeEnrollment, enrollmentUpdatedAt
+ *
+ * The "dumb fetch + smart filter" pattern keeps the UI alive even if Supabase has issues.
+ */
+export async function getRegulatoryStatus(facilityId: string): Promise<RegulatoryStatus> {
+  const supabase = createAdminClient();
+
+  // 1. Fetch the facility profile with capacity, active_enrollment, and ALL scope toggle columns
+  const { data: facility, error: facilityError } = await supabase
+    .from('facilities')
+    .select(
+      [
+        'id',
+        'facility_type',
+        'capacity',
+        'active_enrollment',
+        'enrollment_updated_at',
+        ...FACILITY_TOGGLE_KEYS,
+      ].join(', ')
+    )
+    .eq('id', facilityId)
+    .single();
+
+  if (facilityError || !facility) {
+    console.error('❌ Failed to load facility profile for compliance scoring:', facilityError);
+    return {
+      facilityReadinessScore: 0,
+      personnelReadinessScore: 0,
+      identifiedGaps: [],
+      staffCount: 0,
+      capacity: null,
+      activeEnrollment: null,
+      enrollmentUpdatedAt: null,
+    };
+  }
+
+  const facilityProfile = facility as unknown as Facility;
+
+  // 2. THE DUMB FETCH: pull every rule. We will filter in TypeScript.
+  const { data: allRules, error: rulesError } = await supabase
+    .from('compliance_criteria')
+    .select('*');
+
+  if (rulesError) {
+    console.error('❌ Supabase fetch error on compliance_criteria:', rulesError);
+    // Fail gracefully so dependent UI (staffing math, blueprints) still renders.
+  }
+
+  // 3. THE SMART FILTER: keep rules that match the facility type AND scope toggles.
+  const applicableRules: ComplianceRule[] = (allRules || [])
+    .filter((rule: Record<string, unknown>) =>
+      ruleAppliesToFacility(rule as unknown as ComplianceRule, facilityProfile)
+    )
+    .map((rule: Record<string, unknown>) => ({
+      id: rule.id as string,
+      facility_type: rule.facility_type as ComplianceRule['facility_type'],
+      sub_classification: (rule.sub_classification ?? null) as ComplianceRule['sub_classification'],
+      requirement_name: (rule.requirement_name as string) ?? '',
+      required_document_type: (rule.required_document_type as string) ?? '',
+      severity: ((rule.severity as ComplianceRule['severity']) ?? 'standard'),
+      frequency: (rule.frequency as ComplianceRule['frequency']) ?? 'annual',
+      is_scored: resolveIsScored(rule),
+      score_category: resolveScoreCategory(rule),
+    }));
+
+  console.log(
+    `📋 Compliance Engine: ${allRules?.length ?? 0} total rules → ${applicableRules.length} applicable for ${facilityProfile.facility_type}.`
+  );
+
+  // 4. Fetch approved facility documents to compute satisfied requirements.
+  const { data: uploadedDocs } = await supabase
+    .from('facility_documents')
+    .select('id, document_type, status, created_at, metadata')
+    .eq('facility_id', facilityId)
+    .eq('status', 'approved')
+    .order('created_at', { ascending: false }); // newest first so we pick the freshest match
+
+  type UploadedDoc = {
+    id: string;
+    document_type: string | null;
+    status: string;
+    created_at: string;
+    metadata: Record<string, unknown> | null;
+  };
+  const docs: UploadedDoc[] = (uploadedDocs || []) as UploadedDoc[];
+
+  // Map from rule id → the best matching document (most recent)
+  const satisfiedRuleMap = new Map<string, { docId: string; createdAt: string; status: DocumentComplianceStatus }>();
+
+  for (const rule of applicableRules) {
+    const matchingDoc = docs.find(
+      (d) => d.document_type && tokensMatch(rule.required_document_type, d.document_type)
+    );
+    if (matchingDoc) {
+      const status = calcComplianceStatus(matchingDoc.created_at, rule.frequency, matchingDoc.metadata);
+      satisfiedRuleMap.set(rule.id, {
+        docId: matchingDoc.id,
+        createdAt: matchingDoc.created_at,
+        status,
+      });
+    }
+  }
+
+  // A rule is "satisfied enough" for score purposes if the doc exists (even if expired/expiring)
+  const satisfiedRuleIds = new Set(satisfiedRuleMap.keys());
+
+  // 5. THE TWIN-SCORE MATH: separate buckets for facility vs. personnel rules.
+  //    Daily-frequency rules are operational expectations, not verifiable upload events —
+  //    they are intentionally excluded from both score buckets.
+  const facilityScoredRules = applicableRules.filter(
+    (r) => r.is_scored && r.score_category === 'facility' && r.frequency !== 'daily'
+  );
+  const personnelScoredRules = applicableRules.filter(
+    (r) => r.is_scored && r.score_category === 'personnel' && r.frequency !== 'daily'
+  );
+
+  const facilityVerified = facilityScoredRules.filter((r) => satisfiedRuleIds.has(r.id)).length;
+  const personnelVerified = personnelScoredRules.filter((r) => satisfiedRuleIds.has(r.id)).length;
+
+  const facilityReadinessScore =
+    facilityScoredRules.length > 0
+      ? Math.round((facilityVerified / facilityScoredRules.length) * 100)
+      : 100;
+
+  const personnelReadinessScore =
+    personnelScoredRules.length > 0
+      ? Math.round((personnelVerified / personnelScoredRules.length) * 100)
+      : 100;
+
+  console.log(
+    `📊 Twin-Score → Facility: ${facilityVerified}/${facilityScoredRules.length} = ${facilityReadinessScore}% | Personnel: ${personnelVerified}/${personnelScoredRules.length} = ${personnelReadinessScore}%`
+  );
+
+  // 6. Build the gap list for the UI.
+  //    Daily-frequency rules are surfaced only in the Operational Blueprints reference manual,
+  //    never as compliance gaps — so they are excluded here.
+  //    Rules with an existing (possibly expired) document are still included so the user
+  //    can see their expiration status and replace the document if needed.
+  const identifiedGaps: IdentifiedGap[] = applicableRules
+    .filter((rule) => rule.frequency !== 'daily')
+    .map((rule) => {
+      const satisfaction = satisfiedRuleMap.get(rule.id);
+      return {
+        id: rule.id,
+        name: rule.requirement_name,
+        typeKey: rule.required_document_type,
+        severity: rule.severity,
+        frequency: rule.frequency,
+        is_scored: rule.is_scored,
+        score_category: rule.score_category,
+        compliance_status: satisfaction ? satisfaction.status : 'missing',
+        document_id: satisfaction?.docId,
+        document_created_at: satisfaction?.createdAt,
+      };
+    });
+
+  // 7. Active staff count for the personnel headcount widget.
+  const { count: personnelCount } = await supabase
+    .from('personnel')
+    .select('*', { count: 'exact', head: true })
+    .eq('facility_id', facilityId)
+    .eq('status', 'active');
+
+  return {
+    facilityReadinessScore,
+    personnelReadinessScore,
+    identifiedGaps,
+    staffCount: personnelCount ?? 0,
+    capacity: facilityProfile.capacity ?? null,
+    activeEnrollment: facilityProfile.active_enrollment ?? null,
+    enrollmentUpdatedAt: facilityProfile.enrollment_updated_at ?? null,
+  };
+}
+</file>
+
 <file path="src/app/actions/compliance.ts">
 // src/app/actions/compliance.ts
 'use server';
 
 import { createAdminClient } from 'src/app/utils/supabase/admin';
 import { createClient } from 'src/app/utils/supabase/server';
-import { getRegulatoryStatus } from '@/lib/reg-monitor';
+import { getRegulatoryStatus, ruleAppliesToFacility } from '@/lib/reg-monitor';
 import { createHash } from 'crypto';
 import { headers } from 'next/headers';
 import { revalidatePath } from 'next/cache';
-import type { FacilityScopeToggles, FacilityType, IdentifiedGap } from '@/lib/types';
+import type { ComplianceRule, Facility, FacilityScopeToggles, FacilityType, IdentifiedGap } from '@/lib/types';
 import { FACILITY_TOGGLE_KEYS } from '@/lib/types';
 
 // =============================================================================
@@ -7042,6 +7649,7 @@ type AuditActionType =
   | 'enrollment_update'
   | 'bulk_attestation'
   | 'blueprints_attestation'
+  | 'operational_acknowledgment'
   | 'facility_settings_update'
   | 'facility_archived';
 
@@ -7153,6 +7761,7 @@ export async function recordDocumentUpload(params: {
   fileHash: string;
   userAttestation: boolean;
   personnelId?: string;
+  aiExpirationDate?: string;
 }) {
   try {
     const { userId, orgId } = await getAuthenticatedUserContext();
@@ -7177,6 +7786,9 @@ export async function recordDocumentUpload(params: {
     };
     if (params.personnelId) {
       metadata.personnel_id = params.personnelId;
+    }
+    if (params.aiExpirationDate) {
+      metadata.ai_extracted_expiration = params.aiExpirationDate;
     }
 
     const { error: updateError } = await supabase
@@ -7449,6 +8061,169 @@ export async function attestDailyBlueprints(facilityId: string, comment: string 
     const message = error instanceof Error ? error.message : 'Unknown error';
     console.error('❌ attestDailyBlueprints failure:', message);
     return { success: false, error: message };
+  }
+}
+
+// =============================================================================
+// OPERATIONAL BLUEPRINTS
+// =============================================================================
+
+export type BlueprintRule = {
+  id: string;
+  name: string;
+  typeKey: string;
+  severity: 'critical' | 'standard';
+  frequency: string;
+  is_scored: boolean;
+};
+
+/**
+ * Returns the full list of compliance rules applicable to a facility — used as the
+ * static reference manual in the Operational Blueprints view. Unlike getRegulatoryStatus,
+ * this does NOT compute scores, gap statuses, or document satisfaction. It is read-only.
+ */
+export async function getOperationalBlueprints(facilityId: string): Promise<BlueprintRule[]> {
+  try {
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select(['id', 'org_id', 'facility_type', ...FACILITY_TOGGLE_KEYS].join(', '))
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+
+    const { data: allRules } = await supabase.from('compliance_criteria').select('*');
+
+    return (allRules || [])
+      .filter((rule: Record<string, unknown>) =>
+        ruleAppliesToFacility(
+          rule as unknown as ComplianceRule,
+          facility as unknown as Facility
+        )
+      )
+      .map((rule: Record<string, unknown>) => ({
+        id: rule.id as string,
+        name: (rule.requirement_name as string) ?? '',
+        typeKey: (rule.required_document_type as string) ?? '',
+        severity: ((rule.severity as 'critical' | 'standard') ?? 'standard'),
+        frequency: String(rule.frequency ?? ''),
+        is_scored: typeof rule.is_scored === 'boolean' ? rule.is_scored : true,
+      }));
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('❌ getOperationalBlueprints failure:', message);
+    return [];
+  }
+}
+
+/**
+ * Signs the Operational Acknowledgment for a facility director.
+ * Creates an audit log entry and returns the name-stamped acknowledgment details
+ * so the UI can update immediately without a second fetch.
+ */
+export async function signOperationalAcknowledgment(facilityId: string): Promise<
+  | { success: true; acknowledgment: { created_at: string; user_name: string } }
+  | { success: false; error: string }
+> {
+  try {
+    const { userId, orgId, role } = await getAuthenticatedUserContext();
+
+    if (role !== 'owner' && role !== 'admin' && role !== 'director') {
+      return {
+        success: false,
+        error: 'Only owners, administrators, or directors may sign operational acknowledgments.',
+      };
+    }
+
+    const supabase = createAdminClient();
+
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+
+    // Fetch the user's display name to embed in the response (createAuditLog also fetches it
+    // internally; this avoids a second round-trip by caching the value here).
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', userId)
+      .single();
+
+    const userName = (profile?.full_name as string | null) ?? 'Unknown User';
+    const now = new Date().toISOString();
+
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'operational_acknowledgment',
+      metadata: {
+        acknowledged_at: now,
+        acknowledgment_text:
+          'I acknowledge that maintaining these operational standards is my responsibility as the facility director.',
+      },
+    });
+
+    revalidatePath('/dashboard');
+    return { success: true, acknowledgment: { created_at: now, user_name: userName } };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('❌ signOperationalAcknowledgment failure:', message);
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Retrieves the most recent Operational Acknowledgment for a facility.
+ * Returns null if none has ever been signed.
+ */
+export async function getLatestOperationalAcknowledgment(
+  facilityId: string
+): Promise<{ created_at: string; user_name: string } | null> {
+  try {
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    // Verify org ownership before exposing audit data
+    const { data: facility } = await supabase
+      .from('facilities')
+      .select('id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .maybeSingle();
+
+    if (!facility) return null;
+
+    const { data: log } = await supabase
+      .from('audit_logs')
+      .select('created_at, metadata')
+      .eq('facility_id', facilityId)
+      .eq('action_type', 'operational_acknowledgment')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!log) return null;
+
+    const metadata = (log.metadata as Record<string, unknown> | null) ?? {};
+    const userName =
+      typeof metadata.user_name === 'string' ? metadata.user_name : 'Unknown User';
+
+    return { created_at: log.created_at as string, user_name: userName };
+  } catch {
+    return null;
   }
 }
 
@@ -7858,6 +8633,81 @@ export async function getDocumentsData(facilityId: string) {
   }
 }
 
+/**
+ * Generates a temporary signed URL for a facility document stored in Supabase Storage.
+ * The URL is valid for 5 minutes. Also returns the document's metadata so the viewer
+ * can display AI-extracted fields (e.g. expiration date, upload source).
+ *
+ * Authorization: owner, admin, or the director specifically assigned to this facility.
+ */
+export async function getSecureDocumentUrl(
+  documentId: string,
+  facilityId: string
+): Promise<
+  | { success: true; url: string | null; metadata: Record<string, unknown> | null }
+  | { success: false; error: string }
+> {
+  try {
+    const { userId, orgId, role } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    // Verify the facility belongs to this org
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id, director_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+
+    if (facilityError || !facility) {
+      return { success: false, error: 'Unauthorized: Facility not found or does not belong to your organization' };
+    }
+
+    // Directors may only access documents from their own assigned facility
+    const fac = facility as Record<string, unknown>;
+    if (role === 'director' && fac.director_id !== userId) {
+      return { success: false, error: 'Unauthorized: You are not the assigned director of this facility' };
+    }
+
+    // Fetch the document record to get the storage path
+    const { data: document, error: docError } = await supabase
+      .from('facility_documents')
+      .select('id, file_url, metadata')
+      .eq('id', documentId)
+      .eq('facility_id', facilityId)
+      .single();
+
+    if (docError || !document) {
+      return { success: false, error: 'Document not found or does not belong to this facility' };
+    }
+
+    const doc = document as Record<string, unknown>;
+    const fileUrl = typeof doc.file_url === 'string' ? doc.file_url : null;
+    const metadata = (doc.metadata as Record<string, unknown> | null) ?? null;
+
+    // Attestation / N/A records have no physical file attachment
+    if (!fileUrl) {
+      return { success: true, url: null, metadata };
+    }
+
+    // Generate a 5-minute signed URL — long enough to read a PDF comfortably
+    const { data: signedData, error: signedError } = await supabase.storage
+      .from('facility-documents')
+      .createSignedUrl(fileUrl, 300);
+
+    if (signedError || !signedData?.signedUrl) {
+      console.error('❌ Storage signed URL generation failed:', signedError);
+      return { success: false, error: 'Failed to generate secure document URL' };
+    }
+
+    return { success: true, url: signedData.signedUrl, metadata };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('❌ getSecureDocumentUrl failure:', message);
+    return { success: false, error: message };
+  }
+}
+
 export async function deleteDocumentRecord(documentId: string) {
   try {
     const { userId, orgId } = await getAuthenticatedUserContext();
@@ -7948,12 +8798,30 @@ export async function getAllFacilitiesOverview() {
       facilityRows.map(async (facility) => {
         try {
           const compliance = await getRegulatoryStatus(facility.id as string);
+
+          const activeStaffCount = compliance.staffCount;
+          const enrollment = facility.active_enrollment as number | null;
+          const cap = facility.capacity as number | null;
+
+          const capacity_utilization =
+            cap != null && cap > 0 && enrollment != null
+              ? Math.round((enrollment / cap) * 100)
+              : undefined;
+
+          const gross_ratio =
+            enrollment != null && activeStaffCount > 0
+              ? `1 : ${(enrollment / activeStaffCount).toFixed(1)}`
+              : undefined;
+
           return {
             ...facility,
             facilityReadinessScore: compliance.facilityReadinessScore,
             personnelReadinessScore: compliance.personnelReadinessScore,
-            totalPersonnel: compliance.staffCount,
+            totalPersonnel: activeStaffCount,
             gapsCount: compliance.identifiedGaps.length,
+            active_staff_count: activeStaffCount,
+            capacity_utilization,
+            gross_ratio,
           };
         } catch (innerError) {
           console.error('❌ Error fetching compliance for facility', facility.id, innerError);
@@ -7963,6 +8831,9 @@ export async function getAllFacilitiesOverview() {
             personnelReadinessScore: 0,
             totalPersonnel: 0,
             gapsCount: 0,
+            active_staff_count: 0,
+            capacity_utilization: undefined,
+            gross_ratio: undefined,
           };
         }
       })

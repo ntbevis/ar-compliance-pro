@@ -252,12 +252,13 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
     `📋 Compliance Engine: ${allRules?.length ?? 0} total rules → ${applicableRules.length} applicable for ${facilityProfile.facility_type}.`
   );
 
-  // 4. Fetch approved facility documents to compute satisfied requirements.
+  // 4. Fetch approved AND pending facility documents to compute satisfied requirements.
+  //    Pending documents surface as 'pending_review' and do not count toward the score.
   const { data: uploadedDocs } = await supabase
     .from('facility_documents')
     .select('id, document_type, status, created_at, metadata')
     .eq('facility_id', facilityId)
-    .eq('status', 'approved')
+    .in('status', ['approved', 'pending'])
     .order('created_at', { ascending: false }); // newest first so we pick the freshest match
 
   type UploadedDoc = {
@@ -277,7 +278,10 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
       (d) => d.document_type && tokensMatch(rule.required_document_type, d.document_type)
     );
     if (matchingDoc) {
-      const status = calcComplianceStatus(matchingDoc.created_at, rule.frequency, matchingDoc.metadata);
+      // Pending documents are awaiting human review — surface as 'pending_review' without scoring.
+      const status: DocumentComplianceStatus = matchingDoc.status === 'pending'
+        ? 'pending_review'
+        : calcComplianceStatus(matchingDoc.created_at, rule.frequency, matchingDoc.metadata);
       satisfiedRuleMap.set(rule.id, {
         docId: matchingDoc.id,
         createdAt: matchingDoc.created_at,
@@ -299,8 +303,13 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
     (r) => r.is_scored && r.score_category === 'personnel' && r.frequency !== 'daily'
   );
 
-  const facilityVerified = facilityScoredRules.filter((r) => satisfiedRuleIds.has(r.id)).length;
-  const personnelVerified = personnelScoredRules.filter((r) => satisfiedRuleIds.has(r.id)).length;
+  // Pending-review docs do not grant compliance points — they are awaiting human approval.
+  const facilityVerified = facilityScoredRules.filter(
+    (r) => satisfiedRuleIds.has(r.id) && satisfiedRuleMap.get(r.id)?.status !== 'pending_review'
+  ).length;
+  const personnelVerified = personnelScoredRules.filter(
+    (r) => satisfiedRuleIds.has(r.id) && satisfiedRuleMap.get(r.id)?.status !== 'pending_review'
+  ).length;
 
   const facilityReadinessScore =
     facilityScoredRules.length > 0

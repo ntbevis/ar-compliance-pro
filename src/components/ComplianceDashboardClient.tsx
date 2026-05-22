@@ -105,6 +105,18 @@ function StatusBadge({
       </button>
     );
   }
+  if (status === 'pending_review') {
+    return (
+      <span
+        onClick={onClick}
+        className="text-xs font-medium px-2.5 py-1 rounded-md bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors cursor-pointer"
+        title="Awaiting human review — click to view document"
+        role="button"
+      >
+        ⏳ Pending Review
+      </span>
+    );
+  }
   return null;
 }
 
@@ -170,12 +182,14 @@ function DocManagementModal({
     expiring_soon: 'Expiring Soon',
     expired: 'Expired',
     missing: 'Missing',
+    pending_review: 'Pending Review',
   };
   const statusColor: Record<DocumentComplianceStatus, string> = {
     satisfied: 'text-emerald-700 bg-emerald-100',
     expiring_soon: 'text-amber-700 bg-amber-100',
     expired: 'text-rose-700 bg-rose-100',
     missing: 'text-slate-700 bg-slate-100',
+    pending_review: 'text-blue-700 bg-blue-100',
   };
 
   return (
@@ -377,6 +391,8 @@ export default function ComplianceDashboardClient({
     detectedType: string;
     confidence: number;
     reason: string;
+    gap: DashboardGap;
+    file: File;
   } | null>(null);
 
   // Scored rules partitioned by category
@@ -468,6 +484,8 @@ export default function ComplianceDashboardClient({
           detectedType: aiResult.object.detected_document_type,
           confidence: aiResult.object.confidence_score,
           reason: aiResult.object.rejection_reason ?? 'The document did not match the requirement.',
+          gap,
+          file,
         });
         return;
       }
@@ -581,6 +599,70 @@ export default function ComplianceDashboardClient({
     }
   };
 
+  // ── Submit for human review (after AI rejection) ─────────────────────────
+
+  const handleSubmitForReview = async () => {
+    if (!rejectionModal) return;
+    const { gap, file } = rejectionModal;
+
+    setRejectionModal(null);
+    setUploadingId(gap.id);
+    try {
+      const documentId = crypto.randomUUID();
+      const fileExtension = file.name.split('.').pop()?.toLowerCase() ?? 'bin';
+      const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
+
+      const { error: storageError } = await supabase.storage
+        .from('facility-documents')
+        .upload(storagePath, file);
+      if (storageError) throw storageError;
+
+      const { error: insertError } = await supabase.from('facility_documents').insert({
+        id: documentId,
+        facility_id: facilityId,
+        document_type: gap.typeKey,
+        status: 'pending',
+        file_url: storagePath,
+        name: file.name,
+        metadata: {
+          upload_source: 'compliance_checklist',
+          pending_reason: 'AI verification failed — submitted for human review',
+        },
+      });
+      if (insertError) throw insertError;
+
+      const buffer = await file.arrayBuffer();
+      const base64 = Buffer.from(buffer).toString('base64');
+      const fileHash = await hashFileBuffer(base64);
+
+      await recordDocumentUpload({
+        facilityId,
+        documentId,
+        documentType: gap.typeKey,
+        fileName: file.name,
+        fileSize: file.size,
+        fileHash,
+        userAttestation,
+        status: 'pending',
+      });
+
+      // Immediately reflect pending_review in the local gap state
+      setGaps((prev) =>
+        prev.map((g) =>
+          g.id === gap.id
+            ? { ...g, compliance_status: 'pending_review', document_id: documentId }
+            : g
+        )
+      );
+      router.refresh();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      alert(`❌ Submit for review failed: ${message}`);
+    } finally {
+      setUploadingId(null);
+    }
+  };
+
   // ── Row renderer ──────────────────────────────────────────────────────────
 
   const renderGapRow = (gap: DashboardGap) => {
@@ -678,17 +760,19 @@ export default function ComplianceDashboardClient({
                   }}
                 />
               </label>
-              <button
-                onClick={() => handleSignAttestation(gap)}
-                disabled={!userAttestation}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
-                  userAttestation
-                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                    : 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                }`}
-              >
-                Sign Attestation
-              </button>
+              {gap.severity !== 'critical' && (
+                <button
+                  onClick={() => handleSignAttestation(gap)}
+                  disabled={!userAttestation}
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
+                    userAttestation
+                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                      : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                  }`}
+                >
+                  Sign Attestation
+                </button>
+              )}
               <button
                 onClick={() => handleMarkNotApplicable(gap)}
                 disabled={!userAttestation}
@@ -750,14 +834,22 @@ export default function ComplianceDashboardClient({
                 <p className="text-sm text-rose-900 leading-relaxed">{rejectionModal.reason}</p>
               </div>
               <p className="text-xs text-slate-500 italic">
-                Please upload the correct document and try again. If you believe this is an error, use &ldquo;Sign Attestation&rdquo; to manually certify compliance.
+                Please upload the correct document and try again. If you believe this is an error, use &ldquo;Sign Attestation&rdquo; to manually certify compliance, or submit the document for human review.
               </p>
-              <button
-                onClick={() => setRejectionModal(null)}
-                className="w-full px-4 py-2.5 bg-slate-800 text-white rounded-lg font-medium hover:bg-slate-700 transition-colors"
-              >
-                Dismiss & Try Again
-              </button>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  onClick={() => setRejectionModal(null)}
+                  className="flex-1 px-4 py-2.5 bg-slate-800 text-white rounded-lg font-medium hover:bg-slate-700 transition-colors"
+                >
+                  Dismiss &amp; Try Again
+                </button>
+                <button
+                  onClick={handleSubmitForReview}
+                  className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors"
+                >
+                  ⏳ Submit for Human Review
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -251,16 +251,49 @@ export default function DashboardPage() {
   if (currentView === 'audit_logs') {
     return (
       <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700">
-        <header className="mb-6">
-          <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
-            DHS Regulatory Engine
-          </p>
-          <h1 className="text-4xl font-bold tracking-tight text-slate-900 mb-2">
-            Audit Trail &amp; Compliance Logs
-          </h1>
-          <p className="text-slate-600 text-sm">
-            Immutable log of every compliance action across the organization.
-          </p>
+        <header className="mb-6 flex items-start justify-between flex-wrap gap-4">
+          <div>
+            <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
+              DHS Regulatory Engine
+            </p>
+            <h1 className="text-4xl font-bold tracking-tight text-slate-900 mb-2">
+              Audit Trail &amp; Compliance Logs
+            </h1>
+            <p className="text-slate-600 text-sm">
+              Immutable log of every compliance action across the organization.
+            </p>
+          </div>
+
+          {selectedFacilityId && selectedFacilityId !== 'all' && (
+            <button
+              onClick={async () => {
+                setGeneratingReport(true);
+                try {
+                  await generateAuditReport(selectedFacilityId);
+                } catch (err) {
+                  console.error('PDF generation failed:', err);
+                  alert('❌ Failed to generate audit report. Please try again.');
+                } finally {
+                  setGeneratingReport(false);
+                }
+              }}
+              disabled={generatingReport}
+              className={`flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-sm border-2 transition-all shrink-0 ${
+                generatingReport
+                  ? 'border-slate-300 bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'border-indigo-300 bg-white text-indigo-700 hover:bg-indigo-50 hover:border-indigo-400 shadow-sm'
+              }`}
+            >
+              {generatingReport ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                  Generating PDF…
+                </>
+              ) : (
+                <>📄 Generate Audit Report</>
+              )}
+            </button>
+          )}
         </header>
 
         <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm max-w-6xl mx-auto text-slate-800">
@@ -809,51 +842,17 @@ export default function DashboardPage() {
 
   return (
     <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
-      <header className="flex items-end justify-between gap-4 flex-wrap">
-        <div>
-          <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
-            DHS Regulatory Engine
-          </p>
-          <h1 className="text-5xl font-bold tracking-tight text-slate-900">
-            {currentView === 'overview' && 'Executive Overview'}
-            {currentView === 'personnel' && 'Personnel Vault'}
-            {currentView === 'documents' && 'Document Center'}
-            {currentView === 'blueprints' && 'Operational Blueprints'}
-            {currentView === 'settings' && 'Facility Settings'}
-          </h1>
-        </div>
-
-        <button
-          onClick={async () => {
-            if (!selectedFacilityId || selectedFacilityId === 'all') return;
-            setGeneratingReport(true);
-            try {
-              await generateAuditReport(selectedFacilityId);
-            } catch (err) {
-              console.error('PDF generation failed:', err);
-              alert('❌ Failed to generate audit report. Please try again.');
-            } finally {
-              setGeneratingReport(false);
-            }
-          }}
-          disabled={generatingReport}
-          className={`flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-sm border-2 transition-all shrink-0 ${
-            generatingReport
-              ? 'border-slate-300 bg-slate-100 text-slate-400 cursor-not-allowed'
-              : 'border-indigo-300 bg-white text-indigo-700 hover:bg-indigo-50 hover:border-indigo-400 shadow-sm'
-          }`}
-        >
-          {generatingReport ? (
-            <>
-              <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
-              Generating PDF…
-            </>
-          ) : (
-            <>
-              📄 Generate Audit Report
-            </>
-          )}
-        </button>
+      <header className="mb-2">
+        <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
+          DHS Regulatory Engine
+        </p>
+        <h1 className="text-5xl font-bold tracking-tight text-slate-900">
+          {currentView === 'overview' && 'Executive Overview'}
+          {currentView === 'personnel' && 'Personnel Vault'}
+          {currentView === 'documents' && 'Document Center'}
+          {currentView === 'blueprints' && 'Operational Blueprints'}
+          {currentView === 'settings' && 'Facility Settings'}
+        </h1>
       </header>
 
       {currentView === 'overview' && (

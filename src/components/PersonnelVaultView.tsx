@@ -157,6 +157,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     detectedType: string;
     confidence: number;
     reason: string;
+    req: RoleRequirement;
+    personnelId: string;
+    file: File;
   } | null>(null);
 
   // Document management modal state
@@ -284,7 +287,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
           meta &&
           meta.personnel_id === personnelId &&
           doc.document_type === typeKey &&
-          doc.status === 'approved'
+          (doc.status === 'approved' || doc.status === 'pending')
         );
       }) ?? null
     );
@@ -307,6 +310,64 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       }
     } finally {
       setDeletingDoc(false);
+    }
+  };
+
+  const handlePersonnelSubmitForReview = async () => {
+    if (!personnelRejectionModal) return;
+    const { req, personnelId, file } = personnelRejectionModal;
+
+    setPersonnelRejectionModal(null);
+    setUploadingReqId(req.id);
+    try {
+      const documentId = crypto.randomUUID();
+      const fileExtension = file.name.split('.').pop()?.toLowerCase() ?? 'bin';
+      const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
+
+      const { error: storageError } = await supabase.storage
+        .from('facility-documents')
+        .upload(storagePath, file);
+      if (storageError) throw storageError;
+
+      const { error: insertError } = await supabase.from('facility_documents').insert({
+        id: documentId,
+        facility_id: facilityId,
+        document_type: req.typeKey,
+        status: 'pending',
+        file_url: storagePath,
+        name: file.name,
+        metadata: {
+          upload_source: 'personnel_vault',
+          personnel_id: personnelId,
+          pending_reason: 'AI verification failed — submitted for human review',
+        },
+      });
+      if (insertError) throw insertError;
+
+      const buffer = await file.arrayBuffer();
+      const base64 = Buffer.from(buffer).toString('base64');
+      const fileHash = await hashFileBuffer(base64);
+
+      await recordDocumentUpload({
+        facilityId,
+        documentId,
+        documentType: req.typeKey,
+        fileName: file.name,
+        fileSize: file.size,
+        fileHash,
+        userAttestation,
+        personnelId,
+        status: 'pending',
+      });
+
+      const refreshedDocs = (await getPersonnelDocuments(facilityId)) as PersonnelDocument[];
+      setPersonnelDocuments(refreshedDocs);
+      router.refresh();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      alert(`❌ Submit for review failed: ${message}`);
+    } finally {
+      setUploadingReqId(null);
     }
   };
 
@@ -337,6 +398,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
           detectedType: aiResult.object.detected_document_type,
           confidence: aiResult.object.confidence_score,
           reason: aiResult.object.rejection_reason ?? 'The document did not match the requirement.',
+          req: requirement,
+          personnelId,
+          file,
         });
         return;
       }
@@ -547,14 +611,22 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                 </p>
               </div>
               <p className="text-xs text-slate-500 italic">
-                Please upload the correct document and try again. If you believe this is an error, use &ldquo;Attest&rdquo; to manually certify compliance.
+                Please upload the correct document and try again. If you believe this is an error, use &ldquo;Attest&rdquo; to manually certify compliance, or submit for human review.
               </p>
-              <button
-                onClick={() => setPersonnelRejectionModal(null)}
-                className="w-full px-4 py-2.5 bg-slate-800 text-white rounded-lg font-medium hover:bg-slate-700 transition-colors"
-              >
-                Dismiss &amp; Try Again
-              </button>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  onClick={() => setPersonnelRejectionModal(null)}
+                  className="flex-1 px-4 py-2.5 bg-slate-800 text-white rounded-lg font-medium hover:bg-slate-700 transition-colors"
+                >
+                  Dismiss &amp; Try Again
+                </button>
+                <button
+                  onClick={handlePersonnelSubmitForReview}
+                  className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors"
+                >
+                  ⏳ Submit for Human Review
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -964,7 +1036,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                         {requirements.map((req) => {
                           const matchingDoc = getMatchingPersonnelDoc(person.id, req.typeKey);
                           const complianceStatus: DocumentComplianceStatus = matchingDoc
-                            ? calcPersonnelComplianceStatus(matchingDoc.created_at, req.frequency, matchingDoc.metadata)
+                            ? matchingDoc.status === 'pending'
+                              ? 'pending_review'
+                              : calcPersonnelComplianceStatus(matchingDoc.created_at, req.frequency, matchingDoc.metadata)
                             : 'missing';
                           const isMissing = complianceStatus === 'missing';
                           const isVerifyingThis = verifyingReqId === req.id;
@@ -975,16 +1049,18 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                             markingNAReqId === req.id;
 
                           const statusBadgeClass: Record<DocumentComplianceStatus, string> = {
-                            satisfied:     'bg-emerald-100 text-emerald-700 hover:bg-emerald-200',
-                            expiring_soon: 'bg-amber-100 text-amber-700 hover:bg-amber-200',
-                            expired:       'bg-rose-100 text-rose-700 hover:bg-rose-200',
-                            missing:       '',
+                            satisfied:      'bg-emerald-100 text-emerald-700 hover:bg-emerald-200',
+                            expiring_soon:  'bg-amber-100 text-amber-700 hover:bg-amber-200',
+                            expired:        'bg-rose-100 text-rose-700 hover:bg-rose-200',
+                            pending_review: 'bg-blue-100 text-blue-700 hover:bg-blue-200',
+                            missing:        '',
                           };
                           const statusBadgeLabel: Record<DocumentComplianceStatus, string> = {
-                            satisfied:     '✅ Satisfied',
-                            expiring_soon: '🟡 Expiring Soon',
-                            expired:       '🔴 Expired',
-                            missing:       '',
+                            satisfied:      '✅ Satisfied',
+                            expiring_soon:  '🟡 Expiring Soon',
+                            expired:        '🔴 Expired',
+                            pending_review: '⏳ Pending Review',
+                            missing:        '',
                           };
 
                           return (
@@ -1066,17 +1142,19 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                         }}
                                       />
                                     </label>
-                                    <button
-                                      onClick={() => handlePersonnelSignAttestation(person.id, req)}
-                                      disabled={!userAttestation}
-                                      className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all ${
-                                        userAttestation
-                                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                                          : 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                                      }`}
-                                    >
-                                      Attest
-                                    </button>
+                                    {req.severity !== 'critical' && (
+                                      <button
+                                        onClick={() => handlePersonnelSignAttestation(person.id, req)}
+                                        disabled={!userAttestation}
+                                        className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all ${
+                                          userAttestation
+                                            ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                            : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                                        }`}
+                                      >
+                                        Attest
+                                      </button>
+                                    )}
                                     <button
                                       onClick={() => handlePersonnelMarkNA(person.id, req)}
                                       disabled={!userAttestation}
