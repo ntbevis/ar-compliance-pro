@@ -2,6 +2,7 @@
 
 import { useFacility } from 'src/context/FacilityContext';
 import { useEffect, useState } from 'react';
+import toast from 'react-hot-toast';
 import {
   getAllFacilitiesOverview,
   getAuditLogs,
@@ -84,6 +85,8 @@ export default function DashboardPage() {
   const [updatingEnrollment, setUpdatingEnrollment] = useState<boolean>(false);
 
   const [auditLogs, setAuditLogs] = useState<AuditLogRow[]>([]);
+  const [auditPage, setAuditPage] = useState<number>(1);
+  const AUDIT_PAGE_SIZE = 50;
   const [loading, setLoading] = useState<boolean>(true);
 
   const [generatingReport, setGeneratingReport] = useState<boolean>(false);
@@ -129,7 +132,10 @@ export default function DashboardPage() {
           const logs = await getAuditLogs(
             selectedFacilityId !== 'all' ? selectedFacilityId : undefined
           );
-          if (!cancelled) setAuditLogs(logs as AuditLogRow[]);
+          if (!cancelled) {
+            setAuditLogs(logs as AuditLogRow[]);
+            setAuditPage(1);
+          }
           return;
         }
 
@@ -167,7 +173,7 @@ export default function DashboardPage() {
     if (!selectedFacilityId || selectedFacilityId === 'all') return;
     const enrollment = parseInt(enrollmentInput, 10);
     if (Number.isNaN(enrollment) || enrollment < 0) {
-      alert('Please enter a valid enrollment number.');
+      toast.error('Please enter a valid enrollment number.');
       return;
     }
     setUpdatingEnrollment(true);
@@ -176,8 +182,9 @@ export default function DashboardPage() {
       if (result.success) {
         const refreshed = (await getFacilityComplianceData(selectedFacilityId)) as ComplianceData;
         setCompliance(refreshed);
+        toast.success('Enrollment updated.');
       } else {
-        alert(`❌ ${result.error}`);
+        toast.error(result.error ?? 'Failed to update enrollment.');
       }
     } finally {
       setUpdatingEnrollment(false);
@@ -188,7 +195,7 @@ export default function DashboardPage() {
     e.preventDefault();
     const capacity = parseInt(newFacilityForm.capacity, 10);
     if (Number.isNaN(capacity) || capacity < 0) {
-      alert('Please enter a valid capacity number.');
+      toast.error('Please enter a valid capacity number.');
       return;
     }
     setAddingFacility(true);
@@ -211,8 +218,9 @@ export default function DashboardPage() {
         });
         const facilities = (await getAllFacilitiesOverview()) as FacilitySummary[];
         setFacilitiesData(facilities);
+        toast.success('Facility added successfully.');
       } else {
-        alert(`❌ ${result.error}`);
+        toast.error(result.error ?? 'Failed to add facility.');
       }
     } finally {
       setAddingFacility(false);
@@ -228,8 +236,9 @@ export default function DashboardPage() {
       if (result.success) {
         const facilities = (await getAllFacilitiesOverview()) as FacilitySummary[];
         setFacilitiesData(facilities);
+        toast.success('Facility archived.');
       } else {
-        alert(`❌ ${result.error}`);
+        toast.error(result.error ?? 'Failed to archive facility.');
       }
     } finally {
       setArchivingFacilityId(null);
@@ -272,7 +281,7 @@ export default function DashboardPage() {
                   await generateAuditReport(selectedFacilityId);
                 } catch (err) {
                   console.error('PDF generation failed:', err);
-                  alert('❌ Failed to generate audit report. Please try again.');
+                  toast.error('Failed to generate audit report. Please try again.');
                 } finally {
                   setGeneratingReport(false);
                 }
@@ -301,45 +310,99 @@ export default function DashboardPage() {
             <div className="border border-dashed border-slate-200 rounded-xl p-12 text-center italic text-slate-400 text-xs bg-slate-50">
               No audit logs found for the selected scope.
             </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Timestamp</th>
-                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Facility</th>
-                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Action</th>
-                    <th className="text-left py-3 px-4 font-semibold text-slate-700">User</th>
-                    <th className="text-left py-3 px-4 font-semibold text-slate-700">Details</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {auditLogs.map((log) => (
-                    <tr key={log.id} className="hover:bg-slate-50/50">
-                      <td className="py-3 px-4 text-xs text-slate-600 font-mono whitespace-nowrap">
-                        {new Date(log.created_at).toLocaleString()}
-                      </td>
-                      <td className="py-3 px-4 font-medium text-slate-800">{log.facility_name}</td>
-                      <td className="py-3 px-4">
-                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-800">
-                          {log.action_type.replace(/_/g, ' ').toUpperCase()}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="flex flex-col gap-1">
-                          <span className="font-medium text-slate-800">{log.user_name}</span>
-                          <span className="text-xs text-slate-500 uppercase">{log.user_role}</span>
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-xs text-slate-600 max-w-md font-mono">
-                        {JSON.stringify(log.metadata ?? {})}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          ) : (() => {
+            const totalPages = Math.ceil(auditLogs.length / AUDIT_PAGE_SIZE);
+            const paginated = auditLogs.slice((auditPage - 1) * AUDIT_PAGE_SIZE, auditPage * AUDIT_PAGE_SIZE);
+            return (
+              <>
+                <div className="flex items-center justify-between mb-4">
+                  <p className="text-xs text-slate-500">
+                    Showing <span className="font-bold text-slate-700">{(auditPage - 1) * AUDIT_PAGE_SIZE + 1}–{Math.min(auditPage * AUDIT_PAGE_SIZE, auditLogs.length)}</span> of <span className="font-bold text-slate-700">{auditLogs.length}</span> entries
+                  </p>
+                  {totalPages > 1 && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setAuditPage((p) => Math.max(1, p - 1))}
+                        disabled={auditPage === 1}
+                        className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >
+                        ← Prev
+                      </button>
+                      {Array.from({ length: totalPages }, (_, i) => i + 1)
+                        .filter((p) => p === 1 || p === totalPages || Math.abs(p - auditPage) <= 1)
+                        .reduce<(number | 'ellipsis')[]>((acc, p, idx, arr) => {
+                          if (idx > 0 && (arr[idx - 1] as number) < p - 1) acc.push('ellipsis');
+                          acc.push(p);
+                          return acc;
+                        }, [])
+                        .map((item, i) =>
+                          item === 'ellipsis' ? (
+                            <span key={`e-${i}`} className="text-xs text-slate-400 px-1">…</span>
+                          ) : (
+                            <button
+                              key={item}
+                              onClick={() => setAuditPage(item as number)}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                                auditPage === item
+                                  ? 'bg-blue-600 text-white'
+                                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                              }`}
+                            >
+                              {item}
+                            </button>
+                          )
+                        )}
+                      <button
+                        onClick={() => setAuditPage((p) => Math.min(totalPages, p + 1))}
+                        disabled={auditPage === totalPages}
+                        className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >
+                        Next →
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50">
+                        <th className="text-left py-3 px-4 font-semibold text-slate-700">Timestamp</th>
+                        <th className="text-left py-3 px-4 font-semibold text-slate-700">Facility</th>
+                        <th className="text-left py-3 px-4 font-semibold text-slate-700">Action</th>
+                        <th className="text-left py-3 px-4 font-semibold text-slate-700">User</th>
+                        <th className="text-left py-3 px-4 font-semibold text-slate-700">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {paginated.map((log) => (
+                        <tr key={log.id} className="hover:bg-slate-50/50">
+                          <td className="py-3 px-4 text-xs text-slate-600 font-mono whitespace-nowrap">
+                            {new Date(log.created_at).toLocaleString()}
+                          </td>
+                          <td className="py-3 px-4 font-medium text-slate-800">{log.facility_name}</td>
+                          <td className="py-3 px-4">
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-800">
+                              {log.action_type.replace(/_/g, ' ').toUpperCase()}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="flex flex-col gap-1">
+                              <span className="font-medium text-slate-800">{log.user_name}</span>
+                              <span className="text-xs text-slate-500 uppercase">{log.user_role}</span>
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 text-xs text-slate-600 max-w-md font-mono">
+                            {JSON.stringify(log.metadata ?? {})}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            );
+          })()}
         </div>
       </div>
     );

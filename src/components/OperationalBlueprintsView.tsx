@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import toast from 'react-hot-toast';
 import {
   getOperationalBlueprints,
   signOperationalAcknowledgment,
@@ -98,7 +99,7 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
         setLastAck(result.acknowledgment);
         setAcknowledged(false);
       } else {
-        alert(`❌ ${result.error}`);
+        toast.error(result.error ?? 'Failed to save acknowledgment.');
       }
     } finally {
       setSubmitting(false);

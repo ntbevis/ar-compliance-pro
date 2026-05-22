@@ -214,3 +214,43 @@ export async function approveRegistrationRequest(requestId: string) {
     };
   }
 }
+
+/**
+ * Denies a pending registration request.
+ * Marks it as 'denied' in the database — no invite is sent.
+ *
+ * SECURITY: Only accessible by users with 'admin' role.
+ */
+export async function denyRegistrationRequest(requestId: string) {
+  try {
+    const { role } = await getAuthenticatedUserContext();
+    if (role !== 'admin') throw new Error('Forbidden: Admin access required');
+
+    const supabase = createAdminClient();
+
+    const { data: request, error: fetchError } = await supabase
+      .from('registration_requests')
+      .select('business_name, status')
+      .eq('id', requestId)
+      .single();
+
+    if (fetchError || !request) throw new Error('Registration request not found');
+    if (request.status !== 'pending') throw new Error(`Request is already ${request.status}`);
+
+    const { error: updateError } = await supabase
+      .from('registration_requests')
+      .update({ status: 'denied', approved_at: new Date().toISOString() })
+      .eq('id', requestId);
+
+    if (updateError) throw updateError;
+
+    return {
+      success: true,
+      message: `Registration request from ${request.business_name} has been denied.`,
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
+    console.error('❌ Exception in denyRegistrationRequest:', error);
+    return { success: false, error: message };
+  }
+}

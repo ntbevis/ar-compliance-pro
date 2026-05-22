@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import toast from 'react-hot-toast';
 import { createClient } from 'src/app/utils/supabase/client';
 import {
   signAttestation,
@@ -169,7 +170,7 @@ function DocManagementModal({
         onDeleted(gap.id);
         onClose();
       } else {
-        alert(`❌ Delete failed: ${result.error}`);
+        toast.error(`Delete failed: ${result.error}`);
         setConfirming(false);
       }
     } finally {
@@ -461,7 +462,7 @@ export default function ComplianceDashboardClient({
 
   const handleUploadEvidence = async (gap: DashboardGap, file: File) => {
     if (!userAttestation) {
-      alert('⚠️ You must check the legal certification box before uploading.');
+      toast.error('You must check the legal certification box before uploading.');
       return;
     }
 
@@ -538,7 +539,7 @@ export default function ComplianceDashboardClient({
       });
 
       if (!result.success) {
-        alert(`❌ Upload audit log failure: ${result.error}`);
+        toast.error(`Upload audit log failure: ${result.error}`);
         return;
       }
 
@@ -546,7 +547,7 @@ export default function ComplianceDashboardClient({
       router.refresh();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      alert(`❌ Upload failed: ${message}`);
+      toast.error(`Upload failed: ${message}`);
     } finally {
       setVerifyingId(null);
       setUploadingId(null);
@@ -555,7 +556,7 @@ export default function ComplianceDashboardClient({
 
   const handleSignAttestation = async (gap: DashboardGap) => {
     if (!userAttestation) {
-      alert('⚠️ You must check the legal certification box before signing.');
+      toast.error('You must check the legal certification box before signing.');
       return;
     }
     if (!confirm(`Sign digital attestation for: ${gap.name}?`)) return;
@@ -567,7 +568,7 @@ export default function ComplianceDashboardClient({
         markGapCompleted(gap.id, 'attestation');
         router.refresh();
       } else {
-        alert(`❌ Failed to sign attestation: ${result.error}`);
+        toast.error(`Failed to sign attestation: ${result.error}`);
       }
     } finally {
       setSigningAttestationId(null);
@@ -576,12 +577,12 @@ export default function ComplianceDashboardClient({
 
   const handleMarkNotApplicable = async (gap: DashboardGap) => {
     if (!userAttestation) {
-      alert('⚠️ You must check the legal certification box before declaring N/A.');
+      toast.error('You must check the legal certification box before declaring N/A.');
       return;
     }
     const reason = prompt(`Mark "${gap.name}" as Not Applicable. Provide a brief reason:`);
     if (!reason || reason.trim() === '') {
-      alert('⚠️ A reason is required.');
+      toast.error('A reason is required to mark as N/A.');
       return;
     }
 
@@ -592,7 +593,7 @@ export default function ComplianceDashboardClient({
         markGapCompleted(gap.id, 'n/a');
         router.refresh();
       } else {
-        alert(`❌ Failed to mark as N/A: ${result.error}`);
+        toast.error(`Failed to mark as N/A: ${result.error}`);
       }
     } finally {
       setMarkingNAId(null);
@@ -657,7 +658,7 @@ export default function ComplianceDashboardClient({
       router.refresh();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      alert(`❌ Submit for review failed: ${message}`);
+      toast.error(`Submit for review failed: ${message}`);
     } finally {
       setUploadingId(null);
     }

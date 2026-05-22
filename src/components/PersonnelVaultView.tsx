@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import toast from 'react-hot-toast';
 import { createClient } from 'src/app/utils/supabase/client';
 import {
   addPersonnel,
@@ -250,7 +251,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         const refreshed = await getPersonnelData(facilityId);
         setActive(refreshed);
       } else {
-        alert(`❌ ${result.error}`);
+        toast.error(result.error ?? 'Operation failed.');
       }
     } finally {
       setSubmitting(false);
@@ -268,7 +269,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         const sep = await getSeparatedPersonnelData(facilityId);
         setSeparated(sep);
       } else {
-        alert(`❌ ${result.error}`);
+        toast.error(result.error ?? 'Operation failed.');
       }
     } finally {
       setSeparatingId(null);
@@ -305,7 +306,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         setConfirmingDocDelete(false);
         router.refresh();
       } else {
-        alert(`❌ Delete failed: ${result.error}`);
+        toast.error(`Delete failed: ${result.error}`);
         setConfirmingDocDelete(false);
       }
     } finally {
@@ -365,7 +366,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       router.refresh();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      alert(`❌ Submit for review failed: ${message}`);
+      toast.error(`Submit for review failed: ${message}`);
     } finally {
       setUploadingReqId(null);
     }
@@ -377,7 +378,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     file: File
   ) => {
     if (!userAttestation) {
-      alert('⚠️ You must check the legal certification box before uploading.');
+      toast.error('You must check the legal certification box before uploading.');
       return;
     }
 
@@ -454,7 +455,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       });
 
       if (!result.success) {
-        alert(`❌ Upload audit log failure: ${result.error}`);
+        toast.error(`Upload audit log failure: ${result.error}`);
         return;
       }
 
@@ -463,7 +464,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       router.refresh();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      alert(`❌ Upload failed: ${message}`);
+      toast.error(`Upload failed: ${message}`);
     } finally {
       setVerifyingReqId(null);
       setUploadingReqId(null);
@@ -475,7 +476,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     requirement: RoleRequirement
   ) => {
     if (!userAttestation) {
-      alert('⚠️ You must check the legal certification box before signing.');
+      toast.error('You must check the legal certification box before signing.');
       return;
     }
     if (!confirm(`Sign digital attestation for: ${requirement.name}?`)) return;
@@ -488,7 +489,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         setPersonnelDocuments(refreshedDocs);
         router.refresh();
       } else {
-        alert(`❌ Failed to sign attestation: ${result.error}`);
+        toast.error(`Failed to sign attestation: ${result.error}`);
       }
     } finally {
       setSigningReqId(null);
@@ -497,12 +498,12 @@ export default function PersonnelVaultView({ facilityId }: Props) {
 
   const handlePersonnelMarkNA = async (personnelId: string, requirement: RoleRequirement) => {
     if (!userAttestation) {
-      alert('⚠️ You must check the legal certification box before declaring N/A.');
+      toast.error('You must check the legal certification box before declaring N/A.');
       return;
     }
     const reason = prompt(`Mark "${requirement.name}" as Not Applicable. Provide a brief reason:`);
     if (!reason || reason.trim() === '') {
-      alert('⚠️ A reason is required.');
+      toast.error('A reason is required to mark as N/A.');
       return;
     }
 
@@ -520,7 +521,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         setPersonnelDocuments(refreshedDocs);
         router.refresh();
       } else {
-        alert(`❌ Failed to mark as N/A: ${result.error}`);
+        toast.error(`Failed to mark as N/A: ${result.error}`);
       }
     } finally {
       setMarkingNAReqId(null);

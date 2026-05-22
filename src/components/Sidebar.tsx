@@ -3,19 +3,54 @@ import { useFacility, type ViewType } from 'src/context/FacilityContext';
 import FacilitySelector from './FacilitySelector';
 import { useState, useEffect } from 'react';
 import { createClient } from 'src/app/utils/supabase/client';
+import { useRouter } from 'next/navigation';
+
+interface UserProfile {
+  full_name: string | null;
+  role: string;
+}
 
 export default function Sidebar() {
   const { selectedFacilityId, setSelectedFacilityId, currentView, setCurrentView } = useFacility();
   const [facilities, setFacilities] = useState<Array<{ id: string; name: string }>>([]);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const router = useRouter();
 
   useEffect(() => {
-    const fetchFacilities = async () => {
+    const init = async () => {
       const supabase = createClient();
-      const { data } = await supabase.from('facilities').select('id, name');
-      if (data) setFacilities(data);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      // Fetch only this org's facilities using the user's org_id from their profile
+      const { data: profileData } = await supabase
+        .from('profiles')
+        .select('org_id, role, full_name')
+        .eq('id', session.user.id)
+        .single();
+
+      if (profileData) {
+        setProfile({ full_name: profileData.full_name, role: profileData.role });
+
+        if (profileData.org_id) {
+          const { data: facilityData } = await supabase
+            .from('facilities')
+            .select('id, name')
+            .eq('org_id', profileData.org_id)
+            .eq('is_active', true)
+            .order('name');
+          if (facilityData) setFacilities(facilityData);
+        }
+      }
     };
-    fetchFacilities();
+    init();
   }, []);
+
+  const handleSignOut = async () => {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    router.replace('/');
+  };
 
   const isMasterView = selectedFacilityId === 'all' || !selectedFacilityId;
 
@@ -37,6 +72,10 @@ export default function Sidebar() {
       </button>
     );
   };
+
+  const roleLabel = profile?.role
+    ? profile.role.charAt(0).toUpperCase() + profile.role.slice(1)
+    : 'User';
 
   return (
     <aside className="w-64 border-r border-gray-800 flex flex-col bg-black">
@@ -67,11 +106,22 @@ export default function Sidebar() {
 
       <div className="p-4 border-t border-gray-800">
         <div className="flex items-center gap-3 p-2">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600" />
-          <div className="text-xs">
-            <p className="font-bold text-white">Admin User</p>
-            <p className="text-gray-500">Settings</p>
+          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
+            {profile?.full_name?.[0]?.toUpperCase() ?? '?'}
           </div>
+          <div className="text-xs min-w-0 flex-1">
+            <p className="font-bold text-white truncate">
+              {profile?.full_name ?? 'Loading…'}
+            </p>
+            <p className="text-gray-500">{roleLabel}</p>
+          </div>
+          <button
+            onClick={handleSignOut}
+            className="text-gray-600 hover:text-gray-400 transition-colors text-xs shrink-0"
+            title="Sign out"
+          >
+            ↩
+          </button>
         </div>
       </div>
     </aside>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import toast from 'react-hot-toast';
 import { createClient } from 'src/app/utils/supabase/client';
 import {
   deleteDocumentRecord,
@@ -83,7 +84,7 @@ export default function DocumentCenterView({ facilityId }: Props) {
       setDocs(refreshed as DocumentRecord[]);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      alert(`❌ Upload failed: ${message}`);
+      toast.error(`Upload failed: ${message}`);
     } finally {
       setUploading(false);
       e.target.value = '';
@@ -98,7 +99,7 @@ export default function DocumentCenterView({ facilityId }: Props) {
       if (result.success) {
         setDocs((prev) => prev.filter((d) => d.id !== doc.id));
       } else {
-        alert(`❌ ${result.error}`);
+        toast.error(result.error ?? 'Delete failed.');
       }
     } finally {
       setDeletingId(null);

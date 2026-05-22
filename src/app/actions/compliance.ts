@@ -62,6 +62,7 @@ type AuditActionType =
   | 'blueprints_attestation'
   | 'operational_acknowledgment'
   | 'facility_settings_update'
+  | 'facility_profile_update'
   | 'facility_archived';
 
 async function createAuditLog(params: {
@@ -1338,6 +1339,59 @@ export async function updateFacilitySettings(
       userId,
       actionType: 'facility_settings_update',
       metadata: { toggles: sanitized },
+    });
+
+    revalidatePath('/dashboard');
+    return { success: true };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Updates editable core profile fields (name, license_number, capacity) for a facility.
+ * Toggle updates are handled separately by updateFacilitySettings.
+ */
+export async function updateFacilityProfile(
+  facilityId: string,
+  fields: { name?: string; license_number?: string; capacity?: number }
+) {
+  try {
+    const { userId, orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+
+    const update: Record<string, unknown> = {};
+    if (fields.name?.trim()) update.name = fields.name.trim();
+    if (fields.license_number?.trim()) update.license_number = fields.license_number.trim().toUpperCase();
+    if (typeof fields.capacity === 'number' && fields.capacity > 0) update.capacity = fields.capacity;
+
+    if (Object.keys(update).length === 0) {
+      return { success: true };
+    }
+
+    const { error: updateError } = await supabase
+      .from('facilities')
+      .update(update)
+      .eq('id', facilityId);
+
+    if (updateError) return { success: false, error: updateError.message };
+
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'facility_profile_update',
+      metadata: { updated_fields: update },
     });
 
     revalidatePath('/dashboard');

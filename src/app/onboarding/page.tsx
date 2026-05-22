@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import toast from 'react-hot-toast';
 import { getFacilityRequirements } from '@/app/actions/onboarding';
-import { saveOnboardingData, type FacilityPayload } from '@/app/actions/onboarding-save';
+import { saveOnboardingData, isOnboardingComplete, type FacilityPayload } from '@/app/actions/onboarding-save';
 import {
   FACILITY_TOGGLE_LABELS,
   TOGGLES_BY_FACILITY_TYPE,
@@ -48,6 +49,14 @@ export default function OnboardingPage() {
   const router = useRouter();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [loading, setLoading] = useState(false);
+
+  // Completion guard: if this org already has facilities, redirect straight to dashboard
+  useEffect(() => {
+    isOnboardingComplete().then((done) => {
+      if (done) router.replace('/dashboard');
+    }).catch(() => { /* stay on page if check fails */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // --- FORM STATES ---
   const [orgName, setOrgName] = useState('');
@@ -133,9 +142,9 @@ export default function OnboardingPage() {
 
     const result = await saveOnboardingData(orgName, payload);
     if (result.success) {
-      router.push(`/dashboard?orgId=${result.orgId}`);
+      router.push('/dashboard');
     } else {
-      alert(result.error || 'Onboarding pipeline exception.');
+      toast.error(result.error || 'Onboarding failed. Please try again.');
       setLoading(false);
     }
   };
