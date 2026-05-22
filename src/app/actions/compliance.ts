@@ -60,7 +60,8 @@ type AuditActionType =
   | 'enrollment_update'
   | 'bulk_attestation'
   | 'blueprints_attestation'
-  | 'facility_settings_update';
+  | 'facility_settings_update'
+  | 'facility_archived';
 
 async function createAuditLog(params: {
   facilityId: string;
@@ -169,6 +170,7 @@ export async function recordDocumentUpload(params: {
   fileSize: number;
   fileHash: string;
   userAttestation: boolean;
+  personnelId?: string;
 }) {
   try {
     const { userId, orgId } = await getAuthenticatedUserContext();
@@ -186,33 +188,43 @@ export async function recordDocumentUpload(params: {
     }
 
     const auditTimestamp = new Date().toISOString();
+    const metadata: Record<string, unknown> = {
+      auditedAt: auditTimestamp,
+      uploaded_by: userId,
+      user_attestation: params.userAttestation,
+    };
+    if (params.personnelId) {
+      metadata.personnel_id = params.personnelId;
+    }
+
     const { error: updateError } = await supabase
       .from('facility_documents')
       .update({
         status: 'approved',
         document_type: params.documentType,
-        metadata: {
-          auditedAt: auditTimestamp,
-          uploaded_by: userId,
-          user_attestation: params.userAttestation,
-        },
+        metadata,
       })
       .eq('id', params.documentId);
 
     if (updateError) throw updateError;
+
+    const auditMetadata: Record<string, unknown> = {
+      filename: params.fileName,
+      document_id: params.documentId,
+      document_type: params.documentType,
+      file_size: params.fileSize,
+      user_attestation: params.userAttestation,
+    };
+    if (params.personnelId) {
+      auditMetadata.personnel_id = params.personnelId;
+    }
 
     await createAuditLog({
       facilityId: params.facilityId,
       userId,
       actionType: 'document_upload',
       fileHash: params.fileHash,
-      metadata: {
-        filename: params.fileName,
-        document_id: params.documentId,
-        document_type: params.documentType,
-        file_size: params.fileSize,
-        user_attestation: params.userAttestation,
-      },
+      metadata: auditMetadata,
     });
 
     revalidatePath('/dashboard');
@@ -239,7 +251,8 @@ export async function hashFileBuffer(bufferBase64: string): Promise<string> {
 export async function signAttestation(
   facilityId: string,
   requirementId: string,
-  userAttestation: boolean = false
+  userAttestation: boolean = false,
+  personnelId?: string
 ) {
   try {
     const { userId, orgId } = await getAuthenticatedUserContext();
@@ -265,6 +278,17 @@ export async function signAttestation(
     }
 
     const attestationDate = new Date().toISOString();
+    const attestationMetadata: Record<string, unknown> = {
+      attestation_type: 'digital_attestation',
+      signed_at: attestationDate,
+      requirement_id: requirementId,
+      requirement_name: requirement.requirement_name,
+      frequency: requirement.frequency,
+    };
+    if (personnelId) {
+      attestationMetadata.personnel_id = personnelId;
+    }
+
     const { data: attestation, error: insertError } = await supabase
       .from('facility_documents')
       .insert({
@@ -273,13 +297,7 @@ export async function signAttestation(
         document_type: requirement.required_document_type,
         status: 'approved',
         file_url: null,
-        metadata: {
-          attestation_type: 'digital_attestation',
-          signed_at: attestationDate,
-          requirement_id: requirementId,
-          requirement_name: requirement.requirement_name,
-          frequency: requirement.frequency,
-        },
+        metadata: attestationMetadata,
       })
       .select()
       .single();
@@ -289,17 +307,22 @@ export async function signAttestation(
       return { success: false, error: 'Failed to create digital attestation' };
     }
 
+    const auditMeta: Record<string, unknown> = {
+      requirement_id: requirementId,
+      requirement_name: requirement.requirement_name,
+      frequency: requirement.frequency,
+      attestation_id: attestation.id,
+      user_attestation: userAttestation,
+    };
+    if (personnelId) {
+      auditMeta.personnel_id = personnelId;
+    }
+
     await createAuditLog({
       facilityId,
       userId,
       actionType: 'digital_attestation',
-      metadata: {
-        requirement_id: requirementId,
-        requirement_name: requirement.requirement_name,
-        frequency: requirement.frequency,
-        attestation_id: attestation.id,
-        user_attestation: userAttestation,
-      },
+      metadata: auditMeta,
     });
 
     revalidatePath('/dashboard');
@@ -319,7 +342,8 @@ export async function markNotApplicable(
   facilityId: string,
   requirementId: string,
   reason: string,
-  userAttestation: boolean = false
+  userAttestation: boolean = false,
+  personnelId?: string
 ) {
   try {
     const { userId, orgId } = await getAuthenticatedUserContext();
@@ -345,6 +369,17 @@ export async function markNotApplicable(
     }
 
     const naDate = new Date().toISOString();
+    const naMetadata: Record<string, unknown> = {
+      is_not_applicable: true,
+      marked_at: naDate,
+      requirement_id: requirementId,
+      requirement_name: requirement.requirement_name,
+      reason,
+    };
+    if (personnelId) {
+      naMetadata.personnel_id = personnelId;
+    }
+
     const { data: naRecord, error: insertError } = await supabase
       .from('facility_documents')
       .insert({
@@ -353,13 +388,7 @@ export async function markNotApplicable(
         document_type: requirement.required_document_type,
         status: 'approved',
         file_url: null,
-        metadata: {
-          is_not_applicable: true,
-          marked_at: naDate,
-          requirement_id: requirementId,
-          requirement_name: requirement.requirement_name,
-          reason,
-        },
+        metadata: naMetadata,
       })
       .select()
       .single();
@@ -369,18 +398,23 @@ export async function markNotApplicable(
       return { success: false, error: 'Failed to mark requirement as N/A' };
     }
 
+    const naAuditMeta: Record<string, unknown> = {
+      requirement_id: requirementId,
+      requirement_name: requirement.requirement_name,
+      na_record_id: naRecord.id,
+      is_not_applicable: true,
+      reason,
+      user_attestation: userAttestation,
+    };
+    if (personnelId) {
+      naAuditMeta.personnel_id = personnelId;
+    }
+
     await createAuditLog({
       facilityId,
       userId,
       actionType: 'digital_attestation',
-      metadata: {
-        requirement_id: requirementId,
-        requirement_name: requirement.requirement_name,
-        na_record_id: naRecord.id,
-        is_not_applicable: true,
-        reason,
-        user_attestation: userAttestation,
-      },
+      metadata: naAuditMeta,
     });
 
     revalidatePath('/dashboard');
@@ -666,7 +700,6 @@ export async function addPersonnel(
     name: string;
     role: string;
     hire_date: string;
-    attestation_frequency: 'annual' | 'biannual' | 'quarterly' | 'monthly';
   }
 ) {
   try {
@@ -683,23 +716,6 @@ export async function addPersonnel(
       throw new Error('Unauthorized: Facility not found or does not belong to your organization');
     }
 
-    const hireDate = new Date(personnelData.hire_date);
-    const nextAttestationDate = new Date(hireDate);
-    switch (personnelData.attestation_frequency) {
-      case 'monthly':
-        nextAttestationDate.setMonth(nextAttestationDate.getMonth() + 1);
-        break;
-      case 'quarterly':
-        nextAttestationDate.setMonth(nextAttestationDate.getMonth() + 3);
-        break;
-      case 'biannual':
-        nextAttestationDate.setMonth(nextAttestationDate.getMonth() + 6);
-        break;
-      case 'annual':
-        nextAttestationDate.setFullYear(nextAttestationDate.getFullYear() + 1);
-        break;
-    }
-
     const { data: newPersonnel, error: insertError } = await supabase
       .from('personnel')
       .insert({
@@ -709,9 +725,6 @@ export async function addPersonnel(
         hire_date: personnelData.hire_date,
         status: 'active',
         clearance_status: 'pending',
-        attestation_frequency: personnelData.attestation_frequency,
-        next_attestation_date: nextAttestationDate.toISOString().split('T')[0],
-        last_attestation_date: null,
       })
       .select()
       .single();
@@ -730,6 +743,44 @@ export async function addPersonnel(
 // =============================================================================
 // DOCUMENTS
 // =============================================================================
+
+/**
+ * Fetches personnel-specific documents (where metadata contains personnel_id).
+ */
+export async function getPersonnelDocuments(facilityId: string) {
+  try {
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    const { data: facility } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    if (!facility) return [];
+
+    const { data, error } = await supabase
+      .from('facility_documents')
+      .select('id, name, document_type, status, file_url, metadata, created_at')
+      .eq('facility_id', facilityId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('❌ Error fetching personnel documents:', error);
+      return [];
+    }
+
+    // Filter for documents with personnel_id in metadata
+    return (data ?? []).filter((doc) => {
+      const meta = doc.metadata as Record<string, unknown> | null;
+      return meta && meta.personnel_id;
+    });
+  } catch (error) {
+    console.error('❌ Exception in getPersonnelDocuments:', error);
+    return [];
+  }
+}
 
 export async function getDocumentsData(facilityId: string) {
   try {
@@ -835,6 +886,7 @@ export async function getAllFacilitiesOverview() {
         ].join(', ')
       )
       .eq('org_id', orgId)
+      .eq('is_active', true)
       .order('name', { ascending: true });
 
     if (role === 'director') {
@@ -1078,6 +1130,122 @@ export async function toggleUserStatus(
 // =============================================================================
 // AUDIT LOGS
 // =============================================================================
+
+/**
+ * Archives a facility by setting `is_active = false`.
+ * Only accessible to 'owner' or 'admin' roles.
+ */
+export async function archiveFacility(facilityId: string) {
+  try {
+    const { userId, orgId, role } = await getAuthenticatedUserContext();
+    
+    if (role !== 'owner' && role !== 'admin') {
+      return { success: false, error: 'Unauthorized: Only owners and admins can archive facilities' };
+    }
+
+    const supabase = createAdminClient();
+
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id, name')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+
+    const { error: updateError } = await supabase
+      .from('facilities')
+      .update({ is_active: false })
+      .eq('id', facilityId);
+
+    if (updateError) {
+      return { success: false, error: updateError.message };
+    }
+
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'facility_archived' as AuditActionType,
+      metadata: {
+        facility_name: facility.name,
+        archived_at: new Date().toISOString(),
+      },
+    });
+
+    revalidatePath('/dashboard');
+    return { success: true, message: `Facility "${facility.name}" has been archived` };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Adds a new facility to the organization.
+ * Only accessible to 'owner' or 'admin' roles.
+ */
+export async function addFacility(payload: {
+  name: string;
+  facility_type: FacilityType;
+  license_number: string;
+  capacity: number;
+  toggles: Partial<FacilityScopeToggles>;
+}) {
+  try {
+    const { userId, orgId, role } = await getAuthenticatedUserContext();
+
+    if (role !== 'owner' && role !== 'admin') {
+      return { success: false, error: 'Unauthorized: Only owners and admins can add facilities' };
+    }
+
+    const supabase = createAdminClient();
+
+    const togglePayload: Record<string, boolean> = {};
+    for (const key of FACILITY_TOGGLE_KEYS) {
+      togglePayload[key] = Boolean(payload.toggles[key]);
+    }
+
+    const { data: newFacility, error: insertError } = await supabase
+      .from('facilities')
+      .insert({
+        org_id: orgId,
+        name: payload.name,
+        facility_type: payload.facility_type,
+        license_number: payload.license_number,
+        capacity: payload.capacity,
+        is_active: true,
+        ...togglePayload,
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error('❌ Error inserting facility:', insertError);
+      return { success: false, error: 'Failed to create facility' };
+    }
+
+    await createAuditLog({
+      facilityId: newFacility.id as string,
+      userId,
+      actionType: 'facility_settings_update' as AuditActionType,
+      metadata: {
+        action: 'facility_created',
+        facility_name: payload.name,
+        facility_type: payload.facility_type,
+        toggles: payload.toggles,
+      },
+    });
+
+    revalidatePath('/dashboard');
+    return { success: true, facility: newFacility, message: 'Facility created successfully' };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
+  }
+}
 
 export async function getAuditLogs(facilityId?: string) {
   try {

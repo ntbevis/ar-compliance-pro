@@ -8,7 +8,11 @@ import {
   getCurrentUserRole,
   getFacilityComplianceData,
   updateEnrollment,
+  addFacility,
+  archiveFacility,
 } from 'src/app/actions/compliance';
+import type { FacilityType, FacilityScopeToggles } from '@/lib/types';
+import { FACILITY_TOGGLE_LABELS, TOGGLES_BY_FACILITY_TYPE } from '@/lib/types';
 import ComplianceDashboardClient from 'src/components/ComplianceDashboardClient';
 import PersonnelVaultView from 'src/components/PersonnelVaultView';
 import DocumentCenterView from 'src/components/DocumentCenterView';
@@ -77,6 +81,24 @@ export default function DashboardPage() {
 
   const [auditLogs, setAuditLogs] = useState<AuditLogRow[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+
+  // Facility management state
+  const [showAddFacilityModal, setShowAddFacilityModal] = useState<boolean>(false);
+  const [addingFacility, setAddingFacility] = useState<boolean>(false);
+  const [archivingFacilityId, setArchivingFacilityId] = useState<string | null>(null);
+  const [newFacilityForm, setNewFacilityForm] = useState<{
+    name: string;
+    facility_type: FacilityType;
+    license_number: string;
+    capacity: string;
+    toggles: Partial<FacilityScopeToggles>;
+  }>({
+    name: '',
+    facility_type: 'childcare_center',
+    license_number: '',
+    capacity: '',
+    toggles: {},
+  });
 
   // Load user role once
   useEffect(() => {
@@ -152,6 +174,63 @@ export default function DashboardPage() {
       }
     } finally {
       setUpdatingEnrollment(false);
+    }
+  };
+
+  const handleAddFacility = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const capacity = parseInt(newFacilityForm.capacity, 10);
+    if (Number.isNaN(capacity) || capacity < 0) {
+      alert('Please enter a valid capacity number.');
+      return;
+    }
+    setAddingFacility(true);
+    try {
+      const result = await addFacility({
+        name: newFacilityForm.name,
+        facility_type: newFacilityForm.facility_type,
+        license_number: newFacilityForm.license_number,
+        capacity,
+        toggles: newFacilityForm.toggles,
+      });
+      if (result.success) {
+        setShowAddFacilityModal(false);
+        setNewFacilityForm({
+          name: '',
+          facility_type: 'childcare_center',
+          license_number: '',
+          capacity: '',
+          toggles: {},
+        });
+        const facilities = (await getAllFacilitiesOverview()) as FacilitySummary[];
+        setFacilitiesData(facilities);
+      } else {
+        alert(`❌ ${result.error}`);
+      }
+    } finally {
+      setAddingFacility(false);
+    }
+  };
+
+  const handleArchiveFacility = async (facilityId: string, facilityName: string) => {
+    if (
+      !confirm(
+        `⚠️ WARNING: Archive "${facilityName}"?\n\nThis will hide the facility from the dashboard but retain all audit logs and historical data. This action can be reversed by a database administrator.`
+      )
+    ) {
+      return;
+    }
+    setArchivingFacilityId(facilityId);
+    try {
+      const result = await archiveFacility(facilityId);
+      if (result.success) {
+        const facilities = (await getAllFacilitiesOverview()) as FacilitySummary[];
+        setFacilitiesData(facilities);
+      } else {
+        alert(`❌ ${result.error}`);
+      }
+    } finally {
+      setArchivingFacilityId(null);
     }
   };
 
@@ -232,19 +311,158 @@ export default function DashboardPage() {
 
   // ---- MASTER FLEET OVERVIEW (no facility selected) ----
   if (selectedFacilityId === 'all' || !selectedFacilityId) {
+    const canManageFacilities = userRole === 'owner' || userRole === 'admin';
+
     return (
       <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700">
         <header className="mb-8">
           <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
             DHS Regulatory Engine
           </p>
-          <h1 className="text-5xl font-bold tracking-tight text-slate-900 mb-2">
-            Executive Fleet Overview
-          </h1>
+          <div className="flex items-start justify-between mb-2">
+            <h1 className="text-5xl font-bold tracking-tight text-slate-900">
+              Executive Fleet Overview
+            </h1>
+            {canManageFacilities && (
+              <button
+                onClick={() => setShowAddFacilityModal(true)}
+                className="flex items-center gap-2 px-5 py-3 rounded-lg text-sm font-bold bg-blue-600 text-white hover:bg-blue-700 shadow-sm transition-all"
+              >
+                ➕ Add New Facility
+              </button>
+            )}
+          </div>
           <p className="text-slate-600 text-lg">
             Twin-score compliance monitoring across all facilities.
           </p>
         </header>
+
+        {/* Add Facility Modal */}
+        {showAddFacilityModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+              <div className="sticky top-0 bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 flex items-center justify-between">
+                <h2 className="text-xl font-bold text-white">Add New Facility</h2>
+                <button
+                  onClick={() => setShowAddFacilityModal(false)}
+                  className="text-white/80 hover:text-white text-2xl leading-none"
+                >
+                  ×
+                </button>
+              </div>
+              <form onSubmit={handleAddFacility} className="p-6 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Facility Name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={newFacilityForm.name}
+                      onChange={(e) => setNewFacilityForm({ ...newFacilityForm, name: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="e.g., Sunshine Learning Center"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Facility Type <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={newFacilityForm.facility_type}
+                      onChange={(e) =>
+                        setNewFacilityForm({
+                          ...newFacilityForm,
+                          facility_type: e.target.value as FacilityType,
+                          toggles: {},
+                        })
+                      }
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    >
+                      <option value="childcare_center">Childcare Center</option>
+                      <option value="nursing_home">Nursing Home</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      License Number <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={newFacilityForm.license_number}
+                      onChange={(e) =>
+                        setNewFacilityForm({ ...newFacilityForm, license_number: e.target.value })
+                      }
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="e.g., AR-12345"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Licensed Capacity <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={newFacilityForm.capacity}
+                      onChange={(e) => setNewFacilityForm({ ...newFacilityForm, capacity: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="e.g., 50"
+                      required
+                    />
+                  </div>
+                </div>
+
+                {/* Dynamic Toggles */}
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800 mb-3">Facility Scope Toggles</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {TOGGLES_BY_FACILITY_TYPE[newFacilityForm.facility_type].map((toggleKey) => (
+                      <label
+                        key={toggleKey}
+                        className="flex items-center gap-2 p-3 border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={Boolean(newFacilityForm.toggles[toggleKey])}
+                          onChange={(e) =>
+                            setNewFacilityForm({
+                              ...newFacilityForm,
+                              toggles: { ...newFacilityForm.toggles, [toggleKey]: e.target.checked },
+                            })
+                          }
+                          className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-2 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-slate-700">{FACILITY_TOGGLE_LABELS[toggleKey]}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 pt-4 border-t border-slate-200">
+                  <button
+                    type="submit"
+                    disabled={addingFacility}
+                    className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed"
+                  >
+                    {addingFacility ? 'Creating…' : 'Create Facility'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddFacilityModal(false)}
+                    disabled={addingFacility}
+                    className="px-6 py-2.5 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 disabled:cursor-not-allowed"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
 
         {facilitiesData.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20">
@@ -304,7 +522,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
 
-                <div className="px-6 pb-6">
+                <div className="px-6 pb-6 space-y-2">
                   <button
                     onClick={() => {
                       setSelectedFacilityId(facility.id);
@@ -314,6 +532,15 @@ export default function DashboardPage() {
                   >
                     View Facility Details →
                   </button>
+                  {canManageFacilities && (
+                    <button
+                      onClick={() => handleArchiveFacility(facility.id, facility.name)}
+                      disabled={archivingFacilityId === facility.id}
+                      className="w-full bg-white hover:bg-rose-50 text-slate-600 hover:text-rose-700 font-medium py-2.5 px-4 rounded-lg transition-colors text-sm border border-slate-200 hover:border-rose-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {archivingFacilityId === facility.id ? 'Archiving…' : '📦 Archive Facility'}
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
