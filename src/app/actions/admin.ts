@@ -315,7 +315,33 @@ export async function getPendingDocuments(): Promise<
     }
 
     const documents: PendingDocument[] = (data ?? []).map((row) => {
-      const facility = row.facilities as { name: string; organizations: { name: string } | null } | null;
+      // Pull the joined value out as unknown to avoid strict-mode nested cast rejections.
+      // Supabase can return the one-to-one join as an object or a single-element array
+      // depending on the schema relationship; handle both shapes safely.
+      const rawFacility: unknown = row.facilities;
+      const facilityObj: Record<string, unknown> | null =
+        rawFacility !== null && typeof rawFacility === 'object' && !Array.isArray(rawFacility)
+          ? (rawFacility as Record<string, unknown>)
+          : Array.isArray(rawFacility) && rawFacility.length > 0 &&
+            typeof rawFacility[0] === 'object' && rawFacility[0] !== null
+          ? (rawFacility[0] as Record<string, unknown>)
+          : null;
+
+      const facilityName =
+        typeof facilityObj?.name === 'string' ? facilityObj.name : 'Unknown Facility';
+
+      const rawOrg: unknown = facilityObj?.organizations;
+      const orgObj: Record<string, unknown> | null =
+        rawOrg !== null && typeof rawOrg === 'object' && !Array.isArray(rawOrg)
+          ? (rawOrg as Record<string, unknown>)
+          : Array.isArray(rawOrg) && rawOrg.length > 0 &&
+            typeof rawOrg[0] === 'object' && rawOrg[0] !== null
+          ? (rawOrg[0] as Record<string, unknown>)
+          : null;
+
+      const orgName =
+        typeof orgObj?.name === 'string' ? orgObj.name : 'Unknown Organization';
+
       return {
         id: row.id as string,
         name: (row.name as string | null) ?? 'Unnamed Document',
@@ -325,8 +351,8 @@ export async function getPendingDocuments(): Promise<
         file_url: (row.file_url as string | null) ?? null,
         metadata: (row.metadata as Record<string, unknown> | null) ?? null,
         facility_id: row.facility_id as string,
-        facility_name: facility?.name ?? 'Unknown Facility',
-        org_name: facility?.organizations?.name ?? 'Unknown Organization',
+        facility_name: facilityName,
+        org_name: orgName,
       };
     });
 
