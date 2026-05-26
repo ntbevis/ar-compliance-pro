@@ -3,6 +3,8 @@
 
 import { createAdminClient } from 'src/app/utils/supabase/admin';
 import { createClient } from 'src/app/utils/supabase/server';
+import { headers } from 'next/headers';
+import { revalidatePath } from 'next/cache';
 
 /**
  * Multi-Tenant Security Helper
@@ -151,7 +153,7 @@ export async function approveRegistrationRequest(requestId: string) {
           contact_name: request.contact_name,
           org_id: org.id
         },
-        redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/onboarding`
+        redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/auth/callback?next=${encodeURIComponent('/auth/reset-password?next=/onboarding')}`
       }
     );
     
@@ -252,5 +254,303 @@ export async function denyRegistrationRequest(requestId: string) {
     const message = error instanceof Error ? error.message : 'An unexpected error occurred';
     console.error('❌ Exception in denyRegistrationRequest:', error);
     return { success: false, error: message };
+  }
+}
+
+// =============================================================================
+// ADMIN DOCUMENT REVIEW QUEUE
+// =============================================================================
+
+export interface PendingDocument {
+  id: string;
+  name: string;
+  document_type: string;
+  status: string;
+  created_at: string;
+  file_url: string | null;
+  metadata: Record<string, unknown> | null;
+  facility_id: string;
+  facility_name: string;
+  org_name: string;
+}
+
+/**
+ * Returns all facility_documents with status = 'pending', joined with
+ * the facility name and organization name.
+ * SECURITY: Admin only.
+ */
+export async function getPendingDocuments(): Promise<
+  { success: true; documents: PendingDocument[] } | { success: false; error: string }
+> {
+  try {
+    const { role } = await getAuthenticatedUserContext();
+    if (role !== 'admin') throw new Error('Forbidden: Admin access required');
+
+    const supabase = createAdminClient();
+
+    const { data, error } = await supabase
+      .from('facility_documents')
+      .select(`
+        id,
+        name,
+        document_type,
+        status,
+        created_at,
+        file_url,
+        metadata,
+        facility_id,
+        facilities (
+          name,
+          organizations (
+            name
+          )
+        )
+      `)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      console.error('❌ Error fetching pending documents:', error);
+      throw new Error('Failed to fetch pending documents');
+    }
+
+    const documents: PendingDocument[] = (data ?? []).map((row) => {
+      const facility = row.facilities as { name: string; organizations: { name: string } | null } | null;
+      return {
+        id: row.id as string,
+        name: (row.name as string | null) ?? 'Unnamed Document',
+        document_type: (row.document_type as string | null) ?? '',
+        status: (row.status as string | null) ?? 'pending',
+        created_at: (row.created_at as string | null) ?? '',
+        file_url: (row.file_url as string | null) ?? null,
+        metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+        facility_id: row.facility_id as string,
+        facility_name: facility?.name ?? 'Unknown Facility',
+        org_name: facility?.organizations?.name ?? 'Unknown Organization',
+      };
+    });
+
+    return { success: true, documents };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
+    console.error('❌ Exception in getPendingDocuments:', error);
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Returns a short-lived signed URL for a document without org scoping,
+ * for use by platform admins in the review queue.
+ * SECURITY: Admin only.
+ */
+export async function getAdminDocumentUrl(
+  documentId: string,
+  facilityId: string
+): Promise<
+  | { success: true; url: string | null; metadata: Record<string, unknown> | null }
+  | { success: false; error: string }
+> {
+  try {
+    const { role } = await getAuthenticatedUserContext();
+    if (role !== 'admin') throw new Error('Forbidden: Admin access required');
+
+    const supabase = createAdminClient();
+
+    const { data: doc, error: docError } = await supabase
+      .from('facility_documents')
+      .select('id, file_url, metadata')
+      .eq('id', documentId)
+      .eq('facility_id', facilityId)
+      .single();
+
+    if (docError || !doc) {
+      return { success: false, error: 'Document not found' };
+    }
+
+    const fileUrl = typeof doc.file_url === 'string' ? doc.file_url : null;
+    const metadata = (doc.metadata as Record<string, unknown> | null) ?? null;
+
+    if (!fileUrl) {
+      return { success: true, url: null, metadata };
+    }
+
+    const { data: signedData, error: signedError } = await supabase.storage
+      .from('facility-documents')
+      .createSignedUrl(fileUrl, 300);
+
+    if (signedError || !signedData?.signedUrl) {
+      console.error('❌ Storage signed URL generation failed:', signedError);
+      return { success: false, error: 'Failed to generate secure document URL' };
+    }
+
+    return { success: true, url: signedData.signedUrl, metadata };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
+    console.error('❌ Exception in getAdminDocumentUrl:', error);
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Approves a pending document: updates status to 'approved' and writes
+ * an audit log entry. The facility's compliance score will be recalculated
+ * on the next dashboard load.
+ * SECURITY: Admin only.
+ */
+export async function approveDocument(
+  documentId: string,
+  facilityId: string
+): Promise<{ success: true; message: string } | { success: false; error: string }> {
+  try {
+    const { userId, role } = await getAuthenticatedUserContext();
+    if (role !== 'admin') throw new Error('Forbidden: Admin access required');
+
+    const supabase = createAdminClient();
+
+    const { data: doc, error: fetchError } = await supabase
+      .from('facility_documents')
+      .select('id, name, document_type, status')
+      .eq('id', documentId)
+      .eq('facility_id', facilityId)
+      .single();
+
+    if (fetchError || !doc) throw new Error('Document not found');
+    if (doc.status !== 'pending') throw new Error(`Document is already ${doc.status}`);
+
+    const { error: updateError } = await supabase
+      .from('facility_documents')
+      .update({ status: 'approved' })
+      .eq('id', documentId);
+
+    if (updateError) throw updateError;
+
+    await writeAdminAuditLog({
+      supabase,
+      facilityId,
+      userId,
+      actionType: 'document_approved',
+      metadata: {
+        document_id: documentId,
+        document_name: doc.name,
+        document_type: doc.document_type,
+      },
+    });
+
+    revalidatePath('/dashboard');
+    revalidatePath('/admin/review-queue');
+
+    return { success: true, message: `Document "${doc.name}" has been approved.` };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
+    console.error('❌ Exception in approveDocument:', error);
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Rejects a pending document: updates status to 'rejected', stores the
+ * rejection reason in metadata, and writes an audit log entry.
+ * SECURITY: Admin only.
+ */
+export async function rejectDocument(
+  documentId: string,
+  facilityId: string,
+  rejectionReason: string
+): Promise<{ success: true; message: string } | { success: false; error: string }> {
+  try {
+    const { userId, role } = await getAuthenticatedUserContext();
+    if (role !== 'admin') throw new Error('Forbidden: Admin access required');
+
+    if (!rejectionReason.trim()) throw new Error('A rejection reason is required');
+
+    const supabase = createAdminClient();
+
+    const { data: doc, error: fetchError } = await supabase
+      .from('facility_documents')
+      .select('id, name, document_type, status, metadata')
+      .eq('id', documentId)
+      .eq('facility_id', facilityId)
+      .single();
+
+    if (fetchError || !doc) throw new Error('Document not found');
+    if (doc.status !== 'pending') throw new Error(`Document is already ${doc.status}`);
+
+    const existingMetadata = (doc.metadata as Record<string, unknown> | null) ?? {};
+    const updatedMetadata = {
+      ...existingMetadata,
+      rejection_reason: rejectionReason.trim(),
+      rejected_at: new Date().toISOString(),
+      rejected_by: userId,
+    };
+
+    const { error: updateError } = await supabase
+      .from('facility_documents')
+      .update({ status: 'rejected', metadata: updatedMetadata })
+      .eq('id', documentId);
+
+    if (updateError) throw updateError;
+
+    await writeAdminAuditLog({
+      supabase,
+      facilityId,
+      userId,
+      actionType: 'document_rejected',
+      metadata: {
+        document_id: documentId,
+        document_name: doc.name,
+        document_type: doc.document_type,
+        rejection_reason: rejectionReason.trim(),
+      },
+    });
+
+    revalidatePath('/dashboard');
+    revalidatePath('/admin/review-queue');
+
+    return { success: true, message: `Document "${doc.name}" has been rejected.` };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
+    console.error('❌ Exception in rejectDocument:', error);
+    return { success: false, error: message };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+type AdminAuditActionType = 'document_approved' | 'document_rejected';
+
+async function writeAdminAuditLog(params: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any;
+  facilityId: string;
+  userId: string;
+  actionType: AdminAuditActionType;
+  metadata: Record<string, unknown>;
+}) {
+  const headersList = await headers();
+  const ipAddress =
+    headersList.get('x-forwarded-for') ?? headersList.get('x-real-ip') ?? 'unknown';
+
+  const { data: profile } = await params.supabase
+    .from('profiles')
+    .select('full_name, role')
+    .eq('id', params.userId)
+    .single();
+
+  const { error } = await params.supabase.from('audit_logs').insert({
+    facility_id: params.facilityId,
+    user_id: params.userId,
+    action_type: params.actionType,
+    ip_address: ipAddress,
+    metadata: {
+      ...params.metadata,
+      user_name: profile?.full_name ?? 'Admin',
+      user_role: profile?.role ?? 'admin',
+    },
+  });
+
+  if (error) {
+    console.error(`❌ Failed to create admin audit log (${params.actionType}):`, error);
   }
 }

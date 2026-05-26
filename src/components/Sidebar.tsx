@@ -4,6 +4,7 @@ import FacilitySelector from './FacilitySelector';
 import { useState, useEffect } from 'react';
 import { createClient } from 'src/app/utils/supabase/client';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 
 interface UserProfile {
   full_name: string | null;
@@ -98,6 +99,20 @@ export default function Sidebar() {
         {navItem('Operational Blueprints', 'blueprints', isMasterView)}
         {navItem('Facility Settings', 'settings', isMasterView)}
         {navItem('Audit Trail', 'audit_logs')}
+
+        {(profile?.role === 'admin' || profile?.role === 'super_admin') && (
+          <div className="pt-3 mt-3 border-t border-gray-800">
+            <div className="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-3 px-2">
+              Platform Admin
+            </div>
+            <Link
+              href="/admin"
+              className="w-full text-left p-3 rounded-xl font-bold transition-all border flex items-center gap-2 text-indigo-400 border-indigo-500/20 bg-indigo-600/10 hover:bg-indigo-600/20 hover:border-indigo-500/40"
+            >
+              🛡️ Admin Control Center
+            </Link>
+          </div>
+        )}
       </nav>
 
       <div className="p-4 border-t border-gray-800">

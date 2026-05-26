@@ -1,11 +1,14 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, Suspense } from 'react';
 import { useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { createClient } from 'src/app/utils/supabase/client';
 
-export default function ResetPasswordPage() {
+function ResetPasswordForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const next = searchParams.get('next') || '/dashboard';
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -31,8 +34,7 @@ export default function ResetPasswordPage() {
       if (updateError) {
         setError(updateError.message);
       } else {
-        // Password updated — send to dashboard
-        router.replace('/dashboard');
+        router.replace(next);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'An unexpected error occurred.');
@@ -49,7 +51,7 @@ export default function ResetPasswordPage() {
             <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mb-4">
               <span className="text-2xl">🔒</span>
             </div>
-            <h1 className="text-2xl font-bold text-slate-900 mb-1">Set a new password</h1>
+            <h1 className="text-2xl font-bold text-slate-900 mb-1">Set your password</h1>
             <p className="text-slate-500 text-sm">
               Choose a strong password for your AR Compliance Guard account.
             </p>
@@ -115,5 +117,13 @@ export default function ResetPasswordPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function ResetPasswordPage() {
+  return (
+    <Suspense>
+      <ResetPasswordForm />
+    </Suspense>
   );
 }

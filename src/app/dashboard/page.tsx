@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useFacility } from 'src/context/FacilityContext';
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
@@ -876,6 +877,7 @@ export default function DashboardPage() {
               <p className="text-slate-500 italic">
                 No facilities found. Complete onboarding to begin monitoring compliance.
               </p>
+              <Link href="/onboarding" className="mt-4 inline-block bg-blue-600 text-white font-bold px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors">Complete Facility Onboarding →</Link>
             </div>
           </div>
         ) : (
