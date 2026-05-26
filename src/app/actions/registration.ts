@@ -64,7 +64,7 @@ export async function submitRegistrationRequest(formData: {
         }
         return {
           success: false,
-          error: `Resend failed — Supabase: "${resendError.message}"`,
+          error: 'Failed to resend your invitation email. Please contact support.',
         };
       }
 
@@ -125,7 +125,7 @@ export async function submitRegistrationRequest(formData: {
         error:
           msg.includes('already') || msg.includes('registered') || msg.includes('confirmed')
             ? 'This email address is already registered. Please sign in instead.'
-            : `Invite failed — Supabase: "${inviteError?.message ?? 'no user returned'}"`,
+            : 'Failed to send your invitation email. Please try again.',
       };
     }
 
