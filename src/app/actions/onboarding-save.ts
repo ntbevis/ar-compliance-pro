@@ -78,13 +78,18 @@ export async function saveOnboardingData(orgName: string, facilities: FacilityPa
 
   const orgId = profile.org_id;
 
-  // 3. Idempotency guard — if facilities already exist for this org, skip insertion
+  // 3. Idempotency guard — if facilities already exist for this org, skip insertion.
+  //    Still mark onboarding_completed in case this user predates the column.
   const { count: existingCount } = await supabaseAdmin
     .from('facilities')
     .select('id', { count: 'exact', head: true })
     .eq('org_id', orgId);
 
   if (existingCount && existingCount > 0) {
+    await supabaseAdmin
+      .from('profiles')
+      .update({ onboarding_completed: true })
+      .eq('id', session.user.id);
     return { success: true as const, orgId };
   }
 
@@ -122,6 +127,12 @@ export async function saveOnboardingData(orgName: string, facilities: FacilityPa
       error: 'Facilities could not be saved. Please try again or contact support.',
     };
   }
+
+  // Mark onboarding as complete now that all facilities are committed.
+  await supabaseAdmin
+    .from('profiles')
+    .update({ onboarding_completed: true })
+    .eq('id', session.user.id);
 
   return { success: true as const, orgId };
 }

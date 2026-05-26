@@ -112,6 +112,11 @@ function calcPersonnelComplianceStatus(
   return 'satisfied';
 }
 
+// ── File validation constants ────────────────────────────────────────────────
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+const ALLOWED_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+
 interface NewPersonnelForm {
   name: string;
   role: string;
@@ -158,6 +163,8 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   const [markingNAReqId, setMarkingNAReqId] = useState<string | null>(null);
   const [personnelToArchive, setPersonnelToArchive] = useState<PersonnelRecord | null>(null);
 
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
   // AI rejection modal
   const [personnelRejectionModal, setPersonnelRejectionModal] = useState<{
     requirementName: string;
@@ -181,6 +188,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   // Secure document viewer state
   const [docViewerUrl, setDocViewerUrl] = useState<string | null>(null);
   const [isLoadingDocViewer, setIsLoadingDocViewer] = useState(false);
+
+  // True while any upload or AI-verify is running — used to lock all upload triggers
+  const isUploading = uploadingReqId !== null || verifyingReqId !== null;
 
   useEffect(() => {
     async function load() {
@@ -355,12 +365,11 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     setUploadingReqId(req.id);
     try {
       const documentId = crypto.randomUUID();
-      const fileExtension = file.name.split('.').pop()?.toLowerCase() ?? 'bin';
-      const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
+      const storagePath = `${facilityId}/personnel/${personnelId}/${req.id}/uploaded_evidence`;
 
       const { error: storageError } = await supabase.storage
         .from('facility-documents')
-        .upload(storagePath, file);
+        .upload(storagePath, file, { upsert: true });
       if (storageError) throw storageError;
 
       const { error: insertError } = await supabase.from('facility_documents').insert({
@@ -415,6 +424,13 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       return;
     }
 
+    // ── Client-side file validation ───────────────────────────────────────────
+    setUploadError(null);
+    if (file.size > MAX_FILE_SIZE || !ALLOWED_TYPES.includes(file.type)) {
+      setUploadError('File must be a PDF or image (JPEG/PNG) under 10MB.');
+      return;
+    }
+
     // ── Step 1: AI Verification ───────────────────────────────────────────────
     setVerifyingReqId(requirement.id);
     try {
@@ -448,12 +464,13 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       setUploadingReqId(requirement.id);
 
       const documentId = crypto.randomUUID();
-      const fileExtension = file.name.split('.').pop()?.toLowerCase() ?? 'bin';
-      const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
+      // Deterministic path: overwriting the same key is idempotent and prevents
+      // orphaned storage objects from rapid duplicate submissions.
+      const storagePath = `${facilityId}/personnel/${personnelId}/${requirement.id}/uploaded_evidence`;
 
       const { error: storageError } = await supabase.storage
         .from('facility-documents')
-        .upload(storagePath, file);
+        .upload(storagePath, file, { upsert: true });
       if (storageError) throw storageError;
 
       const { error: insertError } = await supabase.from('facility_documents').insert({
@@ -880,6 +897,14 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         </div>
       )}
 
+      {/* File validation error */}
+      {uploadError && (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-sm font-medium">
+          <span className="shrink-0 text-rose-500">✕</span>
+          {uploadError}
+        </div>
+      )}
+
       <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm">
         <div className="flex items-start justify-between mb-6">
         <div>
@@ -1226,22 +1251,24 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                   <>
                                     <label
                                       className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all cursor-pointer ${
-                                        userAttestation
+                                        userAttestation && !isUploading
                                           ? 'bg-blue-600 hover:bg-blue-700 text-white'
                                           : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                                       }`}
                                       title={
-                                        userAttestation
-                                          ? 'Upload evidence'
-                                          : 'Please check the legal certification box above'
+                                        !userAttestation
+                                          ? 'Please check the legal certification box above'
+                                          : isUploading
+                                          ? 'Upload in progress…'
+                                          : 'Upload evidence'
                                       }
                                     >
                                       Upload
                                       <input
                                         type="file"
-                                        accept=".pdf,.png,.jpg,.jpeg,.txt"
+                                        accept=".pdf,.jpg,.jpeg,.png"
                                         className="hidden"
-                                        disabled={!userAttestation}
+                                        disabled={!userAttestation || isUploading}
                                         onChange={(e) => {
                                           const file = e.target.files?.[0];
                                           if (file) handlePersonnelUpload(person.id, req, file);
@@ -1252,9 +1279,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                     {req.severity !== 'critical' && (
                                       <button
                                         onClick={() => handlePersonnelSignAttestation(person.id, req)}
-                                        disabled={!userAttestation}
+                                        disabled={!userAttestation || isUploading}
                                         className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all ${
-                                          userAttestation
+                                          userAttestation && !isUploading
                                             ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                                             : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                                         }`}
@@ -1264,9 +1291,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                     )}
                                     <button
                                       onClick={() => handlePersonnelMarkNA(person.id, req)}
-                                      disabled={!userAttestation}
+                                      disabled={!userAttestation || isUploading}
                                       className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all ${
-                                        userAttestation
+                                        userAttestation && !isUploading
                                           ? 'bg-slate-600 hover:bg-slate-700 text-white'
                                           : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                                       }`}

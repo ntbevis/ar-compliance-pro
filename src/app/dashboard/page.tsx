@@ -20,6 +20,7 @@ import PersonnelVaultView from 'src/components/PersonnelVaultView';
 import DocumentCenterView from 'src/components/DocumentCenterView';
 import OperationalBlueprintsView from 'src/components/OperationalBlueprintsView';
 import FacilitySettingsView from 'src/components/FacilitySettingsView';
+import TeamSettingsView from 'src/components/TeamSettingsView';
 import type { IdentifiedGap } from '@/lib/types';
 import { generateAuditReport } from '@/lib/pdf-generator';
 
@@ -420,6 +421,23 @@ export default function DashboardPage() {
             );
           })()}
         </div>
+      </div>
+    );
+  }
+
+  // ---- TEAM SETTINGS (org-level, master view) ----
+  if ((selectedFacilityId === 'all' || !selectedFacilityId) && currentView === 'settings') {
+    return (
+      <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
+        <header className="mb-2">
+          <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
+            DHS Regulatory Engine
+          </p>
+          <h1 className="text-5xl font-bold tracking-tight text-slate-900">
+            Team Settings
+          </h1>
+        </header>
+        <TeamSettingsView />
       </div>
     );
   }

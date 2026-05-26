@@ -1460,6 +1460,123 @@ export async function updateEnrollment(facilityId: string, activeEnrollment: num
 }
 
 // =============================================================================
+// TENANT USER MANAGEMENT
+// =============================================================================
+
+/**
+ * Returns all director-role profiles belonging to the caller's organization.
+ * Accessible to any authenticated org member.
+ */
+export async function getOrgDirectors(): Promise<
+  Array<{
+    id: string;
+    full_name: string | null;
+    email: string | null;
+    account_status: string | null;
+    org_id: string | null;
+  }>
+> {
+  try {
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, full_name, email, account_status, org_id')
+      .eq('org_id', orgId)
+      .eq('role', 'director')
+      .order('full_name', { ascending: true });
+
+    if (error) {
+      console.error('❌ getOrgDirectors error:', error);
+      return [];
+    }
+    return data ?? [];
+  } catch (error) {
+    console.error('❌ getOrgDirectors exception:', error);
+    return [];
+  }
+}
+
+/**
+ * Sends a Supabase Auth invitation to a new Facility Director, creates their
+ * profile record, and assigns them to the specified facility.
+ *
+ * Caller must be an 'owner' or 'admin'.
+ */
+export async function inviteFacilityDirector(
+  email: string,
+  fullName: string,
+  facilityId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const { orgId, role } = await getAuthenticatedUserContext();
+
+    if (role !== 'owner' && role !== 'admin') {
+      return { success: false, error: 'Unauthorized: Only owners and admins can invite directors' };
+    }
+
+    const supabase = createAdminClient();
+
+    // Verify the facility belongs to this org
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+
+    if (facilityError || !facility) {
+      return { success: false, error: 'Unauthorized: Facility not found or does not belong to your organization' };
+    }
+
+    const redirectTo = `${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/auth/callback?next=${encodeURIComponent('/auth/reset-password?next=/dashboard')}`;
+
+    const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(
+      email,
+      { redirectTo }
+    );
+
+    if (inviteError || !inviteData?.user) {
+      console.error('❌ inviteUserByEmail error:', inviteError);
+      return { success: false, error: inviteError?.message ?? 'Failed to send invitation' };
+    }
+
+    const newUserId = inviteData.user.id;
+
+    const { error: profileError } = await supabase.from('profiles').upsert({
+      id: newUserId,
+      org_id: orgId,
+      role: 'director',
+      full_name: fullName,
+      email: email,
+      account_status: 'active',
+    });
+
+    if (profileError) {
+      console.error('❌ Profile insert error:', profileError);
+      return { success: false, error: 'Invitation sent but failed to create profile record' };
+    }
+
+    const { error: facilityUpdateError } = await supabase
+      .from('facilities')
+      .update({ director_id: newUserId })
+      .eq('id', facilityId);
+
+    if (facilityUpdateError) {
+      console.error('❌ Facility director_id update error:', facilityUpdateError);
+    }
+
+    revalidatePath('/dashboard');
+    return { success: true };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('❌ inviteFacilityDirector failure:', message);
+    return { success: false, error: message };
+  }
+}
+
+// =============================================================================
 // ROLES / RBAC HELPERS
 // =============================================================================
 

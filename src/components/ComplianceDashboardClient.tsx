@@ -362,6 +362,11 @@ function DocManagementModal({
   );
 }
 
+// ── File validation constants ────────────────────────────────────────────────
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+const ALLOWED_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+
 // ── Main Dashboard Component ─────────────────────────────────────────────────
 
 export default function ComplianceDashboardClient({
@@ -382,6 +387,7 @@ export default function ComplianceDashboardClient({
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [signingAttestationId, setSigningAttestationId] = useState<string | null>(null);
   const [markingNAId, setMarkingNAId] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Document management modal
   const [docManagementGap, setDocManagementGap] = useState<DashboardGap | null>(null);
@@ -395,6 +401,9 @@ export default function ComplianceDashboardClient({
     gap: DashboardGap;
     file: File;
   } | null>(null);
+
+  // True while any upload or AI-verify is running — used to lock all upload triggers
+  const isUploading = uploadingId !== null || verifyingId !== null;
 
   // Scored rules partitioned by category
   const scoredGaps = gaps.filter((g) => g.is_scored);
@@ -466,6 +475,13 @@ export default function ComplianceDashboardClient({
       return;
     }
 
+    // ── Client-side file validation ───────────────────────────────────────────
+    setUploadError(null);
+    if (file.size > MAX_FILE_SIZE || !ALLOWED_TYPES.includes(file.type)) {
+      setUploadError('File must be a PDF or image (JPEG/PNG) under 10MB.');
+      return;
+    }
+
     // ── Step 1: AI Verification ───────────────────────────────────────────────
     setVerifyingId(gap.id);
     try {
@@ -501,12 +517,13 @@ export default function ComplianceDashboardClient({
       setUploadingId(gap.id);
 
       const documentId = crypto.randomUUID();
-      const fileExtension = file.name.split('.').pop()?.toLowerCase() ?? 'bin';
-      const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
+      // Deterministic path: overwriting the same key is idempotent and prevents
+      // orphaned storage objects from rapid duplicate submissions.
+      const storagePath = `${facilityId}/${gap.id}/uploaded_evidence`;
 
       const { error: storageError } = await supabase.storage
         .from('facility-documents')
-        .upload(storagePath, file);
+        .upload(storagePath, file, { upsert: true });
       if (storageError) throw storageError;
 
       const { error: insertError } = await supabase.from('facility_documents').insert({
@@ -610,12 +627,11 @@ export default function ComplianceDashboardClient({
     setUploadingId(gap.id);
     try {
       const documentId = crypto.randomUUID();
-      const fileExtension = file.name.split('.').pop()?.toLowerCase() ?? 'bin';
-      const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
+      const storagePath = `${facilityId}/${gap.id}/uploaded_evidence`;
 
       const { error: storageError } = await supabase.storage
         .from('facility-documents')
-        .upload(storagePath, file);
+        .upload(storagePath, file, { upsert: true });
       if (storageError) throw storageError;
 
       const { error: insertError } = await supabase.from('facility_documents').insert({
@@ -738,22 +754,24 @@ export default function ComplianceDashboardClient({
             <>
               <label
                 className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all cursor-pointer ${
-                  userAttestation
+                  userAttestation && !isUploading
                     ? 'bg-blue-600 hover:bg-blue-700 text-white'
                     : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                 }`}
                 title={
-                  userAttestation
-                    ? 'Upload evidence'
-                    : 'Please check the legal certification box above'
+                  !userAttestation
+                    ? 'Please check the legal certification box above'
+                    : isUploading
+                    ? 'Upload in progress…'
+                    : 'Upload evidence'
                 }
               >
                 Upload
                 <input
                   type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,.txt"
+                  accept=".pdf,.jpg,.jpeg,.png"
                   className="hidden"
-                  disabled={!userAttestation}
+                  disabled={!userAttestation || isUploading}
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) handleUploadEvidence(gap, file);
@@ -764,9 +782,9 @@ export default function ComplianceDashboardClient({
               {gap.severity !== 'critical' && (
                 <button
                   onClick={() => handleSignAttestation(gap)}
-                  disabled={!userAttestation}
+                  disabled={!userAttestation || isUploading}
                   className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
-                    userAttestation
+                    userAttestation && !isUploading
                       ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                       : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                   }`}
@@ -776,9 +794,9 @@ export default function ComplianceDashboardClient({
               )}
               <button
                 onClick={() => handleMarkNotApplicable(gap)}
-                disabled={!userAttestation}
+                disabled={!userAttestation || isUploading}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
-                  userAttestation
+                  userAttestation && !isUploading
                     ? 'bg-slate-600 hover:bg-slate-700 text-white'
                     : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                 }`}
@@ -982,6 +1000,14 @@ export default function ComplianceDashboardClient({
           </label>
         </div>
       </div>
+
+      {/* File validation error */}
+      {uploadError && (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-sm font-medium">
+          <span className="shrink-0 text-rose-500">✕</span>
+          {uploadError}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">

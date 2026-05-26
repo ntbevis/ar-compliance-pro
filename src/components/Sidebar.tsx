@@ -97,7 +97,7 @@ export default function Sidebar() {
         {navItem('Personnel Vault', 'personnel', isMasterView)}
         {navItem('Document Center', 'documents', isMasterView)}
         {navItem('Operational Blueprints', 'blueprints', isMasterView)}
-        {navItem('Facility Settings', 'settings', isMasterView)}
+        {navItem(isMasterView ? '👥 Team Settings' : '⚙️ Facility Settings', 'settings')}
         {navItem('Audit Trail', 'audit_logs')}
 
         {(profile?.role === 'admin' || profile?.role === 'super_admin') && (
