@@ -36,16 +36,12 @@ function CallbackHandler() {
       const token_hash = searchParams.get('token_hash');
       const type = searchParams.get('type') as EmailOtpType | null;
 
-      const fail = (reason: string, detail = '') => {
-        console.error(`❌ Auth callback failed [${reason}]:`, detail);
-        router.replace(`/?error=${encodeURIComponent(reason)}&detail=${encodeURIComponent(detail)}`);
-      };
-
       // ── 1. PKCE code flow ─────────────────────────────────────────────────
       if (code) {
         const { error } = await supabase.auth.exchangeCodeForSession(code);
         if (!error) { router.replace(next); return; }
-        fail('pkce_failed', error.message);
+        console.error('❌ PKCE exchange failed:', error.message);
+        router.replace('/?error=auth_callback_failed');
         return;
       }
 
@@ -53,7 +49,8 @@ function CallbackHandler() {
       if (token_hash && type) {
         const { error } = await supabase.auth.verifyOtp({ token_hash, type });
         if (!error) { router.replace(next); return; }
-        fail('otp_failed', error.message);
+        console.error('❌ OTP verification failed:', error.message);
+        router.replace('/?error=auth_callback_failed');
         return;
       }
 
@@ -69,12 +66,13 @@ function CallbackHandler() {
           refresh_token: refreshToken,
         });
         if (!error) { router.replace(next); return; }
-        fail('hash_failed', error.message);
+        console.error('❌ setSession from hash failed:', error.message);
+        router.replace('/?error=auth_callback_failed');
         return;
       }
 
-      // No token found in any format — expose what the URL actually contained
-      fail('no_tokens', `search=${window.location.search} hash=${window.location.hash.substring(0, 80)}`);
+      console.error('❌ Auth callback: no recognised token in URL');
+      router.replace('/?error=auth_callback_failed');
     };
 
     handleCallback();
