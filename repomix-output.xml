@@ -67,7 +67,10 @@ src/
     admin/
       requests/
         page.tsx
+      review-queue/
+        page.tsx
       layout.tsx
+      page.tsx
     auth/
       callback/
         route.ts
@@ -101,6 +104,7 @@ src/
     OperationalBlueprintsView.tsx
     PersonnelVaultView.tsx
     Sidebar.tsx
+    TeamSettingsView.tsx
     ToastProvider.tsx
   context/
     FacilityContext.tsx
@@ -108,7 +112,10 @@ src/
     pdf-generator.ts
     reg-monitor.ts
     types.ts
-  proxy.ts
+  middleware.ts
+supabase/
+  migrations/
+    20260526000000_add_onboarding_completed_to_profiles.sql
 .gitignore
 AGENTS.md
 CLAUDE.md
@@ -724,30 +731,551 @@ CRITICAL INSTRUCTION: You must be highly tolerant of real-world upload condition
 }
 </file>
 
-<file path="src/app/admin/layout.tsx">
-import { redirect } from 'next/navigation';
-import { createClient } from 'src/app/utils/supabase/server';
+<file path="src/app/admin/review-queue/page.tsx">
+'use client';
 
-/**
- * Server-side layout guard for all /admin routes.
- * Enforces role === 'admin' before any page content renders.
- * Non-admin users are redirected silently to avoid leaking page existence.
- */
-export default async function AdminLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient();
-  const { data: { session } } = await supabase.auth.getSession();
+import { useEffect, useState, useCallback } from 'react';
+import Link from 'next/link';
+import toast from 'react-hot-toast';
+import {
+  getPendingDocuments,
+  getAdminDocumentUrl,
+  approveDocument,
+  rejectDocument,
+  type PendingDocument,
+} from '@/app/actions/admin';
 
-  if (!session) redirect('/');
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', session.user.id)
-    .single();
+function formatDate(dateString: string) {
+  if (!dateString) return '—';
+  return new Date(dateString).toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
 
-  if (profile?.role !== 'admin') redirect('/');
+function isImageUrl(url: string) {
+  const path = url.split('?')[0].toLowerCase();
+  return /\.(jpg|jpeg|png|gif|webp)$/.test(path);
+}
 
-  return <>{children}</>;
+// ---------------------------------------------------------------------------
+// Review Modal
+// ---------------------------------------------------------------------------
+
+function ReviewModal({
+  doc,
+  onClose,
+  onResolved,
+}: {
+  doc: PendingDocument;
+  onClose: () => void;
+  onResolved: (id: string) => void;
+}) {
+  const [documentUrl, setDocumentUrl] = useState<string | null>(null);
+  const [isLoadingDoc, setIsLoadingDoc] = useState(false);
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [showRejectForm, setShowRejectForm] = useState(false);
+  const [isApproving, setIsApproving] = useState(false);
+  const [isRejecting, setIsRejecting] = useState(false);
+
+  useEffect(() => {
+    setIsLoadingDoc(true);
+    getAdminDocumentUrl(doc.id, doc.facility_id)
+      .then((result) => {
+        if (result.success) setDocumentUrl(result.url ?? null);
+      })
+      .finally(() => setIsLoadingDoc(false));
+  }, [doc.id, doc.facility_id]);
+
+  const handleApprove = async () => {
+    setIsApproving(true);
+    try {
+      const result = await approveDocument(doc.id, doc.facility_id);
+      if (result.success) {
+        toast.success(result.message);
+        onResolved(doc.id);
+        onClose();
+      } else {
+        toast.error(result.error ?? 'Failed to approve document');
+      }
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!rejectionReason.trim()) {
+      toast.error('Please enter a rejection reason.');
+      return;
+    }
+    setIsRejecting(true);
+    try {
+      const result = await rejectDocument(doc.id, doc.facility_id, rejectionReason);
+      if (result.success) {
+        toast.success(result.message);
+        onResolved(doc.id);
+        onClose();
+      } else {
+        toast.error(result.error ?? 'Failed to reject document');
+      }
+    } finally {
+      setIsRejecting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+      <div
+        className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-5xl flex flex-col overflow-hidden"
+        style={{ maxHeight: '92vh' }}
+      >
+        {/* Header */}
+        <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 flex items-center justify-between shrink-0">
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold text-white truncate">{doc.name}</h2>
+            <p className="text-slate-400 text-xs mt-0.5">
+              {doc.org_name} &rsaquo; {doc.facility_name}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="ml-4 shrink-0 text-white/60 hover:text-white text-2xl leading-none transition-colors"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        {/* Body */}
+        <div
+          className="flex-1 grid grid-cols-1 lg:grid-cols-[3fr_2fr] divide-y lg:divide-y-0 lg:divide-x divide-slate-700 overflow-hidden"
+          style={{ minHeight: 0 }}
+        >
+          {/* Document viewer pane */}
+          <div className="bg-slate-950 flex flex-col items-center justify-center min-h-64 overflow-hidden">
+            {isLoadingDoc ? (
+              <div className="flex flex-col items-center gap-3 text-slate-400">
+                <div className="w-8 h-8 border-4 border-slate-500 border-t-transparent rounded-full animate-spin" />
+                <p className="text-sm">Loading document…</p>
+              </div>
+            ) : documentUrl ? (
+              isImageUrl(documentUrl) ? (
+                <img
+                  src={documentUrl}
+                  alt={doc.name}
+                  className="w-full h-full object-contain p-4 max-h-[60vh]"
+                />
+              ) : (
+                <iframe
+                  src={documentUrl}
+                  title={doc.name}
+                  className="w-full h-full border-0"
+                  style={{ minHeight: '340px' }}
+                />
+              )
+            ) : (
+              <div className="text-center space-y-3 p-8">
+                <p className="text-5xl">📄</p>
+                <p className="text-sm text-slate-400">No file attachment available</p>
+              </div>
+            )}
+          </div>
+
+          {/* Metadata + action pane */}
+          <div className="p-6 space-y-6 overflow-y-auto bg-slate-900">
+            {/* Document info */}
+            <div className="space-y-4">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">
+                  Requirement
+                </p>
+                <p className="font-semibold text-white text-sm leading-snug">{doc.name}</p>
+                {doc.document_type && (
+                  <p className="text-[11px] font-mono text-slate-500 mt-0.5">{doc.document_type}</p>
+                )}
+              </div>
+
+              <div className="bg-slate-800 rounded-lg p-4 space-y-3 border border-slate-700 text-sm">
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-400">Organization</span>
+                  <span className="font-medium text-white text-right">{doc.org_name}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-400">Facility</span>
+                  <span className="font-medium text-white text-right">{doc.facility_name}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-400">Submitted</span>
+                  <span className="font-medium text-white text-right">{formatDate(doc.created_at)}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-400">Status</span>
+                  <span className="px-2 py-0.5 bg-amber-500/10 text-amber-400 rounded text-xs font-bold uppercase tracking-wider">
+                    Pending Review
+                  </span>
+                </div>
+              </div>
+
+              {/* AI metadata if present */}
+              {doc.metadata && typeof doc.metadata === 'object' && (
+                <div className="bg-violet-950/40 border border-violet-700/30 rounded-lg p-4 space-y-2 text-sm">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-violet-400">
+                    🤖 AI Metadata
+                  </p>
+                  {typeof doc.metadata.ai_extracted_expiration === 'string' && (
+                    <div className="flex justify-between">
+                      <span className="text-violet-300/70">Expiration (AI)</span>
+                      <span className="font-semibold text-violet-200">
+                        {new Date(doc.metadata.ai_extracted_expiration).toLocaleDateString()}
+                      </span>
+                    </div>
+                  )}
+                  {typeof doc.metadata.upload_source === 'string' && (
+                    <div className="flex justify-between">
+                      <span className="text-violet-300/70">Source</span>
+                      <span className="font-medium text-violet-200 capitalize">
+                        {String(doc.metadata.upload_source).replace(/_/g, ' ')}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Action buttons */}
+            <div className="space-y-3 pt-2">
+              {/* Approve */}
+              <button
+                onClick={handleApprove}
+                disabled={isApproving || isRejecting || showRejectForm}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3.5 rounded-xl font-bold text-sm uppercase tracking-wider transition-all bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isApproving ? (
+                  <>
+                    <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Approving…
+                  </>
+                ) : (
+                  '✅ Approve Document'
+                )}
+              </button>
+
+              {/* Reject flow */}
+              {!showRejectForm ? (
+                <button
+                  onClick={() => setShowRejectForm(true)}
+                  disabled={isApproving || isRejecting}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3.5 rounded-xl font-bold text-sm uppercase tracking-wider transition-all bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 border border-rose-600/30 hover:border-rose-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  ❌ Reject Document
+                </button>
+              ) : (
+                <div className="rounded-xl border border-rose-700/40 bg-rose-950/30 p-4 space-y-3">
+                  <p className="text-sm font-bold text-rose-300">Rejection Reason</p>
+                  <textarea
+                    value={rejectionReason}
+                    onChange={(e) => setRejectionReason(e.target.value)}
+                    placeholder="Explain why this document is being rejected (required)…"
+                    rows={3}
+                    className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500 resize-none"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => { setShowRejectForm(false); setRejectionReason(''); }}
+                      disabled={isRejecting}
+                      className="flex-1 px-3 py-2 rounded-lg bg-slate-700 text-slate-300 font-medium text-sm hover:bg-slate-600 disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleReject}
+                      disabled={isRejecting || !rejectionReason.trim()}
+                      className="flex-1 px-3 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isRejecting ? (
+                        <span className="flex items-center justify-center gap-2">
+                          <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          Rejecting…
+                        </span>
+                      ) : (
+                        'Confirm Rejection'
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Page
+// ---------------------------------------------------------------------------
+
+export default function DocumentReviewQueuePage() {
+  const [documents, setDocuments] = useState<PendingDocument[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedDoc, setSelectedDoc] = useState<PendingDocument | null>(null);
+
+  const loadDocuments = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await getPendingDocuments();
+      if (result.success) {
+        setDocuments(result.documents);
+      } else {
+        toast.error(result.error ?? 'Failed to load pending documents');
+      }
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'An unexpected error occurred');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadDocuments();
+  }, [loadDocuments]);
+
+  const handleResolved = (id: string) => {
+    setDocuments((prev) => prev.filter((d) => d.id !== id));
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white p-6 md:p-12">
+      <div className="max-w-7xl mx-auto">
+
+        {/* Header */}
+        <div className="mb-10">
+          <div className="flex items-center gap-4 mb-4">
+            <div className="w-12 h-12 bg-indigo-600/20 rounded-xl flex items-center justify-center border border-indigo-500/30 text-xl shrink-0">
+              🗂️
+            </div>
+            <div>
+              <h1 className="text-4xl font-black tracking-tight">Document Review Queue</h1>
+              <p className="text-slate-400 text-sm mt-1">
+                Global queue of facility documents pending human review.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4 mt-6">
+            <Link
+              href="/admin"
+              className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-sm font-medium transition-colors text-slate-300"
+            >
+              ← Admin Home
+            </Link>
+            <button
+              onClick={loadDocuments}
+              disabled={loading}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              {loading ? 'Refreshing…' : '🔄 Refresh'}
+            </button>
+            <div className="text-sm text-slate-400">
+              <span className="font-bold text-indigo-400">{documents.length}</span>{' '}
+              document{documents.length !== 1 ? 's' : ''} awaiting review
+            </div>
+          </div>
+        </div>
+
+        {/* Loading */}
+        {loading && documents.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-24">
+            <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-4" />
+            <p className="text-slate-400 text-sm font-medium">Loading pending documents…</p>
+          </div>
+        )}
+
+        {/* Empty */}
+        {!loading && documents.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-24 border-2 border-dashed border-slate-800 rounded-2xl">
+            <div className="w-16 h-16 bg-slate-800 rounded-full flex items-center justify-center mb-4 text-2xl">
+              ✅
+            </div>
+            <h3 className="text-xl font-bold text-slate-300 mb-2">Queue is Clear</h3>
+            <p className="text-slate-500 text-sm">No documents are currently pending review.</p>
+          </div>
+        )}
+
+        {/* Table */}
+        {!loading && documents.length > 0 && (
+          <div className="bg-slate-900/50 border border-slate-800 rounded-2xl overflow-hidden backdrop-blur-sm">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-800 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                  <th className="text-left px-6 py-4">Organization</th>
+                  <th className="text-left px-6 py-4">Facility</th>
+                  <th className="text-left px-6 py-4">Requirement / Document</th>
+                  <th className="text-left px-6 py-4">Date Submitted</th>
+                  <th className="px-6 py-4" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60">
+                {documents.map((doc) => (
+                  <tr
+                    key={doc.id}
+                    className="hover:bg-slate-800/30 transition-colors group"
+                  >
+                    <td className="px-6 py-4 font-medium text-white whitespace-nowrap">
+                      {doc.org_name}
+                    </td>
+                    <td className="px-6 py-4 text-slate-300 whitespace-nowrap">
+                      {doc.facility_name}
+                    </td>
+                    <td className="px-6 py-4 max-w-xs">
+                      <p className="font-semibold text-white leading-snug">{doc.name}</p>
+                      {doc.document_type && (
+                        <p className="text-[11px] font-mono text-slate-500 mt-0.5 truncate">
+                          {doc.document_type}
+                        </p>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 text-slate-400 whitespace-nowrap">
+                      {formatDate(doc.created_at)}
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <button
+                        onClick={() => setSelectedDoc(doc)}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-400 border border-indigo-500/30 hover:border-indigo-500/60 rounded-lg font-bold text-xs uppercase tracking-wider transition-all"
+                      >
+                        Review →
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Review Modal */}
+      {selectedDoc && (
+        <ReviewModal
+          doc={selectedDoc}
+          onClose={() => setSelectedDoc(null)}
+          onResolved={handleResolved}
+        />
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="src/app/admin/page.tsx">
+import Link from 'next/link';
+
+interface AdminCard {
+  href: string;
+  icon: string;
+  title: string;
+  description: string;
+  badge?: string;
+  accentClass: string;
+  borderClass: string;
+}
+
+const ADMIN_SECTIONS: AdminCard[] = [
+  {
+    href: '/admin/requests',
+    icon: '📋',
+    title: 'Registration Requests',
+    description:
+      'Review and action inbound platform access requests. Approve leads to create an organization and send an invitation, or deny to close the request.',
+    badge: 'Lead Management',
+    accentClass: 'text-blue-400',
+    borderClass: 'border-blue-500/20 hover:border-blue-500/40 hover:bg-blue-600/5',
+  },
+  {
+    href: '/admin/review-queue',
+    icon: '🗂️',
+    title: 'Document Review Queue',
+    description:
+      'Inspect documents submitted by facility operators for human review. Approve to satisfy compliance requirements or reject with a reason logged to the audit trail.',
+    badge: 'Compliance',
+    accentClass: 'text-indigo-400',
+    borderClass: 'border-indigo-500/20 hover:border-indigo-500/40 hover:bg-indigo-600/5',
+  },
+];
+
+export default function AdminDashboardPage() {
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white p-6 md:p-12">
+      <div className="max-w-5xl mx-auto">
+
+        {/* Header */}
+        <div className="mb-14">
+          <div className="flex items-center gap-4 mb-4">
+            <div className="w-14 h-14 bg-indigo-600/20 rounded-2xl flex items-center justify-center border border-indigo-500/30 text-2xl shrink-0">
+              🛡️
+            </div>
+            <div>
+              <h1 className="text-4xl font-black tracking-tight">Admin Control Center</h1>
+              <p className="text-slate-400 text-sm mt-1">
+                Platform-level administration — restricted to authorized personnel only.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-6 flex items-center gap-3">
+            <Link
+              href="/dashboard"
+              className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-sm font-medium transition-colors text-slate-300"
+            >
+              ← Back to Dashboard
+            </Link>
+          </div>
+        </div>
+
+        {/* Section Cards */}
+        <div className="grid gap-6 sm:grid-cols-2">
+          {ADMIN_SECTIONS.map((section) => (
+            <Link
+              key={section.href}
+              href={section.href}
+              className={`group block bg-slate-900/50 border rounded-2xl p-8 backdrop-blur-sm transition-all duration-200 ${section.borderClass}`}
+            >
+              <div className="flex items-start gap-5">
+                <div className="text-4xl shrink-0 mt-0.5">{section.icon}</div>
+                <div className="min-w-0">
+                  {section.badge && (
+                    <span className={`inline-block text-[10px] font-black uppercase tracking-widest mb-2 ${section.accentClass}`}>
+                      {section.badge}
+                    </span>
+                  )}
+                  <h2 className={`text-xl font-black mb-2 group-hover:${section.accentClass} transition-colors`}>
+                    {section.title}
+                  </h2>
+                  <p className="text-slate-400 text-sm leading-relaxed">{section.description}</p>
+                </div>
+              </div>
+              <div className={`mt-6 flex items-center gap-2 text-sm font-bold ${section.accentClass}`}>
+                Open <span className="group-hover:translate-x-1 transition-transform inline-block">→</span>
+              </div>
+            </Link>
+          ))}
+        </div>
+
+        {/* Footer note */}
+        <p className="mt-14 text-center text-xs text-slate-700 font-medium uppercase tracking-widest">
+          All admin actions are logged in the audit trail
+        </p>
+      </div>
+    </div>
+  );
 }
 </file>
 
@@ -904,128 +1432,6 @@ export default function ForgotPasswordPage() {
 }
 </file>
 
-<file path="src/app/auth/reset-password/page.tsx">
-'use client';
-
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { createClient } from 'src/app/utils/supabase/client';
-
-export default function ResetPasswordPage() {
-  const router = useRouter();
-  const [password, setPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters.');
-      return;
-    }
-    if (password !== confirm) {
-      setError('Passwords do not match.');
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      const supabase = createClient();
-      const { error: updateError } = await supabase.auth.updateUser({ password });
-      if (updateError) {
-        setError(updateError.message);
-      } else {
-        // Password updated — send to dashboard
-        router.replace('/dashboard');
-      }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'An unexpected error occurred.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center px-4">
-      <div className="w-full max-w-md">
-        <div className="bg-white rounded-2xl shadow-2xl p-8">
-          <div className="mb-8">
-            <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mb-4">
-              <span className="text-2xl">🔒</span>
-            </div>
-            <h1 className="text-2xl font-bold text-slate-900 mb-1">Set a new password</h1>
-            <p className="text-slate-500 text-sm">
-              Choose a strong password for your AR Compliance Guard account.
-            </p>
-          </div>
-
-          <form onSubmit={handleSubmit} className="space-y-5">
-            {error && (
-              <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg">
-                <p className="text-sm text-rose-800 font-medium">❌ {error}</p>
-              </div>
-            )}
-
-            <div>
-              <label htmlFor="password" className="block text-sm font-semibold text-slate-700 mb-2">
-                New Password
-              </label>
-              <input
-                type="password"
-                id="password"
-                required
-                minLength={8}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-slate-900"
-                placeholder="Min. 8 characters"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="confirm" className="block text-sm font-semibold text-slate-700 mb-2">
-                Confirm New Password
-              </label>
-              <input
-                type="password"
-                id="confirm"
-                required
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-slate-900"
-                placeholder="Re-enter password"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={submitting}
-              className={`w-full py-3.5 px-6 rounded-lg font-bold text-white transition-all ${
-                submitting
-                  ? 'bg-slate-400 cursor-not-allowed'
-                  : 'bg-blue-600 hover:bg-blue-700 shadow-lg hover:shadow-xl'
-              }`}
-            >
-              {submitting ? (
-                <span className="flex items-center justify-center gap-2">
-                  <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  Updating…
-                </span>
-              ) : (
-                'Update Password'
-              )}
-            </button>
-          </form>
-        </div>
-      </div>
-    </div>
-  );
-}
-</file>
-
 <file path="src/app/dashboard/error.tsx">
 'use client';
 
@@ -1070,31 +1476,6 @@ export default function DashboardError({
         </div>
       </div>
     </div>
-  );
-}
-</file>
-
-<file path="src/app/dashboard/layout.tsx">
-import { FacilityProvider } from 'src/context/FacilityContext';
-import Sidebar from 'src/components/Sidebar';
-
-export default function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  return (
-    <FacilityProvider>
-      <div className="flex min-h-screen bg-black text-white">
-        {/* The Sidebar is fixed to the left */}
-        <Sidebar />
-        
-        {/* The Main Content Area */}
-        <main className="flex-1 overflow-y-auto">
-          {children}
-        </main>
-      </div>
-    </FacilityProvider>
   );
 }
 </file>
@@ -1203,6 +1584,348 @@ export default function GlobalError({
 
 <file path="src/app/globals.css">
 @import "tailwindcss";
+</file>
+
+<file path="src/components/TeamSettingsView.tsx">
+'use client';
+
+import { useEffect, useState } from 'react';
+import toast from 'react-hot-toast';
+import {
+  getOrgDirectors,
+  inviteFacilityDirector,
+  toggleUserStatus,
+} from 'src/app/actions/compliance';
+import { useFacility } from 'src/context/FacilityContext';
+
+interface DirectorProfile {
+  id: string;
+  full_name: string | null;
+  email: string | null;
+  account_status: string | null;
+  org_id: string | null;
+}
+
+export default function TeamSettingsView() {
+  const { facilityList } = useFacility();
+
+  const [directors, setDirectors] = useState<DirectorProfile[]>([]);
+  const [loadingDirectors, setLoadingDirectors] = useState(true);
+
+  // Invite form state
+  const [inviteFullName, setInviteFullName] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteFacilityId, setInviteFacilityId] = useState('');
+  const [inviting, setInviting] = useState(false);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+
+  // Per-row deactivation loading
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+
+  const loadDirectors = async () => {
+    setLoadingDirectors(true);
+    try {
+      const data = await getOrgDirectors();
+      setDirectors(data);
+    } catch (err) {
+      console.error('Failed to load directors:', err);
+      toast.error('Failed to load team members.');
+    } finally {
+      setLoadingDirectors(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadDirectors();
+  }, []);
+
+  const validateForm = (): boolean => {
+    const errors: Record<string, string> = {};
+    if (!inviteFullName.trim()) errors.fullName = 'Full name is required.';
+    if (!inviteEmail.trim()) {
+      errors.email = 'Email address is required.';
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(inviteEmail.trim())) {
+      errors.email = 'Please enter a valid email address.';
+    }
+    if (!inviteFacilityId) errors.facility = 'Please assign a facility.';
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const handleInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validateForm()) return;
+
+    setInviting(true);
+    try {
+      const result = await inviteFacilityDirector(
+        inviteEmail.trim(),
+        inviteFullName.trim(),
+        inviteFacilityId
+      );
+      if (result.success) {
+        toast.success(`Invitation sent to ${inviteEmail.trim()}. They will receive a setup email shortly.`);
+        setInviteFullName('');
+        setInviteEmail('');
+        setInviteFacilityId('');
+        setFormErrors({});
+        await loadDirectors();
+      } else {
+        toast.error(result.error ?? 'Failed to send invitation.');
+      }
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  const handleToggleStatus = async (director: DirectorProfile) => {
+    const isActive = director.account_status === 'active';
+    const newStatus: 'active' | 'deactivated' = isActive ? 'deactivated' : 'active';
+    setTogglingId(director.id);
+    try {
+      const result = await toggleUserStatus(director.id, newStatus);
+      if (result.success) {
+        toast.success(result.message ?? `Account ${newStatus}.`);
+        setDirectors((prev) =>
+          prev.map((d) =>
+            d.id === director.id ? { ...d, account_status: newStatus } : d
+          )
+        );
+      } else {
+        toast.error(result.error ?? 'Failed to update account status.');
+      }
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto space-y-8">
+      {/* ── Invite New Director ─────────────────────────────────────────── */}
+      <section className="bg-slate-800 border border-slate-700 rounded-2xl overflow-hidden shadow-lg">
+        <div className="bg-gradient-to-r from-indigo-900 to-slate-800 px-8 py-5 border-b border-slate-700">
+          <h2 className="text-xl font-bold text-white flex items-center gap-2">
+            👥 Invite New Director
+          </h2>
+          <p className="text-slate-400 text-sm mt-1">
+            Send a secure setup invitation to a new Facility Director. They will receive an email to
+            configure their password and access their assigned facility.
+          </p>
+        </div>
+
+        <form onSubmit={handleInvite} noValidate className="p-8 space-y-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {/* Full Name */}
+            <div>
+              <label className="block text-xs font-black text-slate-400 uppercase tracking-wider mb-1.5">
+                Full Name <span className="text-rose-400">*</span>
+              </label>
+              <input
+                type="text"
+                value={inviteFullName}
+                onChange={(e) => {
+                  setInviteFullName(e.target.value);
+                  if (formErrors.fullName) setFormErrors((p) => ({ ...p, fullName: '' }));
+                }}
+                placeholder="e.g. Jane Doe"
+                className={`w-full bg-slate-900 border rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors ${
+                  formErrors.fullName ? 'border-rose-500' : 'border-slate-700'
+                }`}
+              />
+              {formErrors.fullName && (
+                <p className="text-xs text-rose-400 mt-1 font-medium">⚠ {formErrors.fullName}</p>
+              )}
+            </div>
+
+            {/* Email */}
+            <div>
+              <label className="block text-xs font-black text-slate-400 uppercase tracking-wider mb-1.5">
+                Email Address <span className="text-rose-400">*</span>
+              </label>
+              <input
+                type="email"
+                value={inviteEmail}
+                onChange={(e) => {
+                  setInviteEmail(e.target.value);
+                  if (formErrors.email) setFormErrors((p) => ({ ...p, email: '' }));
+                }}
+                placeholder="director@facility.org"
+                className={`w-full bg-slate-900 border rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors ${
+                  formErrors.email ? 'border-rose-500' : 'border-slate-700'
+                }`}
+              />
+              {formErrors.email && (
+                <p className="text-xs text-rose-400 mt-1 font-medium">⚠ {formErrors.email}</p>
+              )}
+            </div>
+
+            {/* Facility Assignment */}
+            <div className="md:col-span-2">
+              <label className="block text-xs font-black text-slate-400 uppercase tracking-wider mb-1.5">
+                Assign to Facility <span className="text-rose-400">*</span>
+              </label>
+              <select
+                value={inviteFacilityId}
+                onChange={(e) => {
+                  setInviteFacilityId(e.target.value);
+                  if (formErrors.facility) setFormErrors((p) => ({ ...p, facility: '' }));
+                }}
+                className={`w-full bg-slate-900 border rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors ${
+                  formErrors.facility ? 'border-rose-500' : 'border-slate-700'
+                }`}
+              >
+                <option value="">— Select a facility —</option>
+                {facilityList.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+              {formErrors.facility && (
+                <p className="text-xs text-rose-400 mt-1 font-medium">⚠ {formErrors.facility}</p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 pt-2">
+            <button
+              type="submit"
+              disabled={inviting}
+              className={`px-6 py-2.5 rounded-xl font-bold text-sm transition-all shadow-sm ${
+                inviting
+                  ? 'bg-slate-700 text-slate-500 cursor-not-allowed'
+                  : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+              }`}
+            >
+              {inviting ? (
+                <span className="flex items-center gap-2">
+                  <span className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+                  Sending Invitation…
+                </span>
+              ) : (
+                '✉️ Send Invitation'
+              )}
+            </button>
+            <p className="text-xs text-slate-500">
+              The director will receive a secure link to set their password.
+            </p>
+          </div>
+        </form>
+      </section>
+
+      {/* ── Active Team Management ──────────────────────────────────────── */}
+      <section className="bg-slate-800 border border-slate-700 rounded-2xl overflow-hidden shadow-lg">
+        <div className="bg-gradient-to-r from-slate-900 to-slate-800 px-8 py-5 border-b border-slate-700">
+          <h2 className="text-xl font-bold text-white flex items-center gap-2">
+            🗂️ Active Team Management
+          </h2>
+          <p className="text-slate-400 text-sm mt-1">
+            All Facility Directors registered under your organization.
+          </p>
+        </div>
+
+        <div className="p-6">
+          {loadingDirectors ? (
+            <div className="py-12 text-center">
+              <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+              <p className="text-slate-500 text-sm italic">Loading team members…</p>
+            </div>
+          ) : directors.length === 0 ? (
+            <div className="border border-dashed border-slate-700 rounded-xl p-12 text-center">
+              <p className="text-slate-500 italic text-sm">
+                No directors found. Invite your first Facility Director above.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-slate-700">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-900 border-b border-slate-700">
+                    <th className="text-left py-3 px-5 text-xs font-black uppercase tracking-wider text-slate-400">
+                      Name
+                    </th>
+                    <th className="text-left py-3 px-5 text-xs font-black uppercase tracking-wider text-slate-400">
+                      Email
+                    </th>
+                    <th className="text-left py-3 px-5 text-xs font-black uppercase tracking-wider text-slate-400">
+                      Status
+                    </th>
+                    <th className="py-3 px-5 text-xs font-black uppercase tracking-wider text-slate-400 text-right">
+                      Action
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-700/60">
+                  {directors.map((director) => {
+                    const isActive = director.account_status === 'active';
+                    const isToggling = togglingId === director.id;
+                    return (
+                      <tr key={director.id} className="hover:bg-slate-700/30 transition-colors">
+                        <td className="py-4 px-5">
+                          <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
+                              {director.full_name?.[0]?.toUpperCase() ?? '?'}
+                            </div>
+                            <span className="font-semibold text-white">
+                              {director.full_name ?? '—'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-4 px-5 text-slate-400 font-mono text-xs">
+                          {director.email ?? '—'}
+                        </td>
+                        <td className="py-4 px-5">
+                          <span
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${
+                              isActive
+                                ? 'bg-emerald-900/50 text-emerald-400 border border-emerald-700/50'
+                                : 'bg-slate-700 text-slate-400 border border-slate-600'
+                            }`}
+                          >
+                            <span
+                              className={`w-1.5 h-1.5 rounded-full ${
+                                isActive ? 'bg-emerald-400' : 'bg-slate-500'
+                              }`}
+                            />
+                            {isActive ? 'Active' : 'Deactivated'}
+                          </span>
+                        </td>
+                        <td className="py-4 px-5 text-right">
+                          <button
+                            onClick={() => handleToggleStatus(director)}
+                            disabled={isToggling}
+                            className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                              isToggling
+                                ? 'opacity-50 cursor-not-allowed bg-slate-700 text-slate-500 border-slate-600'
+                                : isActive
+                                ? 'bg-rose-900/30 text-rose-400 border-rose-700/50 hover:bg-rose-900/60 hover:border-rose-600'
+                                : 'bg-emerald-900/30 text-emerald-400 border-emerald-700/50 hover:bg-emerald-900/60 hover:border-emerald-600'
+                            }`}
+                          >
+                            {isToggling ? (
+                              <span className="flex items-center gap-1.5">
+                                <span className="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin" />
+                                Updating…
+                              </span>
+                            ) : isActive ? (
+                              'Deactivate'
+                            ) : (
+                              'Reactivate'
+                            )}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
 </file>
 
 <file path="src/components/ToastProvider.tsx">
@@ -1704,15 +2427,13 @@ export async function generateAuditReport(facilityId: string): Promise<void> {
 }
 </file>
 
-<file path="src/proxy.ts">
+<file path="src/middleware.ts">
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
-export async function proxy(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   let response = NextResponse.next({
-    request: {
-      headers: request.headers,
-    },
+    request: { headers: request.headers },
   });
 
   const supabase = createServerClient(
@@ -1724,12 +2445,8 @@ export async function proxy(request: NextRequest) {
           return request.cookies.getAll();
         },
         setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            request.cookies.set(name, value)
-          );
-          response = NextResponse.next({
-            request,
-          });
+          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
+          response = NextResponse.next({ request });
           cookiesToSet.forEach(({ name, value, options }) =>
             response.cookies.set(name, value, options)
           );
@@ -1738,27 +2455,41 @@ export async function proxy(request: NextRequest) {
     }
   );
 
-  // Check if user has a valid session
   const {
     data: { session },
   } = await supabase.auth.getSession();
 
-  // If accessing protected routes without a session, redirect to login
-  if (!session && request.nextUrl.pathname.startsWith('/dashboard')) {
-    const redirectUrl = new URL('/', request.url);
-    return NextResponse.redirect(redirectUrl);
+  const { pathname } = request.nextUrl;
+
+  // ── Unauthenticated guards ──────────────────────────────────────────────────
+  if (!session) {
+    if (
+      pathname.startsWith('/dashboard') ||
+      pathname.startsWith('/onboarding') ||
+      pathname.startsWith('/admin')
+    ) {
+      return NextResponse.redirect(new URL('/', request.url));
+    }
+    return response;
   }
 
-  // If accessing onboarding without a session, redirect to login
-  if (!session && request.nextUrl.pathname.startsWith('/onboarding')) {
-    const redirectUrl = new URL('/', request.url);
-    return NextResponse.redirect(redirectUrl);
+  // ── Onboarding completion guard (authenticated users only) ─────────────────
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('onboarding_completed')
+    .eq('id', session.user.id)
+    .single();
+
+  const onboardingCompleted = profile?.onboarding_completed === true;
+
+  // Incomplete onboarding → force to onboarding wizard (skip if already there)
+  if (!onboardingCompleted && pathname.startsWith('/dashboard')) {
+    return NextResponse.redirect(new URL('/onboarding', request.url));
   }
 
-  // If accessing admin routes without a session, redirect to login
-  if (!session && request.nextUrl.pathname.startsWith('/admin')) {
-    const redirectUrl = new URL('/', request.url);
-    return NextResponse.redirect(redirectUrl);
+  // Completed onboarding → prevent revisiting the wizard
+  if (onboardingCompleted && pathname.startsWith('/onboarding')) {
+    return NextResponse.redirect(new URL('/dashboard', request.url));
   }
 
   return response;
@@ -1772,11 +2503,32 @@ export const config = {
      * - _next/static (static files)
      * - _next/image (image optimization files)
      * - favicon.ico, sitemap.xml, robots.txt (metadata files)
-     * - public folder files (images, fonts, etc.)
+     * - public folder static assets
      */
     '/((?!api|_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|woff|woff2|ttf|eot)$).*)',
   ],
 };
+</file>
+
+<file path="supabase/migrations/20260526000000_add_onboarding_completed_to_profiles.sql">
+-- Add onboarding_completed flag to profiles table.
+-- Defaults to false; set to true once an operator has successfully
+-- completed the facility-setup wizard via saveOnboardingData().
+ALTER TABLE profiles
+  ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN NOT NULL DEFAULT false;
+
+-- Back-fill existing users who already have facilities (migration-safe rollout).
+-- Any profile whose org already has at least one active facility is considered
+-- to have completed onboarding.
+UPDATE profiles p
+SET onboarding_completed = true
+WHERE p.org_id IS NOT NULL
+  AND EXISTS (
+    SELECT 1
+    FROM facilities f
+    WHERE f.org_id = p.org_id
+    LIMIT 1
+  );
 </file>
 
 <file path=".gitignore">
@@ -2060,6 +2812,213 @@ export async function submitRegistrationRequest(formData: {
       error: message,
     };
   }
+}
+</file>
+
+<file path="src/app/admin/layout.tsx">
+import { redirect } from 'next/navigation';
+import { createClient } from 'src/app/utils/supabase/server';
+
+/**
+ * Server-side layout guard for all /admin routes.
+ * Enforces role === 'admin' before any page content renders.
+ * Non-admin users are redirected silently to avoid leaking page existence.
+ */
+export default async function AdminLayout({ children }: { children: React.ReactNode }) {
+  const supabase = await createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+
+  if (!session) redirect('/');
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('role')
+    .eq('id', session.user.id)
+    .single();
+
+  if (profile?.role !== 'admin') redirect('/dashboard');
+
+  return <>{children}</>;
+}
+</file>
+
+<file path="src/app/auth/reset-password/page.tsx">
+'use client';
+
+import { useState, Suspense } from 'react';
+import { useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
+import { createClient } from 'src/app/utils/supabase/client';
+
+function ResetPasswordForm() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const next = searchParams.get('next') || '/dashboard';
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters.');
+      return;
+    }
+    if (password !== confirm) {
+      setError('Passwords do not match.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const supabase = createClient();
+      const { error: updateError } = await supabase.auth.updateUser({ password });
+      if (updateError) {
+        setError(updateError.message);
+      } else {
+        router.replace(next);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center px-4">
+      <div className="w-full max-w-md">
+        <div className="bg-white rounded-2xl shadow-2xl p-8">
+          <div className="mb-8">
+            <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mb-4">
+              <span className="text-2xl">🔒</span>
+            </div>
+            <h1 className="text-2xl font-bold text-slate-900 mb-1">Set your password</h1>
+            <p className="text-slate-500 text-sm">
+              Choose a strong password for your AR Compliance Guard account.
+            </p>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {error && (
+              <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg">
+                <p className="text-sm text-rose-800 font-medium">❌ {error}</p>
+              </div>
+            )}
+
+            <div>
+              <label htmlFor="password" className="block text-sm font-semibold text-slate-700 mb-2">
+                New Password
+              </label>
+              <input
+                type="password"
+                id="password"
+                required
+                minLength={8}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-slate-900"
+                placeholder="Min. 8 characters"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="confirm" className="block text-sm font-semibold text-slate-700 mb-2">
+                Confirm New Password
+              </label>
+              <input
+                type="password"
+                id="confirm"
+                required
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-slate-900"
+                placeholder="Re-enter password"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className={`w-full py-3.5 px-6 rounded-lg font-bold text-white transition-all ${
+                submitting
+                  ? 'bg-slate-400 cursor-not-allowed'
+                  : 'bg-blue-600 hover:bg-blue-700 shadow-lg hover:shadow-xl'
+              }`}
+            >
+              {submitting ? (
+                <span className="flex items-center justify-center gap-2">
+                  <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  Updating…
+                </span>
+              ) : (
+                'Update Password'
+              )}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function ResetPasswordPage() {
+  return (
+    <Suspense>
+      <ResetPasswordForm />
+    </Suspense>
+  );
+}
+</file>
+
+<file path="src/app/dashboard/layout.tsx">
+import { redirect } from 'next/navigation';
+import { createClient } from 'src/app/utils/supabase/server';
+import { createAdminClient } from 'src/app/utils/supabase/admin';
+import { FacilityProvider } from 'src/context/FacilityContext';
+import Sidebar from 'src/components/Sidebar';
+
+export default async function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const supabase = await createClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (!session) {
+    redirect('/');
+  }
+
+  const adminSupabase = createAdminClient();
+  const { data: profile } = await adminSupabase
+    .from('profiles')
+    .select('onboarding_completed')
+    .eq('id', session.user.id)
+    .single();
+
+  if (!profile?.onboarding_completed) {
+    redirect('/onboarding');
+  }
+
+  return (
+    <FacilityProvider>
+      <div className="flex min-h-screen bg-black text-white">
+        {/* The Sidebar is fixed to the left */}
+        <Sidebar />
+
+        {/* The Main Content Area */}
+        <main className="flex-1 overflow-y-auto">
+          {children}
+        </main>
+      </div>
+    </FacilityProvider>
+  );
 }
 </file>
 
@@ -2551,136 +3510,6 @@ export default function FacilitySettingsView({ facilityId }: Props) {
       </section>
     </div>
   );
-}
-</file>
-
-<file path="src/app/actions/onboarding-save.ts">
-'use server';
-
-import { createClient } from 'src/app/utils/supabase/server';
-import { createAdminClient } from 'src/app/utils/supabase/admin';
-import type { FacilityScopeToggles, FacilityType } from '@/lib/types';
-import { FACILITY_TOGGLE_KEYS } from '@/lib/types';
-
-export interface FacilityPayload {
-  name: string;
-  type: FacilityType;
-  licenseNumber: string;
-  capacity: number;
-  toggles: Partial<FacilityScopeToggles>;
-}
-
-/**
- * Persists the onboarding facilities into the user's *existing* organization.
- *
- * The organization and profile are created by the admin approval action
- * (admin.ts → approveRegistrationRequest). This action must NOT create a new
- * org — it simply links the facilities to the one already attached to the user's profile.
- *
- * It also updates the org name from whatever the user entered in Step 1.
- *
- * Idempotency guard: if the org already has facilities, returns a success signal
- * so the UI redirects to the dashboard rather than blocking the user.
- */
-/**
- * Lightweight check used by the onboarding page on mount.
- * Returns true if the current user's org already has facilities (onboarding is complete).
- */
-export async function isOnboardingComplete(): Promise<boolean> {
-  try {
-    const supabase = await createClient();
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) return false;
-
-    const supabaseAdmin = createAdminClient();
-    const { data: profile } = await supabaseAdmin
-      .from('profiles')
-      .select('org_id')
-      .eq('id', session.user.id)
-      .single();
-    if (!profile?.org_id) return false;
-
-    const { count } = await supabaseAdmin
-      .from('facilities')
-      .select('id', { count: 'exact', head: true })
-      .eq('org_id', profile.org_id);
-
-    return (count ?? 0) > 0;
-  } catch {
-    return false;
-  }
-}
-
-export async function saveOnboardingData(orgName: string, facilities: FacilityPayload[]) {
-  const supabase = await createClient();
-  const supabaseAdmin = createAdminClient();
-
-  // 1. Verify active session
-  const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-  if (sessionError || !session) {
-    return { success: false as const, error: 'No active session. Please sign in again.' };
-  }
-
-  // 2. Retrieve the existing org_id from the user's profile
-  const { data: profile, error: profileError } = await supabaseAdmin
-    .from('profiles')
-    .select('org_id')
-    .eq('id', session.user.id)
-    .single();
-
-  if (profileError || !profile?.org_id) {
-    console.error('❌ Profile lookup failed during onboarding:', profileError);
-    return { success: false as const, error: 'Your account profile is not yet configured. Please contact support.' };
-  }
-
-  const orgId = profile.org_id;
-
-  // 3. Idempotency guard — if facilities already exist for this org, skip insertion
-  const { count: existingCount } = await supabaseAdmin
-    .from('facilities')
-    .select('id', { count: 'exact', head: true })
-    .eq('org_id', orgId);
-
-  if (existingCount && existingCount > 0) {
-    return { success: true as const, orgId };
-  }
-
-  // 4. Optionally update the org name from what the user entered
-  if (orgName.trim()) {
-    await supabaseAdmin
-      .from('organizations')
-      .update({ name: orgName.trim() })
-      .eq('id', orgId);
-  }
-
-  // 5. Insert facilities bound to the existing org
-  const facilitiesToInsert = facilities.map((f) => {
-    const togglePayload: Record<string, boolean> = {};
-    for (const key of FACILITY_TOGGLE_KEYS) {
-      togglePayload[key] = Boolean(f.toggles[key]);
-    }
-    return {
-      org_id: orgId,
-      name: f.name,
-      facility_type: f.type,
-      license_number: f.licenseNumber,
-      capacity: f.capacity,
-      compliance_score: 0,
-      ...togglePayload,
-    };
-  });
-
-  const { error: facError } = await supabaseAdmin.from('facilities').insert(facilitiesToInsert);
-
-  if (facError) {
-    console.error('❌ Bulk facility insertion failed:', facError);
-    return {
-      success: false as const,
-      error: 'Facilities could not be saved. Please try again or contact support.',
-    };
-  }
-
-  return { success: true as const, orgId };
 }
 </file>
 
@@ -3355,262 +4184,144 @@ const nextConfig: NextConfig = {
 export default nextConfig;
 </file>
 
-<file path="src/app/actions/admin.ts">
-// src/app/actions/admin.ts
+<file path="src/app/actions/onboarding-save.ts">
 'use server';
 
-import { createAdminClient } from 'src/app/utils/supabase/admin';
 import { createClient } from 'src/app/utils/supabase/server';
+import { createAdminClient } from 'src/app/utils/supabase/admin';
+import type { FacilityScopeToggles, FacilityType } from '@/lib/types';
+import { FACILITY_TOGGLE_KEYS } from '@/lib/types';
 
-/**
- * Multi-Tenant Security Helper
- * Verifies authenticated user session and retrieves their organization context.
- * Enforces account status and throws authorization error if session is invalid or account is deactivated.
- */
-async function getAuthenticatedUserContext() {
-  const supabase = await createClient();
-  
-  // 1. Verify active session exists
-  const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-  
-  if (sessionError || !session) {
-    throw new Error('Unauthorized: No valid authentication session found');
-  }
-  
-  const userId = session.user.id;
-  
-  // 2. Query profiles table to get user's verified org_id, role, and account_status
-  const { data: profile, error: profileError } = await supabase
-    .from('profiles')
-    .select('org_id, role, account_status')
-    .eq('id', userId)
-    .single();
-  
-  if (profileError || !profile) {
-    throw new Error('Unauthorized: User profile not found or incomplete');
-  }
-  
-  // MODIFIED GATE: Global platform administrators bypass local tenant organization checks
-  if (profile.role !== 'admin' && !profile.org_id) {
-    throw new Error('Unauthorized: User is not associated with any organization');
-  }
-  
-  // 3. Enforce account status gate - block deactivated accounts
-  if (profile.account_status === 'deactivated') {
-    throw new Error('Access Denied: This account has been deactivated by your organization administrator.');
-  }
-  
-  return {
-    userId,
-    orgId: profile.org_id || null, // Gracefully handle null for system admins
-    role: profile.role,
-    accountStatus: profile.account_status
-  };
+export interface FacilityPayload {
+  name: string;
+  type: FacilityType;
+  licenseNumber: string;
+  capacity: number;
+  toggles: Partial<FacilityScopeToggles>;
 }
 
 /**
- * Fetches all pending registration requests from the database.
- * SECURITY: Only accessible by users with 'admin' role.
- */
-export async function getPendingRequests() {
-  try {
-    // 1. Authenticate and verify admin role
-    const { role } = await getAuthenticatedUserContext();
-    
-    if (role !== 'admin') {
-      throw new Error('Forbidden: Admin access required');
-    }
-    
-    // 2. Query pending registration requests
-    const supabase = createAdminClient();
-    const { data: requests, error } = await supabase
-      .from('registration_requests')
-      .select('*')
-      .eq('status', 'pending')
-      .order('submitted_at', { ascending: true });
-    
-    if (error) {
-      console.error('❌ Error fetching pending requests:', error);
-      throw new Error('Failed to fetch pending registration requests');
-    }
-    
-    return {
-      success: true,
-      requests: requests || []
-    };
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
-    console.error('❌ Exception in getPendingRequests:', error);
-    return {
-      success: false,
-      error: message,
-      requests: []
-    };
-  }
-}
-
-/**
- * Approves a registration request and performs full onboarding cycle:
- * 1. Creates organization
- * 2. Sends auth invitation email
- * 3. Creates user profile with owner role
- * 4. Updates request status to approved
- * * SECURITY: Only accessible by users with 'admin' role.
- */
-export async function approveRegistrationRequest(requestId: string) {
-  try {
-    // 1. Authenticate and verify admin role
-    const { role } = await getAuthenticatedUserContext();
-    
-    if (role !== 'admin') {
-      throw new Error('Forbidden: Admin access required');
-    }
-    
-    const supabase = createAdminClient();
-    
-    // 2. Fetch the specific registration request
-    const { data: request, error: fetchError } = await supabase
-      .from('registration_requests')
-      .select('*')
-      .eq('id', requestId)
-      .single();
-    
-    if (fetchError || !request) {
-      console.error('❌ Error fetching registration request:', fetchError);
-      throw new Error('Registration request not found');
-    }
-    
-    if (request.status !== 'pending') {
-      throw new Error(`Request has already been ${request.status}`);
-    }
-    
-    console.log('📝 Processing approval for:', request.business_name);
-    
-    // 3. Create organization
-    const { data: org, error: orgError } = await supabase
-      .from('organizations')
-      .insert([{ name: request.business_name }])
-      .select()
-      .single();
-    
-    if (orgError || !org) {
-      console.error('❌ Error creating organization:', orgError);
-      throw new Error('Failed to create organization');
-    }
-    
-    console.log('✅ Organization created:', org.id);
-    
-    // 4. Send auth invitation email using Supabase Admin API
-    const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(
-      request.email,
-      {
-        data: {
-          business_name: request.business_name,
-          contact_name: request.contact_name,
-          org_id: org.id
-        },
-        redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/onboarding`
-      }
-    );
-    
-    if (inviteError || !inviteData.user) {
-      console.error('❌ Error sending invitation:', inviteError);
-      throw new Error('Failed to send invitation email');
-    }
-    
-    const newUserId = inviteData.user.id;
-    console.log('✅ Invitation sent to:', request.email, '| User ID:', newUserId);
-    
-    // 5. Create user profile with owner role
-    const { error: profileError } = await supabase
-      .from('profiles')
-      .insert([{
-        id: newUserId,
-        org_id: org.id,
-        role: 'owner',
-        account_status: 'active',
-        email: request.email,
-        full_name: request.contact_name
-      }]);
-    
-    if (profileError) {
-      console.error('❌ Error creating user profile:', profileError);
-      throw new Error('Failed to create user profile');
-    }
-    
-    console.log('✅ User profile created for:', newUserId);
-    
-    // 6. Update registration request status to approved
-    const { error: updateError } = await supabase
-      .from('registration_requests')
-      .update({
-        status: 'approved',
-        approved_at: new Date().toISOString()
-      })
-      .eq('id', requestId);
-    
-    if (updateError) {
-      console.error('❌ Error updating request status:', updateError);
-      throw new Error('Failed to update request status');
-    }
-    
-    console.log('✅ Registration request approved:', requestId);
-    
-    return {
-      success: true,
-      message: `Successfully approved ${request.business_name} and sent invitation to ${request.email}`,
-      orgId: org.id,
-      userId: newUserId
-    };
-    
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
-    console.error('❌ Exception in approveRegistrationRequest:', error);
-    return {
-      success: false,
-      error: message
-    };
-  }
-}
-
-/**
- * Denies a pending registration request.
- * Marks it as 'denied' in the database — no invite is sent.
+ * Persists the onboarding facilities into the user's *existing* organization.
  *
- * SECURITY: Only accessible by users with 'admin' role.
+ * The organization and profile are created by the admin approval action
+ * (admin.ts → approveRegistrationRequest). This action must NOT create a new
+ * org — it simply links the facilities to the one already attached to the user's profile.
+ *
+ * It also updates the org name from whatever the user entered in Step 1.
+ *
+ * Idempotency guard: if the org already has facilities, returns a success signal
+ * so the UI redirects to the dashboard rather than blocking the user.
  */
-export async function denyRegistrationRequest(requestId: string) {
+/**
+ * Lightweight check used by the onboarding page on mount.
+ * Returns true if the current user's org already has facilities (onboarding is complete).
+ */
+export async function isOnboardingComplete(): Promise<boolean> {
   try {
-    const { role } = await getAuthenticatedUserContext();
-    if (role !== 'admin') throw new Error('Forbidden: Admin access required');
+    const supabase = await createClient();
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return false;
 
-    const supabase = createAdminClient();
-
-    const { data: request, error: fetchError } = await supabase
-      .from('registration_requests')
-      .select('business_name, status')
-      .eq('id', requestId)
+    const supabaseAdmin = createAdminClient();
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('org_id')
+      .eq('id', session.user.id)
       .single();
+    if (!profile?.org_id) return false;
 
-    if (fetchError || !request) throw new Error('Registration request not found');
-    if (request.status !== 'pending') throw new Error(`Request is already ${request.status}`);
+    const { count } = await supabaseAdmin
+      .from('facilities')
+      .select('id', { count: 'exact', head: true })
+      .eq('org_id', profile.org_id);
 
-    const { error: updateError } = await supabase
-      .from('registration_requests')
-      .update({ status: 'denied', approved_at: new Date().toISOString() })
-      .eq('id', requestId);
-
-    if (updateError) throw updateError;
-
-    return {
-      success: true,
-      message: `Registration request from ${request.business_name} has been denied.`,
-    };
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
-    console.error('❌ Exception in denyRegistrationRequest:', error);
-    return { success: false, error: message };
+    return (count ?? 0) > 0;
+  } catch {
+    return false;
   }
+}
+
+export async function saveOnboardingData(orgName: string, facilities: FacilityPayload[]) {
+  const supabase = await createClient();
+  const supabaseAdmin = createAdminClient();
+
+  // 1. Verify active session
+  const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError || !session) {
+    return { success: false as const, error: 'No active session. Please sign in again.' };
+  }
+
+  // 2. Retrieve the existing org_id from the user's profile
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from('profiles')
+    .select('org_id')
+    .eq('id', session.user.id)
+    .single();
+
+  if (profileError || !profile?.org_id) {
+    console.error('❌ Profile lookup failed during onboarding:', profileError);
+    return { success: false as const, error: 'Your account profile is not yet configured. Please contact support.' };
+  }
+
+  const orgId = profile.org_id;
+
+  // 3. Idempotency guard — if facilities already exist for this org, skip insertion.
+  //    Still mark onboarding_completed in case this user predates the column.
+  const { count: existingCount } = await supabaseAdmin
+    .from('facilities')
+    .select('id', { count: 'exact', head: true })
+    .eq('org_id', orgId);
+
+  if (existingCount && existingCount > 0) {
+    await supabaseAdmin
+      .from('profiles')
+      .update({ onboarding_completed: true })
+      .eq('id', session.user.id);
+    return { success: true as const, orgId };
+  }
+
+  // 4. Optionally update the org name from what the user entered
+  if (orgName.trim()) {
+    await supabaseAdmin
+      .from('organizations')
+      .update({ name: orgName.trim() })
+      .eq('id', orgId);
+  }
+
+  // 5. Insert facilities bound to the existing org
+  const facilitiesToInsert = facilities.map((f) => {
+    const togglePayload: Record<string, boolean> = {};
+    for (const key of FACILITY_TOGGLE_KEYS) {
+      togglePayload[key] = Boolean(f.toggles[key]);
+    }
+    return {
+      org_id: orgId,
+      name: f.name,
+      facility_type: f.type,
+      license_number: f.licenseNumber,
+      capacity: f.capacity,
+      compliance_score: 0,
+      ...togglePayload,
+    };
+  });
+
+  const { error: facError } = await supabaseAdmin.from('facilities').insert(facilitiesToInsert);
+
+  if (facError) {
+    console.error('❌ Bulk facility insertion failed:', facError);
+    return {
+      success: false as const,
+      error: 'Facilities could not be saved. Please try again or contact support.',
+    };
+  }
+
+  // Mark onboarding as complete now that all facilities are committed.
+  await supabaseAdmin
+    .from('profiles')
+    .update({ onboarding_completed: true })
+    .eq('id', session.user.id);
+
+  return { success: true as const, orgId };
 }
 </file>
 
@@ -4879,6 +5590,591 @@ export interface RegulatoryStatus {
 }
 </file>
 
+<file path="src/app/actions/admin.ts">
+// src/app/actions/admin.ts
+'use server';
+
+import { createAdminClient } from 'src/app/utils/supabase/admin';
+import { createClient } from 'src/app/utils/supabase/server';
+import { headers } from 'next/headers';
+import { revalidatePath } from 'next/cache';
+
+/**
+ * Multi-Tenant Security Helper
+ * Verifies authenticated user session and retrieves their organization context.
+ * Enforces account status and throws authorization error if session is invalid or account is deactivated.
+ */
+async function getAuthenticatedUserContext() {
+  const supabase = await createClient();
+  
+  // 1. Verify active session exists
+  const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+  
+  if (sessionError || !session) {
+    throw new Error('Unauthorized: No valid authentication session found');
+  }
+  
+  const userId = session.user.id;
+  
+  // 2. Query profiles table to get user's verified org_id, role, and account_status
+  const { data: profile, error: profileError } = await supabase
+    .from('profiles')
+    .select('org_id, role, account_status')
+    .eq('id', userId)
+    .single();
+  
+  if (profileError || !profile) {
+    throw new Error('Unauthorized: User profile not found or incomplete');
+  }
+  
+  // MODIFIED GATE: Global platform administrators bypass local tenant organization checks
+  if (profile.role !== 'admin' && !profile.org_id) {
+    throw new Error('Unauthorized: User is not associated with any organization');
+  }
+  
+  // 3. Enforce account status gate - block deactivated accounts
+  if (profile.account_status === 'deactivated') {
+    throw new Error('Access Denied: This account has been deactivated by your organization administrator.');
+  }
+  
+  return {
+    userId,
+    orgId: profile.org_id || null, // Gracefully handle null for system admins
+    role: profile.role,
+    accountStatus: profile.account_status
+  };
+}
+
+/**
+ * Fetches all pending registration requests from the database.
+ * SECURITY: Only accessible by users with 'admin' role.
+ */
+export async function getPendingRequests() {
+  try {
+    // 1. Authenticate and verify admin role
+    const { role } = await getAuthenticatedUserContext();
+    
+    if (role !== 'admin') {
+      throw new Error('Forbidden: Admin access required');
+    }
+    
+    // 2. Query pending registration requests
+    const supabase = createAdminClient();
+    const { data: requests, error } = await supabase
+      .from('registration_requests')
+      .select('*')
+      .eq('status', 'pending')
+      .order('submitted_at', { ascending: true });
+    
+    if (error) {
+      console.error('❌ Error fetching pending requests:', error);
+      throw new Error('Failed to fetch pending registration requests');
+    }
+    
+    return {
+      success: true,
+      requests: requests || []
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
+    console.error('❌ Exception in getPendingRequests:', error);
+    return {
+      success: false,
+      error: message,
+      requests: []
+    };
+  }
+}
+
+/**
+ * Approves a registration request and performs full onboarding cycle:
+ * 1. Creates organization
+ * 2. Sends auth invitation email
+ * 3. Creates user profile with owner role
+ * 4. Updates request status to approved
+ * * SECURITY: Only accessible by users with 'admin' role.
+ */
+export async function approveRegistrationRequest(requestId: string) {
+  try {
+    // 1. Authenticate and verify admin role
+    const { role } = await getAuthenticatedUserContext();
+    
+    if (role !== 'admin') {
+      throw new Error('Forbidden: Admin access required');
+    }
+    
+    const supabase = createAdminClient();
+    
+    // 2. Fetch the specific registration request
+    const { data: request, error: fetchError } = await supabase
+      .from('registration_requests')
+      .select('*')
+      .eq('id', requestId)
+      .single();
+    
+    if (fetchError || !request) {
+      console.error('❌ Error fetching registration request:', fetchError);
+      throw new Error('Registration request not found');
+    }
+    
+    if (request.status !== 'pending') {
+      throw new Error(`Request has already been ${request.status}`);
+    }
+    
+    console.log('📝 Processing approval for:', request.business_name);
+    
+    // 3. Create organization
+    const { data: org, error: orgError } = await supabase
+      .from('organizations')
+      .insert([{ name: request.business_name }])
+      .select()
+      .single();
+    
+    if (orgError || !org) {
+      console.error('❌ Error creating organization:', orgError);
+      throw new Error('Failed to create organization');
+    }
+    
+    console.log('✅ Organization created:', org.id);
+    
+    // 4. Send auth invitation email using Supabase Admin API
+    const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(
+      request.email,
+      {
+        data: {
+          business_name: request.business_name,
+          contact_name: request.contact_name,
+          org_id: org.id
+        },
+        redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/auth/callback?next=${encodeURIComponent('/auth/reset-password?next=/onboarding')}`
+      }
+    );
+    
+    if (inviteError || !inviteData.user) {
+      console.error('❌ Error sending invitation:', inviteError);
+      throw new Error('Failed to send invitation email');
+    }
+    
+    const newUserId = inviteData.user.id;
+    console.log('✅ Invitation sent to:', request.email, '| User ID:', newUserId);
+    
+    // 5. Create user profile with owner role
+    const { error: profileError } = await supabase
+      .from('profiles')
+      .insert([{
+        id: newUserId,
+        org_id: org.id,
+        role: 'owner',
+        account_status: 'active',
+        email: request.email,
+        full_name: request.contact_name
+      }]);
+    
+    if (profileError) {
+      console.error('❌ Error creating user profile:', profileError);
+      throw new Error('Failed to create user profile');
+    }
+    
+    console.log('✅ User profile created for:', newUserId);
+    
+    // 6. Update registration request status to approved
+    const { error: updateError } = await supabase
+      .from('registration_requests')
+      .update({
+        status: 'approved',
+        approved_at: new Date().toISOString()
+      })
+      .eq('id', requestId);
+    
+    if (updateError) {
+      console.error('❌ Error updating request status:', updateError);
+      throw new Error('Failed to update request status');
+    }
+    
+    console.log('✅ Registration request approved:', requestId);
+    
+    return {
+      success: true,
+      message: `Successfully approved ${request.business_name} and sent invitation to ${request.email}`,
+      orgId: org.id,
+      userId: newUserId
+    };
+    
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
+    console.error('❌ Exception in approveRegistrationRequest:', error);
+    return {
+      success: false,
+      error: message
+    };
+  }
+}
+
+/**
+ * Denies a pending registration request.
+ * Marks it as 'denied' in the database — no invite is sent.
+ *
+ * SECURITY: Only accessible by users with 'admin' role.
+ */
+export async function denyRegistrationRequest(requestId: string) {
+  try {
+    const { role } = await getAuthenticatedUserContext();
+    if (role !== 'admin') throw new Error('Forbidden: Admin access required');
+
+    const supabase = createAdminClient();
+
+    const { data: request, error: fetchError } = await supabase
+      .from('registration_requests')
+      .select('business_name, status')
+      .eq('id', requestId)
+      .single();
+
+    if (fetchError || !request) throw new Error('Registration request not found');
+    if (request.status !== 'pending') throw new Error(`Request is already ${request.status}`);
+
+    const { error: updateError } = await supabase
+      .from('registration_requests')
+      .update({ status: 'denied', approved_at: new Date().toISOString() })
+      .eq('id', requestId);
+
+    if (updateError) throw updateError;
+
+    return {
+      success: true,
+      message: `Registration request from ${request.business_name} has been denied.`,
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
+    console.error('❌ Exception in denyRegistrationRequest:', error);
+    return { success: false, error: message };
+  }
+}
+
+// =============================================================================
+// ADMIN DOCUMENT REVIEW QUEUE
+// =============================================================================
+
+export interface PendingDocument {
+  id: string;
+  name: string;
+  document_type: string;
+  status: string;
+  created_at: string;
+  file_url: string | null;
+  metadata: Record<string, unknown> | null;
+  facility_id: string;
+  facility_name: string;
+  org_name: string;
+}
+
+/**
+ * Returns all facility_documents with status = 'pending', joined with
+ * the facility name and organization name.
+ * SECURITY: Admin only.
+ */
+export async function getPendingDocuments(): Promise<
+  { success: true; documents: PendingDocument[] } | { success: false; error: string }
+> {
+  try {
+    const { role } = await getAuthenticatedUserContext();
+    if (role !== 'admin') throw new Error('Forbidden: Admin access required');
+
+    const supabase = createAdminClient();
+
+    const { data, error } = await supabase
+      .from('facility_documents')
+      .select(`
+        id,
+        name,
+        document_type,
+        status,
+        created_at,
+        file_url,
+        metadata,
+        facility_id,
+        facilities (
+          name,
+          organizations (
+            name
+          )
+        )
+      `)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      console.error('❌ Error fetching pending documents:', error);
+      throw new Error('Failed to fetch pending documents');
+    }
+
+    const documents: PendingDocument[] = (data ?? []).map((row) => {
+      // Pull the joined value out as unknown to avoid strict-mode nested cast rejections.
+      // Supabase can return the one-to-one join as an object or a single-element array
+      // depending on the schema relationship; handle both shapes safely.
+      const rawFacility: unknown = row.facilities;
+      const facilityObj: Record<string, unknown> | null =
+        rawFacility !== null && typeof rawFacility === 'object' && !Array.isArray(rawFacility)
+          ? (rawFacility as Record<string, unknown>)
+          : Array.isArray(rawFacility) && rawFacility.length > 0 &&
+            typeof rawFacility[0] === 'object' && rawFacility[0] !== null
+          ? (rawFacility[0] as Record<string, unknown>)
+          : null;
+
+      const facilityName =
+        typeof facilityObj?.name === 'string' ? facilityObj.name : 'Unknown Facility';
+
+      const rawOrg: unknown = facilityObj?.organizations;
+      const orgObj: Record<string, unknown> | null =
+        rawOrg !== null && typeof rawOrg === 'object' && !Array.isArray(rawOrg)
+          ? (rawOrg as Record<string, unknown>)
+          : Array.isArray(rawOrg) && rawOrg.length > 0 &&
+            typeof rawOrg[0] === 'object' && rawOrg[0] !== null
+          ? (rawOrg[0] as Record<string, unknown>)
+          : null;
+
+      const orgName =
+        typeof orgObj?.name === 'string' ? orgObj.name : 'Unknown Organization';
+
+      return {
+        id: row.id as string,
+        name: (row.name as string | null) ?? 'Unnamed Document',
+        document_type: (row.document_type as string | null) ?? '',
+        status: (row.status as string | null) ?? 'pending',
+        created_at: (row.created_at as string | null) ?? '',
+        file_url: (row.file_url as string | null) ?? null,
+        metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+        facility_id: row.facility_id as string,
+        facility_name: facilityName,
+        org_name: orgName,
+      };
+    });
+
+    return { success: true, documents };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
+    console.error('❌ Exception in getPendingDocuments:', error);
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Returns a short-lived signed URL for a document without org scoping,
+ * for use by platform admins in the review queue.
+ * SECURITY: Admin only.
+ */
+export async function getAdminDocumentUrl(
+  documentId: string,
+  facilityId: string
+): Promise<
+  | { success: true; url: string | null; metadata: Record<string, unknown> | null }
+  | { success: false; error: string }
+> {
+  try {
+    const { role } = await getAuthenticatedUserContext();
+    if (role !== 'admin') throw new Error('Forbidden: Admin access required');
+
+    const supabase = createAdminClient();
+
+    const { data: doc, error: docError } = await supabase
+      .from('facility_documents')
+      .select('id, file_url, metadata')
+      .eq('id', documentId)
+      .eq('facility_id', facilityId)
+      .single();
+
+    if (docError || !doc) {
+      return { success: false, error: 'Document not found' };
+    }
+
+    const fileUrl = typeof doc.file_url === 'string' ? doc.file_url : null;
+    const metadata = (doc.metadata as Record<string, unknown> | null) ?? null;
+
+    if (!fileUrl) {
+      return { success: true, url: null, metadata };
+    }
+
+    const { data: signedData, error: signedError } = await supabase.storage
+      .from('facility-documents')
+      .createSignedUrl(fileUrl, 300);
+
+    if (signedError || !signedData?.signedUrl) {
+      console.error('❌ Storage signed URL generation failed:', signedError);
+      return { success: false, error: 'Failed to generate secure document URL' };
+    }
+
+    return { success: true, url: signedData.signedUrl, metadata };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
+    console.error('❌ Exception in getAdminDocumentUrl:', error);
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Approves a pending document: updates status to 'approved' and writes
+ * an audit log entry. The facility's compliance score will be recalculated
+ * on the next dashboard load.
+ * SECURITY: Admin only.
+ */
+export async function approveDocument(
+  documentId: string,
+  facilityId: string
+): Promise<{ success: true; message: string } | { success: false; error: string }> {
+  try {
+    const { userId, role } = await getAuthenticatedUserContext();
+    if (role !== 'admin') throw new Error('Forbidden: Admin access required');
+
+    const supabase = createAdminClient();
+
+    const { data: doc, error: fetchError } = await supabase
+      .from('facility_documents')
+      .select('id, name, document_type, status')
+      .eq('id', documentId)
+      .eq('facility_id', facilityId)
+      .single();
+
+    if (fetchError || !doc) throw new Error('Document not found');
+    if (doc.status !== 'pending') throw new Error(`Document is already ${doc.status}`);
+
+    const { error: updateError } = await supabase
+      .from('facility_documents')
+      .update({ status: 'approved' })
+      .eq('id', documentId);
+
+    if (updateError) throw updateError;
+
+    await writeAdminAuditLog({
+      supabase,
+      facilityId,
+      userId,
+      actionType: 'document_approved',
+      metadata: {
+        document_id: documentId,
+        document_name: doc.name,
+        document_type: doc.document_type,
+      },
+    });
+
+    revalidatePath('/dashboard');
+    revalidatePath('/admin/review-queue');
+
+    return { success: true, message: `Document "${doc.name}" has been approved.` };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
+    console.error('❌ Exception in approveDocument:', error);
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Rejects a pending document: updates status to 'rejected', stores the
+ * rejection reason in metadata, and writes an audit log entry.
+ * SECURITY: Admin only.
+ */
+export async function rejectDocument(
+  documentId: string,
+  facilityId: string,
+  rejectionReason: string
+): Promise<{ success: true; message: string } | { success: false; error: string }> {
+  try {
+    const { userId, role } = await getAuthenticatedUserContext();
+    if (role !== 'admin') throw new Error('Forbidden: Admin access required');
+
+    if (!rejectionReason.trim()) throw new Error('A rejection reason is required');
+
+    const supabase = createAdminClient();
+
+    const { data: doc, error: fetchError } = await supabase
+      .from('facility_documents')
+      .select('id, name, document_type, status, metadata')
+      .eq('id', documentId)
+      .eq('facility_id', facilityId)
+      .single();
+
+    if (fetchError || !doc) throw new Error('Document not found');
+    if (doc.status !== 'pending') throw new Error(`Document is already ${doc.status}`);
+
+    const existingMetadata = (doc.metadata as Record<string, unknown> | null) ?? {};
+    const updatedMetadata = {
+      ...existingMetadata,
+      rejection_reason: rejectionReason.trim(),
+      rejected_at: new Date().toISOString(),
+      rejected_by: userId,
+    };
+
+    const { error: updateError } = await supabase
+      .from('facility_documents')
+      .update({ status: 'rejected', metadata: updatedMetadata })
+      .eq('id', documentId);
+
+    if (updateError) throw updateError;
+
+    await writeAdminAuditLog({
+      supabase,
+      facilityId,
+      userId,
+      actionType: 'document_rejected',
+      metadata: {
+        document_id: documentId,
+        document_name: doc.name,
+        document_type: doc.document_type,
+        rejection_reason: rejectionReason.trim(),
+      },
+    });
+
+    revalidatePath('/dashboard');
+    revalidatePath('/admin/review-queue');
+
+    return { success: true, message: `Document "${doc.name}" has been rejected.` };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred';
+    console.error('❌ Exception in rejectDocument:', error);
+    return { success: false, error: message };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+type AdminAuditActionType = 'document_approved' | 'document_rejected';
+
+async function writeAdminAuditLog(params: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any;
+  facilityId: string;
+  userId: string;
+  actionType: AdminAuditActionType;
+  metadata: Record<string, unknown>;
+}) {
+  const headersList = await headers();
+  const ipAddress =
+    headersList.get('x-forwarded-for') ?? headersList.get('x-real-ip') ?? 'unknown';
+
+  const { data: profile } = await params.supabase
+    .from('profiles')
+    .select('full_name, role')
+    .eq('id', params.userId)
+    .single();
+
+  const { error } = await params.supabase.from('audit_logs').insert({
+    facility_id: params.facilityId,
+    user_id: params.userId,
+    action_type: params.actionType,
+    ip_address: ipAddress,
+    metadata: {
+      ...params.metadata,
+      user_name: profile?.full_name ?? 'Admin',
+      user_role: profile?.role ?? 'admin',
+    },
+  });
+
+  if (error) {
+    console.error(`❌ Failed to create admin audit log (${params.actionType}):`, error);
+  }
+}
+</file>
+
 <file path="src/components/Sidebar.tsx">
 'use client';
 import { useFacility, type ViewType } from 'src/context/FacilityContext';
@@ -4886,6 +6182,7 @@ import FacilitySelector from './FacilitySelector';
 import { useState, useEffect } from 'react';
 import { createClient } from 'src/app/utils/supabase/client';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 
 interface UserProfile {
   full_name: string | null;
@@ -4978,8 +6275,22 @@ export default function Sidebar() {
         {navItem('Personnel Vault', 'personnel', isMasterView)}
         {navItem('Document Center', 'documents', isMasterView)}
         {navItem('Operational Blueprints', 'blueprints', isMasterView)}
-        {navItem('Facility Settings', 'settings', isMasterView)}
+        {navItem(isMasterView ? '👥 Team Settings' : '⚙️ Facility Settings', 'settings')}
         {navItem('Audit Trail', 'audit_logs')}
+
+        {(profile?.role === 'admin' || profile?.role === 'super_admin') && (
+          <div className="pt-3 mt-3 border-t border-gray-800">
+            <div className="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-3 px-2">
+              Platform Admin
+            </div>
+            <Link
+              href="/admin"
+              className="w-full text-left p-3 rounded-xl font-bold transition-all border flex items-center gap-2 text-indigo-400 border-indigo-500/20 bg-indigo-600/10 hover:bg-indigo-600/20 hover:border-indigo-500/40"
+            >
+              🛡️ Admin Control Center
+            </Link>
+          </div>
+        )}
       </nav>
 
       <div className="p-4 border-t border-gray-800">
@@ -5122,6 +6433,11 @@ function calcPersonnelComplianceStatus(
   return 'satisfied';
 }
 
+// ── File validation constants ────────────────────────────────────────────────
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+const ALLOWED_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+
 interface NewPersonnelForm {
   name: string;
   role: string;
@@ -5168,6 +6484,8 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   const [markingNAReqId, setMarkingNAReqId] = useState<string | null>(null);
   const [personnelToArchive, setPersonnelToArchive] = useState<PersonnelRecord | null>(null);
 
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
   // AI rejection modal
   const [personnelRejectionModal, setPersonnelRejectionModal] = useState<{
     requirementName: string;
@@ -5191,6 +6509,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   // Secure document viewer state
   const [docViewerUrl, setDocViewerUrl] = useState<string | null>(null);
   const [isLoadingDocViewer, setIsLoadingDocViewer] = useState(false);
+
+  // True while any upload or AI-verify is running — used to lock all upload triggers
+  const isUploading = uploadingReqId !== null || verifyingReqId !== null;
 
   useEffect(() => {
     async function load() {
@@ -5365,12 +6686,11 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     setUploadingReqId(req.id);
     try {
       const documentId = crypto.randomUUID();
-      const fileExtension = file.name.split('.').pop()?.toLowerCase() ?? 'bin';
-      const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
+      const storagePath = `${facilityId}/personnel/${personnelId}/${req.id}/uploaded_evidence`;
 
       const { error: storageError } = await supabase.storage
         .from('facility-documents')
-        .upload(storagePath, file);
+        .upload(storagePath, file, { upsert: true });
       if (storageError) throw storageError;
 
       const { error: insertError } = await supabase.from('facility_documents').insert({
@@ -5425,6 +6745,13 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       return;
     }
 
+    // ── Client-side file validation ───────────────────────────────────────────
+    setUploadError(null);
+    if (file.size > MAX_FILE_SIZE || !ALLOWED_TYPES.includes(file.type)) {
+      setUploadError('File must be a PDF or image (JPEG/PNG) under 10MB.');
+      return;
+    }
+
     // ── Step 1: AI Verification ───────────────────────────────────────────────
     setVerifyingReqId(requirement.id);
     try {
@@ -5458,12 +6785,13 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       setUploadingReqId(requirement.id);
 
       const documentId = crypto.randomUUID();
-      const fileExtension = file.name.split('.').pop()?.toLowerCase() ?? 'bin';
-      const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
+      // Deterministic path: overwriting the same key is idempotent and prevents
+      // orphaned storage objects from rapid duplicate submissions.
+      const storagePath = `${facilityId}/personnel/${personnelId}/${requirement.id}/uploaded_evidence`;
 
       const { error: storageError } = await supabase.storage
         .from('facility-documents')
-        .upload(storagePath, file);
+        .upload(storagePath, file, { upsert: true });
       if (storageError) throw storageError;
 
       const { error: insertError } = await supabase.from('facility_documents').insert({
@@ -5890,6 +7218,14 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         </div>
       )}
 
+      {/* File validation error */}
+      {uploadError && (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-sm font-medium">
+          <span className="shrink-0 text-rose-500">✕</span>
+          {uploadError}
+        </div>
+      )}
+
       <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm">
         <div className="flex items-start justify-between mb-6">
         <div>
@@ -6236,22 +7572,24 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                   <>
                                     <label
                                       className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all cursor-pointer ${
-                                        userAttestation
+                                        userAttestation && !isUploading
                                           ? 'bg-blue-600 hover:bg-blue-700 text-white'
                                           : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                                       }`}
                                       title={
-                                        userAttestation
-                                          ? 'Upload evidence'
-                                          : 'Please check the legal certification box above'
+                                        !userAttestation
+                                          ? 'Please check the legal certification box above'
+                                          : isUploading
+                                          ? 'Upload in progress…'
+                                          : 'Upload evidence'
                                       }
                                     >
                                       Upload
                                       <input
                                         type="file"
-                                        accept=".pdf,.png,.jpg,.jpeg,.txt"
+                                        accept=".pdf,.jpg,.jpeg,.png"
                                         className="hidden"
-                                        disabled={!userAttestation}
+                                        disabled={!userAttestation || isUploading}
                                         onChange={(e) => {
                                           const file = e.target.files?.[0];
                                           if (file) handlePersonnelUpload(person.id, req, file);
@@ -6262,9 +7600,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                     {req.severity !== 'critical' && (
                                       <button
                                         onClick={() => handlePersonnelSignAttestation(person.id, req)}
-                                        disabled={!userAttestation}
+                                        disabled={!userAttestation || isUploading}
                                         className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all ${
-                                          userAttestation
+                                          userAttestation && !isUploading
                                             ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                                             : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                                         }`}
@@ -6274,9 +7612,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                     )}
                                     <button
                                       onClick={() => handlePersonnelMarkNA(person.id, req)}
-                                      disabled={!userAttestation}
+                                      disabled={!userAttestation || isUploading}
                                       className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all ${
-                                        userAttestation
+                                        userAttestation && !isUploading
                                           ? 'bg-slate-600 hover:bg-slate-700 text-white'
                                           : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                                       }`}
@@ -6706,6 +8044,11 @@ function DocManagementModal({
   );
 }
 
+// ── File validation constants ────────────────────────────────────────────────
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+const ALLOWED_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+
 // ── Main Dashboard Component ─────────────────────────────────────────────────
 
 export default function ComplianceDashboardClient({
@@ -6726,6 +8069,7 @@ export default function ComplianceDashboardClient({
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [signingAttestationId, setSigningAttestationId] = useState<string | null>(null);
   const [markingNAId, setMarkingNAId] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Document management modal
   const [docManagementGap, setDocManagementGap] = useState<DashboardGap | null>(null);
@@ -6739,6 +8083,9 @@ export default function ComplianceDashboardClient({
     gap: DashboardGap;
     file: File;
   } | null>(null);
+
+  // True while any upload or AI-verify is running — used to lock all upload triggers
+  const isUploading = uploadingId !== null || verifyingId !== null;
 
   // Scored rules partitioned by category
   const scoredGaps = gaps.filter((g) => g.is_scored);
@@ -6810,6 +8157,13 @@ export default function ComplianceDashboardClient({
       return;
     }
 
+    // ── Client-side file validation ───────────────────────────────────────────
+    setUploadError(null);
+    if (file.size > MAX_FILE_SIZE || !ALLOWED_TYPES.includes(file.type)) {
+      setUploadError('File must be a PDF or image (JPEG/PNG) under 10MB.');
+      return;
+    }
+
     // ── Step 1: AI Verification ───────────────────────────────────────────────
     setVerifyingId(gap.id);
     try {
@@ -6845,12 +8199,13 @@ export default function ComplianceDashboardClient({
       setUploadingId(gap.id);
 
       const documentId = crypto.randomUUID();
-      const fileExtension = file.name.split('.').pop()?.toLowerCase() ?? 'bin';
-      const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
+      // Deterministic path: overwriting the same key is idempotent and prevents
+      // orphaned storage objects from rapid duplicate submissions.
+      const storagePath = `${facilityId}/${gap.id}/uploaded_evidence`;
 
       const { error: storageError } = await supabase.storage
         .from('facility-documents')
-        .upload(storagePath, file);
+        .upload(storagePath, file, { upsert: true });
       if (storageError) throw storageError;
 
       const { error: insertError } = await supabase.from('facility_documents').insert({
@@ -6954,12 +8309,11 @@ export default function ComplianceDashboardClient({
     setUploadingId(gap.id);
     try {
       const documentId = crypto.randomUUID();
-      const fileExtension = file.name.split('.').pop()?.toLowerCase() ?? 'bin';
-      const storagePath = `${facilityId}/${documentId}.${fileExtension}`;
+      const storagePath = `${facilityId}/${gap.id}/uploaded_evidence`;
 
       const { error: storageError } = await supabase.storage
         .from('facility-documents')
-        .upload(storagePath, file);
+        .upload(storagePath, file, { upsert: true });
       if (storageError) throw storageError;
 
       const { error: insertError } = await supabase.from('facility_documents').insert({
@@ -7082,22 +8436,24 @@ export default function ComplianceDashboardClient({
             <>
               <label
                 className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all cursor-pointer ${
-                  userAttestation
+                  userAttestation && !isUploading
                     ? 'bg-blue-600 hover:bg-blue-700 text-white'
                     : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                 }`}
                 title={
-                  userAttestation
-                    ? 'Upload evidence'
-                    : 'Please check the legal certification box above'
+                  !userAttestation
+                    ? 'Please check the legal certification box above'
+                    : isUploading
+                    ? 'Upload in progress…'
+                    : 'Upload evidence'
                 }
               >
                 Upload
                 <input
                   type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,.txt"
+                  accept=".pdf,.jpg,.jpeg,.png"
                   className="hidden"
-                  disabled={!userAttestation}
+                  disabled={!userAttestation || isUploading}
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) handleUploadEvidence(gap, file);
@@ -7108,9 +8464,9 @@ export default function ComplianceDashboardClient({
               {gap.severity !== 'critical' && (
                 <button
                   onClick={() => handleSignAttestation(gap)}
-                  disabled={!userAttestation}
+                  disabled={!userAttestation || isUploading}
                   className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
-                    userAttestation
+                    userAttestation && !isUploading
                       ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                       : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                   }`}
@@ -7120,9 +8476,9 @@ export default function ComplianceDashboardClient({
               )}
               <button
                 onClick={() => handleMarkNotApplicable(gap)}
-                disabled={!userAttestation}
+                disabled={!userAttestation || isUploading}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
-                  userAttestation
+                  userAttestation && !isUploading
                     ? 'bg-slate-600 hover:bg-slate-700 text-white'
                     : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                 }`}
@@ -7326,6 +8682,14 @@ export default function ComplianceDashboardClient({
           </label>
         </div>
       </div>
+
+      {/* File validation error */}
+      {uploadError && (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-sm font-medium">
+          <span className="shrink-0 text-rose-500">✕</span>
+          {uploadError}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -7753,6 +9117,7 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
 <file path="src/app/dashboard/page.tsx">
 'use client';
 
+import Link from 'next/link';
 import { useFacility } from 'src/context/FacilityContext';
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
@@ -7772,6 +9137,7 @@ import PersonnelVaultView from 'src/components/PersonnelVaultView';
 import DocumentCenterView from 'src/components/DocumentCenterView';
 import OperationalBlueprintsView from 'src/components/OperationalBlueprintsView';
 import FacilitySettingsView from 'src/components/FacilitySettingsView';
+import TeamSettingsView from 'src/components/TeamSettingsView';
 import type { IdentifiedGap } from '@/lib/types';
 import { generateAuditReport } from '@/lib/pdf-generator';
 
@@ -8172,6 +9538,23 @@ export default function DashboardPage() {
             );
           })()}
         </div>
+      </div>
+    );
+  }
+
+  // ---- TEAM SETTINGS (org-level, master view) ----
+  if ((selectedFacilityId === 'all' || !selectedFacilityId) && currentView === 'settings') {
+    return (
+      <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
+        <header className="mb-2">
+          <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
+            DHS Regulatory Engine
+          </p>
+          <h1 className="text-5xl font-bold tracking-tight text-slate-900">
+            Team Settings
+          </h1>
+        </header>
+        <TeamSettingsView />
       </div>
     );
   }
@@ -8629,6 +10012,7 @@ export default function DashboardPage() {
               <p className="text-slate-500 italic">
                 No facilities found. Complete onboarding to begin monitoring compliance.
               </p>
+              <Link href="/onboarding" className="mt-4 inline-block bg-blue-600 text-white font-bold px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors">Complete Facility Onboarding →</Link>
             </div>
           </div>
         ) : (
@@ -10311,6 +11695,123 @@ export async function updateEnrollment(facilityId: string, activeEnrollment: num
     return { success: true, activeEnrollment };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
+  }
+}
+
+// =============================================================================
+// TENANT USER MANAGEMENT
+// =============================================================================
+
+/**
+ * Returns all director-role profiles belonging to the caller's organization.
+ * Accessible to any authenticated org member.
+ */
+export async function getOrgDirectors(): Promise<
+  Array<{
+    id: string;
+    full_name: string | null;
+    email: string | null;
+    account_status: string | null;
+    org_id: string | null;
+  }>
+> {
+  try {
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, full_name, email, account_status, org_id')
+      .eq('org_id', orgId)
+      .eq('role', 'director')
+      .order('full_name', { ascending: true });
+
+    if (error) {
+      console.error('❌ getOrgDirectors error:', error);
+      return [];
+    }
+    return data ?? [];
+  } catch (error) {
+    console.error('❌ getOrgDirectors exception:', error);
+    return [];
+  }
+}
+
+/**
+ * Sends a Supabase Auth invitation to a new Facility Director, creates their
+ * profile record, and assigns them to the specified facility.
+ *
+ * Caller must be an 'owner' or 'admin'.
+ */
+export async function inviteFacilityDirector(
+  email: string,
+  fullName: string,
+  facilityId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const { orgId, role } = await getAuthenticatedUserContext();
+
+    if (role !== 'owner' && role !== 'admin') {
+      return { success: false, error: 'Unauthorized: Only owners and admins can invite directors' };
+    }
+
+    const supabase = createAdminClient();
+
+    // Verify the facility belongs to this org
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+
+    if (facilityError || !facility) {
+      return { success: false, error: 'Unauthorized: Facility not found or does not belong to your organization' };
+    }
+
+    const redirectTo = `${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/auth/callback?next=${encodeURIComponent('/auth/reset-password?next=/dashboard')}`;
+
+    const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(
+      email,
+      { redirectTo }
+    );
+
+    if (inviteError || !inviteData?.user) {
+      console.error('❌ inviteUserByEmail error:', inviteError);
+      return { success: false, error: inviteError?.message ?? 'Failed to send invitation' };
+    }
+
+    const newUserId = inviteData.user.id;
+
+    const { error: profileError } = await supabase.from('profiles').upsert({
+      id: newUserId,
+      org_id: orgId,
+      role: 'director',
+      full_name: fullName,
+      email: email,
+      account_status: 'active',
+    });
+
+    if (profileError) {
+      console.error('❌ Profile insert error:', profileError);
+      return { success: false, error: 'Invitation sent but failed to create profile record' };
+    }
+
+    const { error: facilityUpdateError } = await supabase
+      .from('facilities')
+      .update({ director_id: newUserId })
+      .eq('id', facilityId);
+
+    if (facilityUpdateError) {
+      console.error('❌ Facility director_id update error:', facilityUpdateError);
+    }
+
+    revalidatePath('/dashboard');
+    return { success: true };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('❌ inviteFacilityDirector failure:', message);
     return { success: false, error: message };
   }
 }

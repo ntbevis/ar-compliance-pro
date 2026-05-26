@@ -1,37 +1,13 @@
 'use client';
 
-import { useState } from 'react';
-import { createClient } from 'src/app/utils/supabase/client';
+import { useActionState } from 'react';
+import { forgotPasswordAction } from './actions';
 import Link from 'next/link';
 
+const initialState = { error: null, success: false, email: '' };
+
 export default function ForgotPasswordPage() {
-  const [email, setEmail] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-
-    try {
-      const supabase = createClient();
-      const redirectTo = `${window.location.origin}/auth/callback?next=/auth/reset-password`;
-      const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo,
-      });
-      if (resetError) {
-        setError(resetError.message);
-      } else {
-        setSent(true);
-      }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'An unexpected error occurred.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const [state, formAction, isPending] = useActionState(forgotPasswordAction, initialState);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center px-4">
@@ -47,11 +23,12 @@ export default function ForgotPasswordPage() {
             </p>
           </div>
 
-          {sent ? (
+          {state.success ? (
             <div className="space-y-4">
               <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
                 <p className="text-sm font-semibold text-emerald-800">
-                  ✅ Reset link sent! Check your inbox for <span className="font-mono">{email}</span>.
+                  ✅ Reset link sent! Check your inbox for{' '}
+                  <span className="font-mono">{state.email}</span>.
                 </p>
                 <p className="text-xs text-emerald-600 mt-1">
                   The link expires in 1 hour. Check your spam folder if you don&apos;t see it.
@@ -65,10 +42,10 @@ export default function ForgotPasswordPage() {
               </Link>
             </div>
           ) : (
-            <form onSubmit={handleSubmit} className="space-y-5">
-              {error && (
+            <form action={formAction} className="space-y-5">
+              {state.error && (
                 <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg">
-                  <p className="text-sm text-rose-800 font-medium">❌ {error}</p>
+                  <p className="text-sm text-rose-800 font-medium">❌ {state.error}</p>
                 </div>
               )}
 
@@ -79,9 +56,8 @@ export default function ForgotPasswordPage() {
                 <input
                   type="email"
                   id="email"
+                  name="email"
                   required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
                   className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-slate-900"
                   placeholder="you@facility.com"
                 />
@@ -89,14 +65,14 @@ export default function ForgotPasswordPage() {
 
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={isPending}
                 className={`w-full py-3.5 px-6 rounded-lg font-bold text-white transition-all ${
-                  submitting
+                  isPending
                     ? 'bg-slate-400 cursor-not-allowed'
                     : 'bg-blue-600 hover:bg-blue-700 shadow-lg hover:shadow-xl'
                 }`}
               >
-                {submitting ? (
+                {isPending ? (
                   <span className="flex items-center justify-center gap-2">
                     <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     Sending…
