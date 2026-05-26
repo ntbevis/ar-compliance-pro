@@ -12,10 +12,13 @@ function LandingPageInner() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [signingIn, setSigningIn] = useState(false);
+  const errorParam = searchParams.get('error');
   const [error, setError] = useState<string | null>(
-    searchParams.get('error') === 'auth_callback_failed'
+    errorParam === 'auth_callback_failed'
       ? 'Your sign-in link has expired or is invalid. Please try again.'
-      : null
+      : errorParam === 'session_required'
+        ? 'Your invitation link was not recognized. Please contact support or request a new invite.'
+        : null
   );
 
   useEffect(() => {

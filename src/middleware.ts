@@ -8,6 +8,13 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
+  // ── Auth routes are always public ────────────────────────────────────────────
+  // /auth/callback, /auth/reset-password, /auth/forgot-password, etc. must never
+  // be intercepted — the invite flow depends on reaching these pages freely.
+  if (pathname.startsWith('/auth/')) {
+    return response;
+  }
+
   let session = null;
 
   try {
