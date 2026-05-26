@@ -36,33 +36,28 @@ function CallbackHandler() {
       const token_hash = searchParams.get('token_hash');
       const type = searchParams.get('type') as EmailOtpType | null;
 
+      const fail = (reason: string, detail = '') => {
+        console.error(`❌ Auth callback failed [${reason}]:`, detail);
+        router.replace(`/?error=${encodeURIComponent(reason)}&detail=${encodeURIComponent(detail)}`);
+      };
+
       // ── 1. PKCE code flow ─────────────────────────────────────────────────
       if (code) {
         const { error } = await supabase.auth.exchangeCodeForSession(code);
-        if (!error) {
-          router.replace(next);
-          return;
-        }
-        console.error('❌ PKCE exchange failed:', error.message);
-        router.replace('/?error=auth_callback_failed');
+        if (!error) { router.replace(next); return; }
+        fail('pkce_failed', error.message);
         return;
       }
 
       // ── 2. OTP / invite token flow ────────────────────────────────────────
       if (token_hash && type) {
         const { error } = await supabase.auth.verifyOtp({ token_hash, type });
-        if (!error) {
-          router.replace(next);
-          return;
-        }
-        console.error('❌ OTP verification failed:', error.message);
-        router.replace('/?error=auth_callback_failed');
+        if (!error) { router.replace(next); return; }
+        fail('otp_failed', error.message);
         return;
       }
 
       // ── 3. Implicit / hash flow ───────────────────────────────────────────
-      // @supabase/ssr disables detectSessionInUrl, so we parse the hash
-      // ourselves and call setSession() directly.
       const hash = window.location.hash.substring(1);
       const hashParams = new URLSearchParams(hash);
       const accessToken = hashParams.get('access_token');
@@ -73,18 +68,13 @@ function CallbackHandler() {
           access_token: accessToken,
           refresh_token: refreshToken,
         });
-        if (!error) {
-          router.replace(next);
-          return;
-        }
-        console.error('❌ setSession from hash failed:', error.message);
-        router.replace('/?error=auth_callback_failed');
+        if (!error) { router.replace(next); return; }
+        fail('hash_failed', error.message);
         return;
       }
 
-      // No recognised token in any format
-      console.error('❌ Auth callback: no code, token_hash, or hash tokens found');
-      router.replace('/?error=auth_callback_failed');
+      // No token found in any format — expose what the URL actually contained
+      fail('no_tokens', `search=${window.location.search} hash=${window.location.hash.substring(0, 80)}`);
     };
 
     handleCallback();
