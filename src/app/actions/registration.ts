@@ -4,7 +4,10 @@
 import { createAdminClient } from 'src/app/utils/supabase/admin';
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000';
-const inviteRedirectTo = `${siteUrl}/auth/callback?next=${encodeURIComponent('/auth/reset-password?next=/onboarding')}`;
+// Keep the redirectTo as just the base callback URL — no query params.
+// Supabase allowlist matching is strict about query strings, and the destination
+// (/auth/reset-password) is the only valid post-invite landing point anyway.
+const inviteRedirectTo = `${siteUrl}/auth/callback`;
 
 /**
  * Self-service owner registration.

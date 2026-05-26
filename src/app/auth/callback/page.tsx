@@ -27,7 +27,8 @@ function CallbackHandler() {
     if (processed.current) return;
     processed.current = true;
 
-    const next = searchParams.get('next') ?? '/onboarding';
+    // Invite links no longer carry a ?next= param — default to password setup.
+    const next = searchParams.get('next') ?? '/auth/reset-password?next=/onboarding';
     const supabase = createClient();
 
     const handleCallback = async () => {
