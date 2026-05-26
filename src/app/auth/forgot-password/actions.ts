@@ -21,6 +21,7 @@ export async function forgotPasswordAction(
 
   const headersList = await headers();
   const origin =
+    process.env.NEXT_PUBLIC_SITE_URL ??
     headersList.get('origin') ??
     `${headersList.get('x-forwarded-proto') ?? 'https'}://${headersList.get('host')}`;
 
