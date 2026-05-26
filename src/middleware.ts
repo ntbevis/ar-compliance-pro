@@ -6,30 +6,55 @@ export async function middleware(request: NextRequest) {
     request: { headers: request.headers },
   });
 
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll();
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
-          response = NextResponse.next({ request });
-          cookiesToSet.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, options)
-          );
-        },
-      },
-    }
-  );
-
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-
   const { pathname } = request.nextUrl;
+
+  let session = null;
+
+  try {
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          getAll() {
+            return request.cookies.getAll();
+          },
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
+            response = NextResponse.next({ request });
+            cookiesToSet.forEach(({ name, value, options }) =>
+              response.cookies.set(name, value, options)
+            );
+          },
+        },
+      }
+    );
+
+    const { data } = await supabase.auth.getSession();
+    session = data.session;
+
+    // ── Onboarding completion guard (authenticated users only) ───────────────
+    if (session) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('onboarding_completed')
+        .eq('id', session.user.id)
+        .single();
+
+      const onboardingCompleted = profile?.onboarding_completed === true;
+
+      if (!onboardingCompleted && pathname.startsWith('/dashboard')) {
+        return NextResponse.redirect(new URL('/onboarding', request.url));
+      }
+
+      if (onboardingCompleted && pathname.startsWith('/onboarding')) {
+        return NextResponse.redirect(new URL('/dashboard', request.url));
+      }
+    }
+  } catch {
+    // If Supabase is unreachable, fail open so the app keeps responding.
+    // Auth guards below will treat session as null (unauthenticated).
+  }
 
   // ── Unauthenticated guards ──────────────────────────────────────────────────
   if (!session) {
@@ -40,26 +65,6 @@ export async function middleware(request: NextRequest) {
     ) {
       return NextResponse.redirect(new URL('/', request.url));
     }
-    return response;
-  }
-
-  // ── Onboarding completion guard (authenticated users only) ─────────────────
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('onboarding_completed')
-    .eq('id', session.user.id)
-    .single();
-
-  const onboardingCompleted = profile?.onboarding_completed === true;
-
-  // Incomplete onboarding → force to onboarding wizard (skip if already there)
-  if (!onboardingCompleted && pathname.startsWith('/dashboard')) {
-    return NextResponse.redirect(new URL('/onboarding', request.url));
-  }
-
-  // Completed onboarding → prevent revisiting the wizard
-  if (onboardingCompleted && pathname.startsWith('/onboarding')) {
-    return NextResponse.redirect(new URL('/dashboard', request.url));
   }
 
   return response;
