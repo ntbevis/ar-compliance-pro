@@ -8,14 +8,15 @@ import type { EmailOtpType } from '@supabase/supabase-js';
 /**
  * Auth callback page — handles ALL invite / magic-link / OAuth flows.
  *
- * Running client-side is intentional: Supabase invite emails often redirect
- * here with hash fragments (#access_token=…) which are invisible to the
- * server. The Supabase browser client auto-detects those hash tokens when
- * getSession() is called, so all three formats are handled in one place:
+ * Supabase invite emails redirect here in one of three formats:
  *
- *   1. PKCE code   — ?code=<auth_code>
- *   2. OTP token   — ?token_hash=<hash>&type=invite
- *   3. Implicit    — #access_token=<token>&type=invite  (auto-detected by SDK)
+ *   1. Implicit / hash  — #access_token=…&refresh_token=…&type=invite
+ *   2. PKCE code        — ?code=<auth_code>
+ *   3. OTP token        — ?token_hash=<hash>&type=invite
+ *
+ * The @supabase/ssr browser client has detectSessionInUrl disabled, so we
+ * parse window.location.hash explicitly for case 1 and call setSession()
+ * directly. Cases 2 and 3 are handled via the standard SDK methods.
  */
 function CallbackHandler() {
   const router = useRouter();
@@ -34,35 +35,54 @@ function CallbackHandler() {
       const token_hash = searchParams.get('token_hash');
       const type = searchParams.get('type') as EmailOtpType | null;
 
+      // ── 1. PKCE code flow ─────────────────────────────────────────────────
       if (code) {
-        // ── PKCE code flow ─────────────────────────────────────────────────
         const { error } = await supabase.auth.exchangeCodeForSession(code);
         if (!error) {
           router.replace(next);
           return;
         }
         console.error('❌ PKCE exchange failed:', error.message);
-      } else if (token_hash && type) {
-        // ── OTP / invite token flow ────────────────────────────────────────
+        router.replace('/?error=auth_callback_failed');
+        return;
+      }
+
+      // ── 2. OTP / invite token flow ────────────────────────────────────────
+      if (token_hash && type) {
         const { error } = await supabase.auth.verifyOtp({ token_hash, type });
         if (!error) {
           router.replace(next);
           return;
         }
         console.error('❌ OTP verification failed:', error.message);
-      } else {
-        // ── Implicit / hash flow ───────────────────────────────────────────
-        // The Supabase browser client detects #access_token= in the URL hash
-        // automatically. A short delay lets the SDK parse it before we check.
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session) {
+        router.replace('/?error=auth_callback_failed');
+        return;
+      }
+
+      // ── 3. Implicit / hash flow ───────────────────────────────────────────
+      // @supabase/ssr disables detectSessionInUrl, so we parse the hash
+      // ourselves and call setSession() directly.
+      const hash = window.location.hash.substring(1);
+      const hashParams = new URLSearchParams(hash);
+      const accessToken = hashParams.get('access_token');
+      const refreshToken = hashParams.get('refresh_token');
+
+      if (accessToken && refreshToken) {
+        const { error } = await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+        if (!error) {
           router.replace(next);
           return;
         }
-        console.error('❌ No session found after hash token detection');
+        console.error('❌ setSession from hash failed:', error.message);
+        router.replace('/?error=auth_callback_failed');
+        return;
       }
 
+      // No recognised token in any format
+      console.error('❌ Auth callback: no code, token_hash, or hash tokens found');
       router.replace('/?error=auth_callback_failed');
     };
 
