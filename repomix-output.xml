@@ -75,6 +75,7 @@ src/
       callback/
         route.ts
       forgot-password/
+        actions.ts
         page.tsx
       reset-password/
         page.tsx
@@ -1308,130 +1309,6 @@ export async function GET(request: NextRequest) {
 }
 </file>
 
-<file path="src/app/auth/forgot-password/page.tsx">
-'use client';
-
-import { useState } from 'react';
-import { createClient } from 'src/app/utils/supabase/client';
-import Link from 'next/link';
-
-export default function ForgotPasswordPage() {
-  const [email, setEmail] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-
-    try {
-      const supabase = createClient();
-      const redirectTo = `${window.location.origin}/auth/callback?next=/auth/reset-password`;
-      const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo,
-      });
-      if (resetError) {
-        setError(resetError.message);
-      } else {
-        setSent(true);
-      }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'An unexpected error occurred.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center px-4">
-      <div className="w-full max-w-md">
-        <div className="bg-white rounded-2xl shadow-2xl p-8">
-          <div className="mb-8">
-            <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mb-4">
-              <span className="text-2xl">🔑</span>
-            </div>
-            <h1 className="text-2xl font-bold text-slate-900 mb-1">Reset your password</h1>
-            <p className="text-slate-500 text-sm">
-              Enter your email and we&apos;ll send you a link to set a new password.
-            </p>
-          </div>
-
-          {sent ? (
-            <div className="space-y-4">
-              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
-                <p className="text-sm font-semibold text-emerald-800">
-                  ✅ Reset link sent! Check your inbox for <span className="font-mono">{email}</span>.
-                </p>
-                <p className="text-xs text-emerald-600 mt-1">
-                  The link expires in 1 hour. Check your spam folder if you don&apos;t see it.
-                </p>
-              </div>
-              <Link
-                href="/"
-                className="block text-center text-sm text-blue-600 hover:text-blue-700 font-semibold"
-              >
-                ← Back to sign in
-              </Link>
-            </div>
-          ) : (
-            <form onSubmit={handleSubmit} className="space-y-5">
-              {error && (
-                <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg">
-                  <p className="text-sm text-rose-800 font-medium">❌ {error}</p>
-                </div>
-              )}
-
-              <div>
-                <label htmlFor="email" className="block text-sm font-semibold text-slate-700 mb-2">
-                  Email Address
-                </label>
-                <input
-                  type="email"
-                  id="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-slate-900"
-                  placeholder="you@facility.com"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={submitting}
-                className={`w-full py-3.5 px-6 rounded-lg font-bold text-white transition-all ${
-                  submitting
-                    ? 'bg-slate-400 cursor-not-allowed'
-                    : 'bg-blue-600 hover:bg-blue-700 shadow-lg hover:shadow-xl'
-                }`}
-              >
-                {submitting ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    Sending…
-                  </span>
-                ) : (
-                  'Send Reset Link'
-                )}
-              </button>
-
-              <Link
-                href="/"
-                className="block text-center text-sm text-slate-500 hover:text-slate-700 transition-colors"
-              >
-                ← Back to sign in
-              </Link>
-            </form>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-</file>
-
 <file path="src/app/dashboard/error.tsx">
 'use client';
 
@@ -2427,89 +2304,6 @@ export async function generateAuditReport(facilityId: string): Promise<void> {
 }
 </file>
 
-<file path="src/middleware.ts">
-import { createServerClient } from '@supabase/ssr';
-import { NextResponse, type NextRequest } from 'next/server';
-
-export async function middleware(request: NextRequest) {
-  let response = NextResponse.next({
-    request: { headers: request.headers },
-  });
-
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll();
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
-          response = NextResponse.next({ request });
-          cookiesToSet.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, options)
-          );
-        },
-      },
-    }
-  );
-
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-
-  const { pathname } = request.nextUrl;
-
-  // ── Unauthenticated guards ──────────────────────────────────────────────────
-  if (!session) {
-    if (
-      pathname.startsWith('/dashboard') ||
-      pathname.startsWith('/onboarding') ||
-      pathname.startsWith('/admin')
-    ) {
-      return NextResponse.redirect(new URL('/', request.url));
-    }
-    return response;
-  }
-
-  // ── Onboarding completion guard (authenticated users only) ─────────────────
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('onboarding_completed')
-    .eq('id', session.user.id)
-    .single();
-
-  const onboardingCompleted = profile?.onboarding_completed === true;
-
-  // Incomplete onboarding → force to onboarding wizard (skip if already there)
-  if (!onboardingCompleted && pathname.startsWith('/dashboard')) {
-    return NextResponse.redirect(new URL('/onboarding', request.url));
-  }
-
-  // Completed onboarding → prevent revisiting the wizard
-  if (onboardingCompleted && pathname.startsWith('/onboarding')) {
-    return NextResponse.redirect(new URL('/dashboard', request.url));
-  }
-
-  return response;
-}
-
-export const config = {
-  matcher: [
-    /*
-     * Match all request paths except for the ones starting with:
-     * - api (API routes)
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico, sitemap.xml, robots.txt (metadata files)
-     * - public folder static assets
-     */
-    '/((?!api|_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|woff|woff2|ttf|eot)$).*)',
-  ],
-};
-</file>
-
 <file path="supabase/migrations/20260526000000_add_onboarding_completed_to_profiles.sql">
 -- Add onboarding_completed flag to profiles table.
 -- Defaults to false; set to true once an operator has successfully
@@ -2839,6 +2633,106 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   if (profile?.role !== 'admin') redirect('/dashboard');
 
   return <>{children}</>;
+}
+</file>
+
+<file path="src/app/auth/forgot-password/page.tsx">
+'use client';
+
+import { useActionState } from 'react';
+import { forgotPasswordAction } from './actions';
+import Link from 'next/link';
+
+const initialState = { error: null, success: false, email: '' };
+
+export default function ForgotPasswordPage() {
+  const [state, formAction, isPending] = useActionState(forgotPasswordAction, initialState);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center px-4">
+      <div className="w-full max-w-md">
+        <div className="bg-white rounded-2xl shadow-2xl p-8">
+          <div className="mb-8">
+            <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mb-4">
+              <span className="text-2xl">🔑</span>
+            </div>
+            <h1 className="text-2xl font-bold text-slate-900 mb-1">Reset your password</h1>
+            <p className="text-slate-500 text-sm">
+              Enter your email and we&apos;ll send you a link to set a new password.
+            </p>
+          </div>
+
+          {state.success ? (
+            <div className="space-y-4">
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
+                <p className="text-sm font-semibold text-emerald-800">
+                  ✅ Reset link sent! Check your inbox for{' '}
+                  <span className="font-mono">{state.email}</span>.
+                </p>
+                <p className="text-xs text-emerald-600 mt-1">
+                  The link expires in 1 hour. Check your spam folder if you don&apos;t see it.
+                </p>
+              </div>
+              <Link
+                href="/"
+                className="block text-center text-sm text-blue-600 hover:text-blue-700 font-semibold"
+              >
+                ← Back to sign in
+              </Link>
+            </div>
+          ) : (
+            <form action={formAction} className="space-y-5">
+              {state.error && (
+                <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg">
+                  <p className="text-sm text-rose-800 font-medium">❌ {state.error}</p>
+                </div>
+              )}
+
+              <div>
+                <label htmlFor="email" className="block text-sm font-semibold text-slate-700 mb-2">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  id="email"
+                  name="email"
+                  required
+                  className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-slate-900"
+                  placeholder="you@facility.com"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isPending}
+                className={`w-full py-3.5 px-6 rounded-lg font-bold text-white transition-all ${
+                  isPending
+                    ? 'bg-slate-400 cursor-not-allowed'
+                    : 'bg-blue-600 hover:bg-blue-700 shadow-lg hover:shadow-xl'
+                }`}
+              >
+                {isPending ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Sending…
+                  </span>
+                ) : (
+                  'Send Reset Link'
+                )}
+              </button>
+
+              <Link
+                href="/"
+                className="block text-center text-sm text-slate-500 hover:text-slate-700 transition-colors"
+              >
+                ← Back to sign in
+              </Link>
+            </form>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 </file>
 
@@ -3511,6 +3405,94 @@ export default function FacilitySettingsView({ facilityId }: Props) {
     </div>
   );
 }
+</file>
+
+<file path="src/middleware.ts">
+import { createServerClient } from '@supabase/ssr';
+import { NextResponse, type NextRequest } from 'next/server';
+
+export async function middleware(request: NextRequest) {
+  let response = NextResponse.next({
+    request: { headers: request.headers },
+  });
+
+  const { pathname } = request.nextUrl;
+
+  let session = null;
+
+  try {
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          getAll() {
+            return request.cookies.getAll();
+          },
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
+            response = NextResponse.next({ request });
+            cookiesToSet.forEach(({ name, value, options }) =>
+              response.cookies.set(name, value, options)
+            );
+          },
+        },
+      }
+    );
+
+    const { data } = await supabase.auth.getSession();
+    session = data.session;
+
+    // ── Onboarding completion guard (authenticated users only) ───────────────
+    if (session) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('onboarding_completed')
+        .eq('id', session.user.id)
+        .single();
+
+      const onboardingCompleted = profile?.onboarding_completed === true;
+
+      if (!onboardingCompleted && pathname.startsWith('/dashboard')) {
+        return NextResponse.redirect(new URL('/onboarding', request.url));
+      }
+
+      if (onboardingCompleted && pathname.startsWith('/onboarding')) {
+        return NextResponse.redirect(new URL('/dashboard', request.url));
+      }
+    }
+  } catch {
+    // If Supabase is unreachable, fail open so the app keeps responding.
+    // Auth guards below will treat session as null (unauthenticated).
+  }
+
+  // ── Unauthenticated guards ──────────────────────────────────────────────────
+  if (!session) {
+    if (
+      pathname.startsWith('/dashboard') ||
+      pathname.startsWith('/onboarding') ||
+      pathname.startsWith('/admin')
+    ) {
+      return NextResponse.redirect(new URL('/', request.url));
+    }
+  }
+
+  return response;
+}
+
+export const config = {
+  matcher: [
+    /*
+     * Match all request paths except for the ones starting with:
+     * - api (API routes)
+     * - _next/static (static files)
+     * - _next/image (image optimization files)
+     * - favicon.ico, sitemap.xml, robots.txt (metadata files)
+     * - public folder static assets
+     */
+    '/((?!api|_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|woff|woff2|ttf|eot)$).*)',
+  ],
+};
 </file>
 
 <file path="src/app/request-access/page.tsx">
@@ -4233,7 +4215,8 @@ export async function isOnboardingComplete(): Promise<boolean> {
     const { count } = await supabaseAdmin
       .from('facilities')
       .select('id', { count: 'exact', head: true })
-      .eq('org_id', profile.org_id);
+      .eq('org_id', profile.org_id)
+      .eq('is_active', true);
 
     return (count ?? 0) > 0;
   } catch {
@@ -4577,6 +4560,78 @@ export default function AdminRequestsPage() {
       </div>
     </div>
   );
+}
+</file>
+
+<file path="src/app/auth/forgot-password/actions.ts">
+'use server';
+
+import { createClient } from 'src/app/utils/supabase/server';
+
+export type ForgotPasswordState = {
+  error: string | null;
+  success: boolean;
+  email: string;
+};
+
+/**
+ * Resolves the canonical site URL using a priority cascade:
+ *  1. NEXT_PUBLIC_SITE_URL  – explicit override (set in Vercel dashboard)
+ *  2. VERCEL_PROJECT_PRODUCTION_URL – Vercel auto-injects this for production deployments
+ *  3. VERCEL_URL – Vercel auto-injects this for every deployment (preview & production)
+ *
+ * VERCEL_PROJECT_PRODUCTION_URL / VERCEL_URL are server-side runtime variables,
+ * so they are always available regardless of build-time env state.
+ */
+function resolveSiteUrl(): string | null {
+  if (process.env.NEXT_PUBLIC_SITE_URL) {
+    return process.env.NEXT_PUBLIC_SITE_URL;
+  }
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  }
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  return null;
+}
+
+export async function forgotPasswordAction(
+  _prevState: ForgotPasswordState,
+  formData: FormData
+): Promise<ForgotPasswordState> {
+  try {
+    const supabase = await createClient();
+    const email = formData.get('email') as string;
+
+    if (!email) {
+      return { error: 'Email is required.', success: false, email: '' };
+    }
+
+    const siteUrl = resolveSiteUrl();
+    if (!siteUrl) {
+      return {
+        error: 'Server misconfiguration: site URL could not be determined.',
+        success: false,
+        email,
+      };
+    }
+
+    const redirectTo = `${siteUrl}/auth/callback?next=/auth/reset-password`;
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+
+    if (error) {
+      return { error: error.message, success: false, email };
+    }
+
+    return { error: null, success: true, email };
+  } catch (err) {
+    return {
+      error: 'An unexpected server error occurred. Please try again.',
+      success: false,
+      email: '',
+    };
+  }
 }
 </file>
 

@@ -8,13 +8,12 @@ import { getPendingRequests, approveRegistrationRequest, denyRegistrationRequest
 interface RegistrationRequest {
   id: string;
   business_name: string;
-  contact_name: string;
+  first_name: string | null;
+  last_name: string | null;
+  contact_name: string | null;
   email: string;
   phone: string;
-  facility_type: 'childcare_center' | 'nursing_home';
-  sub_classification: string;
-  license_number: string;
-  estimated_capacity: number;
+  number_of_locations: number | null;
   status: string;
   submitted_at: string;
 }
@@ -95,9 +94,6 @@ export default function AdminRequestsPage() {
       hour: 'numeric', minute: '2-digit',
     });
 
-  const getFacilityTypeLabel = (type: string) =>
-    type === 'childcare_center' ? '🧸 Childcare Center' : '🏥 Nursing Home';
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white p-6 md:p-12">
       <div className="max-w-7xl mx-auto">
@@ -164,19 +160,20 @@ export default function AdminRequestsPage() {
                     <div className="flex items-start justify-between">
                       <div>
                         <h3 className="text-xl font-bold text-white mb-1">{request.business_name}</h3>
-                        <div className="flex items-center gap-3 text-sm">
-                          <span className="text-slate-400">Submitted {formatDate(request.submitted_at)}</span>
-                          <span className="px-2 py-0.5 bg-blue-500/10 text-blue-400 rounded text-xs font-bold uppercase tracking-wider">
-                            {getFacilityTypeLabel(request.facility_type)}
-                          </span>
-                        </div>
+                        <span className="text-slate-400 text-sm">
+                          Submitted {formatDate(request.submitted_at)}
+                        </span>
                       </div>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                       <div>
-                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Contact Person</p>
-                        <p className="text-white font-medium">{request.contact_name}</p>
+                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Owner Name</p>
+                        <p className="text-white font-medium">
+                          {request.first_name && request.last_name
+                            ? `${request.first_name} ${request.last_name}`
+                            : (request.contact_name ?? '—')}
+                        </p>
                       </div>
                       <div>
                         <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Email Address</p>
@@ -187,17 +184,9 @@ export default function AdminRequestsPage() {
                         <p className="text-white font-medium">{request.phone}</p>
                       </div>
                       <div>
-                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">License Number</p>
-                        <p className="text-white font-medium font-mono">{request.license_number}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Sub-Classification</p>
-                        <p className="text-white font-medium text-sm">{request.sub_classification}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Estimated Capacity</p>
+                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">No. of Locations</p>
                         <p className="text-white font-medium">
-                          {request.estimated_capacity} {request.facility_type === 'childcare_center' ? 'children' : 'beds'}
+                          {request.number_of_locations ?? '—'}
                         </p>
                       </div>
                     </div>

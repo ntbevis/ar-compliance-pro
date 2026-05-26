@@ -7,32 +7,21 @@ import Link from 'next/link';
 export default function RequestAccessPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [submittedEmail, setSubmittedEmail] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
-    business_name: '',
-    contact_name: '',
+    first_name: '',
+    last_name: '',
     email: '',
     phone: '',
-    facility_type: 'childcare' as 'childcare' | 'nursing_home',
-    sub_classification: 'Licensed Child Care Center (CCC)',
-    license_number: '',
-    estimated_capacity: ''
+    business_name: '',
+    number_of_locations: '',
   });
 
-  // Sub-classification options based on facility type
-  const getSubClassificationOptions = () => {
-    if (formData.facility_type === 'childcare') {
-      return [
-        'Licensed Child Care Center (CCC)',
-        'Licensed Family Child Care Home (FCCH)'
-      ];
-    } else {
-      return [
-        'Skilled Nursing Facility (SNF)',
-        'Assisted Living Facility (Tier I/II)'
-      ];
-    }
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -42,43 +31,24 @@ export default function RequestAccessPage() {
 
     try {
       const result = await submitRegistrationRequest({
-        ...formData,
-        estimated_capacity: parseInt(formData.estimated_capacity) || 0
+        first_name: formData.first_name.trim(),
+        last_name: formData.last_name.trim(),
+        email: formData.email.trim().toLowerCase(),
+        phone: formData.phone.trim(),
+        business_name: formData.business_name.trim(),
+        number_of_locations: parseInt(formData.number_of_locations, 10) || 1,
       });
 
       if (result.success) {
+        setSubmittedEmail(formData.email.trim().toLowerCase());
         setSubmitted(true);
       } else {
-        setError(result.error || 'Failed to submit request');
+        setError(result.error || 'Failed to submit request. Please try again.');
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'An unexpected error occurred';
-      setError(message);
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred.');
     } finally {
       setSubmitting(false);
-    }
-  };
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    
-    // When facility_type changes, reset sub_classification and set default
-    if (name === 'facility_type') {
-      const newFacilityType = value as 'childcare' | 'nursing_home';
-      const defaultSubClass = newFacilityType === 'childcare'
-        ? 'Licensed Child Care Center (CCC)'
-        : 'Skilled Nursing Facility (SNF)';
-      
-      setFormData(prev => ({
-        ...prev,
-        facility_type: newFacilityType,
-        sub_classification: defaultSubClass
-      }));
-    } else {
-      setFormData(prev => ({
-        ...prev,
-        [name]: value
-      }));
     }
   };
 
@@ -88,12 +58,16 @@ export default function RequestAccessPage() {
         <div className="max-w-md w-full bg-white rounded-2xl shadow-2xl p-8 text-center">
           <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
             <svg className="w-8 h-8 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
             </svg>
           </div>
-          <h2 className="text-2xl font-bold text-slate-900 mb-2">Request Submitted!</h2>
-          <p className="text-slate-600 mb-6">
-            Thank you for your interest in AR Compliance Guard. Our team will review your request and contact you within 1-2 business days.
+          <h2 className="text-2xl font-bold text-slate-900 mb-2">Check Your Email</h2>
+          <p className="text-slate-600 mb-2">
+            Your account has been created. We&apos;ve sent an invitation link to:
+          </p>
+          <p className="text-blue-700 font-semibold mb-6 break-all">{submittedEmail}</p>
+          <p className="text-slate-500 text-sm mb-6">
+            Click the link in the email to set your password and begin onboarding your facilities. Check your spam folder if you don&apos;t see it within a few minutes.
           </p>
           <Link
             href="/"
@@ -126,13 +100,13 @@ export default function RequestAccessPage() {
             <div className="flex items-center gap-2 mb-2">
               <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
                 <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                 </svg>
               </div>
-              <h2 className="text-xl font-bold text-slate-900">Facility Information</h2>
+              <h2 className="text-xl font-bold text-slate-900">Owner Registration</h2>
             </div>
             <p className="text-sm text-slate-500">
-              Complete the form below to request access to the AR Compliance Guard platform.
+              Create your account to start managing compliance across your facilities.
             </p>
           </div>
 
@@ -142,59 +116,61 @@ export default function RequestAccessPage() {
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Business Name */}
-            <div>
-              <label htmlFor="business_name" className="block text-sm font-semibold text-slate-700 mb-2">
-                Business Name <span className="text-rose-500">*</span>
-              </label>
-              <input
-                type="text"
-                id="business_name"
-                name="business_name"
-                required
-                value={formData.business_name}
-                onChange={handleChange}
-                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                placeholder="Little Stars Daycare Center"
-              />
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {/* First Name + Last Name */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div>
+                <label htmlFor="first_name" className="block text-sm font-semibold text-slate-700 mb-2">
+                  First Name <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  id="first_name"
+                  name="first_name"
+                  required
+                  autoComplete="given-name"
+                  value={formData.first_name}
+                  onChange={handleChange}
+                  className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                  placeholder="Jane"
+                />
+              </div>
+              <div>
+                <label htmlFor="last_name" className="block text-sm font-semibold text-slate-700 mb-2">
+                  Last Name <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  id="last_name"
+                  name="last_name"
+                  required
+                  autoComplete="family-name"
+                  value={formData.last_name}
+                  onChange={handleChange}
+                  className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                  placeholder="Smith"
+                />
+              </div>
             </div>
 
-            {/* Contact Name */}
-            <div>
-              <label htmlFor="contact_name" className="block text-sm font-semibold text-slate-700 mb-2">
-                Contact Name <span className="text-rose-500">*</span>
-              </label>
-              <input
-                type="text"
-                id="contact_name"
-                name="contact_name"
-                required
-                value={formData.contact_name}
-                onChange={handleChange}
-                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                placeholder="Jane Smith"
-              />
-            </div>
-
-            {/* Email & Phone Row */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Work Email + Phone */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               <div>
                 <label htmlFor="email" className="block text-sm font-semibold text-slate-700 mb-2">
-                  Email Address <span className="text-rose-500">*</span>
+                  Work Email <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="email"
                   id="email"
                   name="email"
                   required
+                  autoComplete="email"
                   value={formData.email}
                   onChange={handleChange}
                   className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                  placeholder="jane@littlestars.com"
+                  placeholder="jane@yourcompany.com"
                 />
               </div>
-
               <div>
                 <label htmlFor="phone" className="block text-sm font-semibold text-slate-700 mb-2">
                   Phone Number <span className="text-rose-500">*</span>
@@ -204,6 +180,7 @@ export default function RequestAccessPage() {
                   id="phone"
                   name="phone"
                   required
+                  autoComplete="tel"
                   value={formData.phone}
                   onChange={handleChange}
                   className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
@@ -212,87 +189,46 @@ export default function RequestAccessPage() {
               </div>
             </div>
 
-            {/* Facility Type */}
+            {/* Business / Organization Name */}
             <div>
-              <label htmlFor="facility_type" className="block text-sm font-semibold text-slate-700 mb-2">
-                Facility Type <span className="text-rose-500">*</span>
+              <label htmlFor="business_name" className="block text-sm font-semibold text-slate-700 mb-2">
+                Business / Organization Name <span className="text-rose-500">*</span>
               </label>
-              <select
-                id="facility_type"
-                name="facility_type"
+              <input
+                type="text"
+                id="business_name"
+                name="business_name"
                 required
-                value={formData.facility_type}
+                autoComplete="organization"
+                value={formData.business_name}
                 onChange={handleChange}
-                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors bg-white"
-              >
-                <option value="childcare">Childcare Facility</option>
-                <option value="nursing_home">Nursing Home</option>
-              </select>
+                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                placeholder="Mid-South Care Management Group"
+              />
             </div>
 
-            {/* Conditional Sub-Classification Dropdown */}
-            <div className="animate-in fade-in slide-in-from-top-2 duration-300">
-              <label htmlFor="sub_classification" className="block text-sm font-semibold text-slate-700 mb-2">
-                Specific Licensing Sub-Classification <span className="text-rose-500">*</span>
+            {/* Number of Locations */}
+            <div>
+              <label htmlFor="number_of_locations" className="block text-sm font-semibold text-slate-700 mb-2">
+                Number of Locations <span className="text-rose-500">*</span>
               </label>
-              <select
-                id="sub_classification"
-                name="sub_classification"
+              <input
+                type="number"
+                id="number_of_locations"
+                name="number_of_locations"
                 required
-                value={formData.sub_classification}
+                min="1"
+                value={formData.number_of_locations}
                 onChange={handleChange}
-                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors bg-white"
-              >
-                {getSubClassificationOptions().map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-slate-500 mt-2">
-                {formData.facility_type === 'childcare'
-                  ? 'Select your DCCECE licensing classification'
-                  : 'Select your OLTC licensing classification'}
+                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                placeholder="e.g. 3"
+              />
+              <p className="text-xs text-slate-500 mt-1.5">
+                How many facilities will you be managing on the platform?
               </p>
             </div>
 
-            {/* License Number & Capacity Row */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <label htmlFor="license_number" className="block text-sm font-semibold text-slate-700 mb-2">
-                  License Number <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  id="license_number"
-                  name="license_number"
-                  required
-                  value={formData.license_number}
-                  onChange={handleChange}
-                  className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                  placeholder="AR-DC-12345"
-                />
-              </div>
-
-              <div>
-                <label htmlFor="estimated_capacity" className="block text-sm font-semibold text-slate-700 mb-2">
-                  Estimated Capacity <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="number"
-                  id="estimated_capacity"
-                  name="estimated_capacity"
-                  required
-                  min="1"
-                  value={formData.estimated_capacity}
-                  onChange={handleChange}
-                  className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                  placeholder="50"
-                />
-              </div>
-            </div>
-
-            {/* Submit Button */}
+            {/* Submit */}
             <button
               type="submit"
               disabled={submitting}
@@ -304,16 +240,16 @@ export default function RequestAccessPage() {
             >
               {submitting ? (
                 <span className="flex items-center justify-center gap-2">
-                  <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
-                  Submitting Request...
+                  <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  Creating Your Account...
                 </span>
               ) : (
-                'Submit Access Request'
+                'Create Account & Get Started'
               )}
             </button>
 
-            <p className="text-xs text-slate-500 text-center mt-4">
-              By submitting this form, you agree to be contacted by our team regarding platform access.
+            <p className="text-xs text-slate-500 text-center">
+              By submitting this form you agree to be contacted by our team regarding platform access.
             </p>
           </form>
         </div>

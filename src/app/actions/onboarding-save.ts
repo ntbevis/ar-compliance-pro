@@ -46,7 +46,8 @@ export async function isOnboardingComplete(): Promise<boolean> {
     const { count } = await supabaseAdmin
       .from('facilities')
       .select('id', { count: 'exact', head: true })
-      .eq('org_id', profile.org_id);
+      .eq('org_id', profile.org_id)
+      .eq('is_active', true);
 
     return (count ?? 0) > 0;
   } catch {
