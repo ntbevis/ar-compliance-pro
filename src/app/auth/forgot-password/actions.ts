@@ -8,6 +8,28 @@ export type ForgotPasswordState = {
   email: string;
 };
 
+/**
+ * Resolves the canonical site URL using a priority cascade:
+ *  1. NEXT_PUBLIC_SITE_URL  – explicit override (set in Vercel dashboard)
+ *  2. VERCEL_PROJECT_PRODUCTION_URL – Vercel auto-injects this for production deployments
+ *  3. VERCEL_URL – Vercel auto-injects this for every deployment (preview & production)
+ *
+ * VERCEL_PROJECT_PRODUCTION_URL / VERCEL_URL are server-side runtime variables,
+ * so they are always available regardless of build-time env state.
+ */
+function resolveSiteUrl(): string | null {
+  if (process.env.NEXT_PUBLIC_SITE_URL) {
+    return process.env.NEXT_PUBLIC_SITE_URL;
+  }
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  }
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  return null;
+}
+
 export async function forgotPasswordAction(
   _prevState: ForgotPasswordState,
   formData: FormData
@@ -20,10 +42,10 @@ export async function forgotPasswordAction(
       return { error: 'Email is required.', success: false, email: '' };
     }
 
-    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+    const siteUrl = resolveSiteUrl();
     if (!siteUrl) {
       return {
-        error: 'Server misconfiguration: NEXT_PUBLIC_SITE_URL is not set.',
+        error: 'Server misconfiguration: site URL could not be determined.',
         success: false,
         email,
       };
