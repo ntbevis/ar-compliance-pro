@@ -3,10 +3,15 @@
 
 import { createAdminClient } from 'src/app/utils/supabase/admin';
 
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000';
-// Keep the redirectTo as just the base callback URL — no query params.
-// Supabase allowlist matching is strict about query strings, and the destination
-// (/auth/reset-password) is the only valid post-invite landing point anyway.
+// Use the server-only SITE_URL env var (set in Vercel), then the NEXT_PUBLIC
+// variant, then fall back to the hardcoded production domain so the invite
+// redirect is never silently replaced with localhost by the build system.
+const siteUrl =
+  process.env.SITE_URL ??
+  (process.env.NODE_ENV === 'production'
+    ? 'https://app.complianceguardpro.io'
+    : 'http://localhost:3000');
+
 const inviteRedirectTo = `${siteUrl}/auth/callback`;
 
 /**
