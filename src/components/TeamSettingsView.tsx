@@ -26,7 +26,7 @@ export default function TeamSettingsView() {
   // Invite form state
   const [inviteFullName, setInviteFullName] = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
-  const [inviteFacilityId, setInviteFacilityId] = useState('');
+  const [inviteFacilityIds, setInviteFacilityIds] = useState<string[]>([]);
   const [inviting, setInviting] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
@@ -58,7 +58,7 @@ export default function TeamSettingsView() {
     } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(inviteEmail.trim())) {
       errors.email = 'Please enter a valid email address.';
     }
-    if (!inviteFacilityId) errors.facility = 'Please assign a facility.';
+    if (inviteFacilityIds.length === 0) errors.facility = 'Please assign at least one facility.';
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   };
@@ -72,13 +72,13 @@ export default function TeamSettingsView() {
       const result = await inviteFacilityDirector(
         inviteEmail.trim(),
         inviteFullName.trim(),
-        inviteFacilityId
+        inviteFacilityIds
       );
       if (result.success) {
         toast.success(`Invitation sent to ${inviteEmail.trim()}. They will receive a setup email shortly.`);
         setInviteFullName('');
         setInviteEmail('');
-        setInviteFacilityId('');
+        setInviteFacilityIds([]);
         setFormErrors({});
         await loadDirectors();
       } else {
@@ -172,26 +172,59 @@ export default function TeamSettingsView() {
 
             {/* Facility Assignment */}
             <div className="md:col-span-2">
-              <label className="block text-xs font-black text-slate-400 uppercase tracking-wider mb-1.5">
-                Assign to Facility <span className="text-rose-400">*</span>
-              </label>
-              <select
-                value={inviteFacilityId}
-                onChange={(e) => {
-                  setInviteFacilityId(e.target.value);
-                  if (formErrors.facility) setFormErrors((p) => ({ ...p, facility: '' }));
-                }}
-                className={`w-full bg-slate-900 border rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors ${
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-black text-slate-400 uppercase tracking-wider">
+                  Assign to Facilities <span className="text-rose-400">*</span>
+                </label>
+                {facilityList.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const allIds = facilityList.map((f) => f.id);
+                      const allSelected = allIds.every((id) => inviteFacilityIds.includes(id));
+                      setInviteFacilityIds(allSelected ? [] : allIds);
+                      if (formErrors.facility) setFormErrors((p) => ({ ...p, facility: '' }));
+                    }}
+                    className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold transition-colors"
+                  >
+                    {facilityList.every((f) => inviteFacilityIds.includes(f.id))
+                      ? 'Deselect All'
+                      : 'Select All'}
+                  </button>
+                )}
+              </div>
+              <div
+                className={`bg-slate-900 border rounded-xl divide-y divide-slate-800 overflow-hidden ${
                   formErrors.facility ? 'border-rose-500' : 'border-slate-700'
                 }`}
               >
-                <option value="">— Select a facility —</option>
-                {facilityList.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
+                {facilityList.length === 0 ? (
+                  <p className="px-4 py-3 text-sm text-slate-500 italic">No facilities found.</p>
+                ) : (
+                  facilityList.map((f) => {
+                    const checked = inviteFacilityIds.includes(f.id);
+                    return (
+                      <label
+                        key={f.id}
+                        className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-slate-800/60 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setInviteFacilityIds((prev) =>
+                              checked ? prev.filter((id) => id !== f.id) : [...prev, f.id]
+                            );
+                            if (formErrors.facility) setFormErrors((p) => ({ ...p, facility: '' }));
+                          }}
+                          className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 accent-indigo-500"
+                        />
+                        <span className="text-sm text-white">{f.name}</span>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
               {formErrors.facility && (
                 <p className="text-xs text-rose-400 mt-1 font-medium">⚠ {formErrors.facility}</p>
               )}

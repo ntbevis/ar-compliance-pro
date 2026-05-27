@@ -1511,14 +1511,14 @@ export async function getOrgDirectors(): Promise<
 
 /**
  * Sends a Supabase Auth invitation to a new Facility Director, creates their
- * profile record, and assigns them to the specified facility.
+ * profile record, and assigns them to one or more facilities.
  *
  * Caller must be an 'owner' or 'admin'.
  */
 export async function inviteFacilityDirector(
   email: string,
   fullName: string,
-  facilityId: string
+  facilityIds: string[]
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const { orgId, role } = await getAuthenticatedUserContext();
@@ -1527,21 +1527,25 @@ export async function inviteFacilityDirector(
       return { success: false, error: 'Unauthorized: Only owners and admins can invite directors' };
     }
 
-    const supabase = createAdminClient();
-
-    // Verify the facility belongs to this org
-    const { data: facility, error: facilityError } = await supabase
-      .from('facilities')
-      .select('id, org_id')
-      .eq('id', facilityId)
-      .eq('org_id', orgId)
-      .single();
-
-    if (facilityError || !facility) {
-      return { success: false, error: 'Unauthorized: Facility not found or does not belong to your organization' };
+    if (!facilityIds || facilityIds.length === 0) {
+      return { success: false, error: 'At least one facility must be selected' };
     }
 
-    const redirectTo = `${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/auth/callback?next=${encodeURIComponent('/auth/reset-password?next=/dashboard')}`;
+    const supabase = createAdminClient();
+
+    // Verify all selected facilities belong to this org
+    const { data: facilities, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .in('id', facilityIds)
+      .eq('org_id', orgId);
+
+    if (facilityError || !facilities || facilities.length !== facilityIds.length) {
+      return { success: false, error: 'Unauthorized: One or more facilities not found or do not belong to your organization' };
+    }
+
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000';
+    const redirectTo = `${siteUrl}/auth/callback?next=/auth/reset-password`;
 
     const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(
       email,
@@ -1562,6 +1566,7 @@ export async function inviteFacilityDirector(
       full_name: fullName,
       email: email,
       account_status: 'active',
+      onboarding_completed: true,
     });
 
     if (profileError) {
@@ -1572,7 +1577,7 @@ export async function inviteFacilityDirector(
     const { error: facilityUpdateError } = await supabase
       .from('facilities')
       .update({ director_id: newUserId })
-      .eq('id', facilityId);
+      .in('id', facilityIds);
 
     if (facilityUpdateError) {
       console.error('❌ Facility director_id update error:', facilityUpdateError);
