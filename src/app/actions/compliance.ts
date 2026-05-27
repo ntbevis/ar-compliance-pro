@@ -835,14 +835,14 @@ export async function getRequirementsForRole(facilityId: string, roleName: strin
     const applicable = (rules ?? []).filter((rule: Record<string, unknown>) => {
       if (rule.facility_type !== facilityType) return false;
 
-      // Role-specific override: if applicable_roles is a non-empty array, the rule is
-      // restricted to exactly those roles — hide it from everyone else, bypassing all
-      // subsequent sub_classification and scoring checks.
+      // Role-specific absolute override: if applicable_roles is a non-empty array, the
+      // result is determined solely by the role match — the sub_classification and facility
+      // toggle checks below are completely bypassed in either direction.
       const applicableRoles = Array.isArray(rule.applicable_roles)
         ? (rule.applicable_roles as string[])
         : null;
       if (applicableRoles !== null && applicableRoles.length > 0) {
-        if (!applicableRoles.some((r) => r.toLowerCase() === roleName.toLowerCase())) return false;
+        return applicableRoles.some((r) => r.toLowerCase() === roleName.toLowerCase());
       }
 
       const subClass = rule.sub_classification;
