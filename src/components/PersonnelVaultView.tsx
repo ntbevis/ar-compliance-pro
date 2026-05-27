@@ -156,7 +156,6 @@ export default function PersonnelVaultView({ facilityId }: Props) {
 
   // Personnel-specific upload state
   const [personnelDocuments, setPersonnelDocuments] = useState<PersonnelDocument[]>([]);
-  const [userAttestation, setUserAttestation] = useState<boolean>(false);
   const [uploadingReqId, setUploadingReqId] = useState<string | null>(null);
   const [verifyingReqId, setVerifyingReqId] = useState<string | null>(null);
   const [signingReqId, setSigningReqId] = useState<string | null>(null);
@@ -398,7 +397,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         fileName: file.name,
         fileSize: file.size,
         fileHash,
-        userAttestation,
+        userAttestation: true,
         personnelId,
         status: 'pending',
       });
@@ -419,11 +418,6 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     requirement: RoleRequirement,
     file: File
   ) => {
-    if (!userAttestation) {
-      toast.error('You must check the legal certification box before uploading.');
-      return;
-    }
-
     // ── Client-side file validation ───────────────────────────────────────────
     setUploadError(null);
     if (file.size > MAX_FILE_SIZE || !ALLOWED_TYPES.includes(file.type)) {
@@ -499,7 +493,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         fileName: file.name,
         fileSize: file.size,
         fileHash,
-        userAttestation,
+        userAttestation: true,
         personnelId,
         aiExpirationDate,
       });
@@ -525,15 +519,11 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     personnelId: string,
     requirement: RoleRequirement
   ) => {
-    if (!userAttestation) {
-      toast.error('You must check the legal certification box before signing.');
-      return;
-    }
     if (!confirm(`Sign digital attestation for: ${requirement.name}?`)) return;
 
     setSigningReqId(requirement.id);
     try {
-      const result = await signAttestation(facilityId, requirement.id, userAttestation, personnelId);
+      const result = await signAttestation(facilityId, requirement.id, true, personnelId);
       if (result.success) {
         const refreshedDocs = (await getPersonnelDocuments(facilityId)) as PersonnelDocument[];
         setPersonnelDocuments(refreshedDocs);
@@ -547,10 +537,6 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   };
 
   const handlePersonnelMarkNA = async (personnelId: string, requirement: RoleRequirement) => {
-    if (!userAttestation) {
-      toast.error('You must check the legal certification box before declaring N/A.');
-      return;
-    }
     const reason = prompt(`Mark "${requirement.name}" as Not Applicable. Provide a brief reason:`);
     if (!reason || reason.trim() === '') {
       toast.error('A reason is required to mark as N/A.');
@@ -563,7 +549,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         facilityId,
         requirement.id,
         reason.trim(),
-        userAttestation,
+        true,
         personnelId
       );
       if (result.success) {
@@ -866,33 +852,6 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                 </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Legal Certification */}
-      {!showArchive && (
-        <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-6 shadow-sm">
-          <div className="flex items-start gap-4">
-            <input
-              type="checkbox"
-              id="personnel-attestation"
-              checked={userAttestation}
-              onChange={(e) => setUserAttestation(e.target.checked)}
-              className="mt-1 w-5 h-5 text-blue-600 border-amber-400 rounded focus:ring-2 focus:ring-blue-500 cursor-pointer"
-            />
-            <label htmlFor="personnel-attestation" className="flex-1 cursor-pointer">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-sm font-bold text-amber-900">⚖️ Legal Certification Required</span>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
-                  MANDATORY
-                </span>
-              </div>
-              <p className="text-sm text-amber-900 leading-relaxed">
-                I certify that this information is authentic, unaltered, and satisfies Arkansas DHS requirements.
-                I understand that providing false information may result in penalties under state and federal law.
-              </p>
-            </label>
           </div>
         </div>
       )}
@@ -1251,24 +1210,18 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                   <>
                                     <label
                                       className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all cursor-pointer ${
-                                        userAttestation && !isUploading
+                                        !isUploading
                                           ? 'bg-blue-600 hover:bg-blue-700 text-white'
                                           : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                                       }`}
-                                      title={
-                                        !userAttestation
-                                          ? 'Please check the legal certification box above'
-                                          : isUploading
-                                          ? 'Upload in progress…'
-                                          : 'Upload evidence'
-                                      }
+                                      title={isUploading ? 'Upload in progress…' : 'Upload evidence'}
                                     >
                                       Upload
                                       <input
                                         type="file"
                                         accept=".pdf,.jpg,.jpeg,.png"
                                         className="hidden"
-                                        disabled={!userAttestation || isUploading}
+                                        disabled={isUploading}
                                         onChange={(e) => {
                                           const file = e.target.files?.[0];
                                           if (file) handlePersonnelUpload(person.id, req, file);
@@ -1279,9 +1232,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                     {req.severity !== 'critical' && (
                                       <button
                                         onClick={() => handlePersonnelSignAttestation(person.id, req)}
-                                        disabled={!userAttestation || isUploading}
+                                        disabled={isUploading}
                                         className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all ${
-                                          userAttestation && !isUploading
+                                          !isUploading
                                             ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                                             : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                                         }`}
@@ -1291,9 +1244,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                     )}
                                     <button
                                       onClick={() => handlePersonnelMarkNA(person.id, req)}
-                                      disabled={!userAttestation || isUploading}
+                                      disabled={isUploading}
                                       className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all ${
-                                        userAttestation && !isUploading
+                                        !isUploading
                                           ? 'bg-slate-600 hover:bg-slate-700 text-white'
                                           : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                                       }`}
