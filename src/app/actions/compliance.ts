@@ -1613,9 +1613,10 @@ export async function inviteFacilityDirector(
 
       // If a zombie profile with a different ID is lingering, remove it before
       // upserting so we don't violate the unique email constraint.
-      if (existingProfile && existingProfile.id !== resolvedUserId) {
-        console.log('⚠️ Removing stale zombie profile for:', email, '(old id:', existingProfile.id, ')');
-        await supabase.from('profiles').delete().eq('id', existingProfile.id);
+      const profile = existingProfile as { id: string } | null;
+      if (profile && profile.id !== resolvedUserId) {
+        console.log('⚠️ Removing stale zombie profile for:', email, '(old id:', profile.id, ')');
+        await supabase.from('profiles').delete().eq('id', profile.id);
       }
     }
 
