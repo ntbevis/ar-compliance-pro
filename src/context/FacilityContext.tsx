@@ -41,18 +41,25 @@ export function FacilityProvider({ children }: { children: React.ReactNode }) {
 
       const { data: profile } = await supabase
         .from('profiles')
-        .select('org_id')
+        .select('org_id, role, id')
         .eq('id', session.user.id)
         .single();
 
       if (!profile?.org_id) return;
 
-      const { data: facilities } = await supabase
+      let facilitiesQuery = supabase
         .from('facilities')
         .select('id, name')
         .eq('org_id', profile.org_id)
         .eq('is_active', true)
         .order('name');
+
+      // RBAC: directors only see facilities they are assigned to.
+      if (profile.role === 'director') {
+        facilitiesQuery = facilitiesQuery.eq('director_id', profile.id);
+      }
+
+      const { data: facilities } = await facilitiesQuery;
 
       setFacilityList(facilities ?? []);
     } catch (err) {
