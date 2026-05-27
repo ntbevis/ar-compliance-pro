@@ -1609,7 +1609,10 @@ export async function inviteFacilityDirector(
       resolvedUserId = existingProfile.id;
     } else {
       // Fresh invite succeeded — use the new Auth user's ID.
-      resolvedUserId = inviteData!.user.id;
+      if (!inviteData?.user?.id) {
+        return { success: false, error: 'Failed to send invitation: no user returned from Auth' };
+      }
+      resolvedUserId = inviteData.user.id;
 
       // If a zombie profile with a different ID is lingering, remove it before
       // upserting so we don't violate the unique email constraint.
