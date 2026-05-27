@@ -864,38 +864,38 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         </div>
       )}
 
-      <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm">
-        <div className="flex items-start justify-between mb-6">
-        <div>
-          <h2 className="text-lg font-bold mb-2">
-            {showArchive ? 'Archived Employee Roster' : 'Active Personnel Vault'}
-          </h2>
-          <p className="text-xs text-slate-500">
-            Click a row to view the personnel-category requirements that apply to that role.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {!showArchive && (
-            <button
-              onClick={() => setShowAddForm(!showAddForm)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700"
-            >
-              ➕ Add Employee
-            </button>
-          )}
-          <button
-            onClick={() => setShowArchive(!showArchive)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-          >
-            📦 {showArchive ? 'Show Active Roster' : 'Show Archived Roster'}
-            {showArchive && separated.length > 0 && (
-              <span className="bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full text-xs font-bold">
-                {separated.length}
-              </span>
+      <div className="bg-white p-5 md:p-8 rounded-xl border border-slate-200 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-6">
+          <div>
+            <h2 className="text-lg font-bold mb-2">
+              {showArchive ? 'Archived Employee Roster' : 'Active Personnel Vault'}
+            </h2>
+            <p className="text-xs text-slate-500">
+              Click a row to view the personnel-category requirements that apply to that role.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
+            {!showArchive && (
+              <button
+                onClick={() => setShowAddForm(!showAddForm)}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 min-h-[44px]"
+              >
+                ➕ Add Employee
+              </button>
             )}
-          </button>
+            <button
+              onClick={() => setShowArchive(!showArchive)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 min-h-[44px]"
+            >
+              📦 {showArchive ? 'Show Active Roster' : 'Show Archived Roster'}
+              {showArchive && separated.length > 0 && (
+                <span className="bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full text-xs font-bold">
+                  {separated.length}
+                </span>
+              )}
+            </button>
+          </div>
         </div>
-      </div>
 
       {showAddForm && !showArchive && (
         <div className="mb-6 p-6 bg-blue-50 border border-blue-200 rounded-xl">
@@ -1069,7 +1069,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                       <p className="text-xs text-slate-500">{person.role}</p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2 flex-wrap justify-end">
                     {/* Expiration indicator — visible once the row has been expanded once */}
                     {personWorstStatus[person.id] === 'expired' && (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 border border-rose-400 text-rose-700">
@@ -1078,7 +1078,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                     )}
                     {personWorstStatus[person.id] === 'expiring_soon' && (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 border border-amber-400 text-amber-700">
-                        🟡 Expiring Soon
+                        🟡 Expiring
                       </span>
                     )}
                     <span
@@ -1092,7 +1092,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                     >
                       {person.clearance_status}
                     </span>
-                    <span className="text-xs text-slate-400">
+                    <span className="hidden sm:block text-xs text-slate-400">
                       Hired {new Date(person.hire_date).toLocaleDateString()}
                     </span>
                     {!showArchive && (
@@ -1102,7 +1102,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                           setPersonnelToArchive(person);
                         }}
                         disabled={separatingId === person.id}
-                        className="text-xs font-medium px-3 py-1.5 rounded-md bg-slate-100 text-slate-700 hover:bg-rose-100 hover:text-rose-700 border border-slate-200"
+                        className="text-xs font-medium px-3 py-1.5 rounded-md bg-slate-100 text-slate-700 hover:bg-rose-100 hover:text-rose-700 border border-slate-200 min-h-[32px]"
                       >
                         {separatingId === person.id ? 'Processing…' : '📦 Archive'}
                       </button>
@@ -1209,7 +1209,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                 ) : !showArchive ? (
                                   <>
                                     <label
-                                      className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all cursor-pointer ${
+                                      className={`px-2.5 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all cursor-pointer flex items-center min-h-[32px] ${
                                         !isUploading
                                           ? 'bg-blue-600 hover:bg-blue-700 text-white'
                                           : 'bg-slate-300 text-slate-500 cursor-not-allowed'
@@ -1233,7 +1233,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                       <button
                                         onClick={() => handlePersonnelSignAttestation(person.id, req)}
                                         disabled={isUploading}
-                                        className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all ${
+                                        className={`px-2.5 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-h-[32px] ${
                                           !isUploading
                                             ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                                             : 'bg-slate-300 text-slate-500 cursor-not-allowed'
@@ -1245,7 +1245,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                     <button
                                       onClick={() => handlePersonnelMarkNA(person.id, req)}
                                       disabled={isUploading}
-                                      className={`px-2.5 py-1 rounded-md text-xs font-medium shadow-sm transition-all ${
+                                      className={`px-2.5 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-h-[32px] ${
                                         !isUploading
                                           ? 'bg-slate-600 hover:bg-slate-700 text-white'
                                           : 'bg-slate-300 text-slate-500 cursor-not-allowed'

@@ -265,7 +265,7 @@ export default function DashboardPage() {
 
   if (loading) {
     return (
-      <div className="p-12 min-h-screen bg-slate-50 flex items-center justify-center animate-pulse">
+      <div className="p-8 md:p-12 min-h-screen bg-slate-50 flex items-center justify-center animate-pulse">
         <p className="text-blue-500 font-black tracking-[0.3em] uppercase text-xs">
           Synchronizing compliance engine…
         </p>
@@ -276,13 +276,13 @@ export default function DashboardPage() {
   // ---- AUDIT LOGS VIEW (available from any selection) ----
   if (currentView === 'audit_logs') {
     return (
-      <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700">
+      <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700">
         <header className="mb-6 flex items-start justify-between flex-wrap gap-4">
           <div>
             <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
               DHS Regulatory Engine
             </p>
-            <h1 className="text-4xl font-bold tracking-tight text-slate-900 mb-2">
+            <h1 className="text-2xl md:text-4xl font-bold tracking-tight text-slate-900 mb-2">
               Audit Trail &amp; Compliance Logs
             </h1>
             <p className="text-slate-600 text-sm">
@@ -428,12 +428,12 @@ export default function DashboardPage() {
   // ---- TEAM SETTINGS (org-level, master view) ----
   if ((selectedFacilityId === 'all' || !selectedFacilityId) && currentView === 'settings') {
     return (
-      <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
+      <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
         <header className="mb-2">
           <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
             DHS Regulatory Engine
           </p>
-          <h1 className="text-5xl font-bold tracking-tight text-slate-900">
+          <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900">
             Team Settings
           </h1>
         </header>
@@ -447,25 +447,25 @@ export default function DashboardPage() {
     const canManageFacilities = userRole === 'owner' || userRole === 'admin';
 
     return (
-      <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700">
+      <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700">
         <header className="mb-8">
           <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
             DHS Regulatory Engine
           </p>
-          <div className="flex items-start justify-between mb-2">
-            <h1 className="text-5xl font-bold tracking-tight text-slate-900">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-2">
+            <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900">
               Executive Fleet Overview
             </h1>
             {canManageFacilities && (
               <button
                 onClick={() => setShowAddFacilityModal(true)}
-                className="flex items-center gap-2 px-5 py-3 rounded-lg text-sm font-bold bg-blue-600 text-white hover:bg-blue-700 shadow-sm transition-all"
+                className="flex items-center gap-2 px-5 py-3 rounded-lg text-sm font-bold bg-blue-600 text-white hover:bg-blue-700 shadow-sm transition-all shrink-0 min-h-[44px]"
               >
                 ➕ Add New Facility
               </button>
             )}
           </div>
-          <p className="text-slate-600 text-lg">
+          <p className="text-slate-600 text-base md:text-lg">
             Twin-score compliance monitoring across all facilities.
           </p>
         </header>
@@ -1001,19 +1001,19 @@ export default function DashboardPage() {
   // ---- SINGLE FACILITY VIEWS ----
   if (!compliance) {
     return (
-      <div className="p-12 min-h-screen bg-slate-50 text-slate-500 italic flex items-center justify-center">
+      <div className="p-8 min-h-screen bg-slate-50 text-slate-500 italic flex items-center justify-center">
         ⚠️ Failed to load compliance data for this facility.
       </div>
     );
   }
 
   return (
-    <div className="p-8 md:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
+    <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
       <header className="mb-2">
         <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
           DHS Regulatory Engine
         </p>
-        <h1 className="text-5xl font-bold tracking-tight text-slate-900">
+        <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900">
           {currentView === 'overview' && 'Executive Overview'}
           {currentView === 'personnel' && 'Personnel Vault'}
           {currentView === 'documents' && 'Document Center'}
@@ -1033,7 +1033,7 @@ export default function DashboardPage() {
               Set your baseline enrolled headcount. The system uses this to calculate required minimum
               staff and inform the personnel score.
             </p>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <input
                 id="enrollment-input"
                 type="number"
@@ -1042,13 +1042,13 @@ export default function DashboardPage() {
                 value={enrollmentInput}
                 onChange={(e) => setEnrollmentInput(e.target.value)}
                 placeholder="e.g. 45"
-                className="px-4 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-32"
+                className="px-4 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-32 min-h-[44px]"
                 disabled={updatingEnrollment}
               />
               <button
                 onClick={handleUpdateEnrollment}
                 disabled={updatingEnrollment || !enrollmentInput}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                className={`px-4 py-2.5 rounded-lg text-sm font-medium transition-all min-h-[44px] ${
                   updatingEnrollment || !enrollmentInput
                     ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
                     : 'bg-blue-600 text-white hover:bg-blue-700'

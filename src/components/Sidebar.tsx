@@ -11,7 +11,11 @@ interface UserProfile {
   role: string;
 }
 
-export default function Sidebar() {
+interface SidebarProps {
+  onNavigate?: () => void;
+}
+
+export default function Sidebar({ onNavigate }: SidebarProps = {}) {
   const {
     selectedFacilityId,
     setSelectedFacilityId,
@@ -54,9 +58,14 @@ export default function Sidebar() {
     const isActive = currentView === view;
     return (
       <button
-        onClick={() => !disabled && setCurrentView(view)}
+        onClick={() => {
+          if (!disabled) {
+            setCurrentView(view);
+            onNavigate?.();
+          }
+        }}
         disabled={disabled}
-        className={`w-full text-left p-3 rounded-xl font-bold transition-all border ${
+        className={`w-full text-left p-3 rounded-xl font-bold transition-all border min-h-[44px] ${
           disabled
             ? 'opacity-50 cursor-not-allowed text-gray-600 border-transparent'
             : isActive
@@ -86,6 +95,7 @@ export default function Sidebar() {
         onSelect={(id) => {
           setSelectedFacilityId(id);
           if (id === 'all') setCurrentView('overview');
+          onNavigate?.();
         }}
       />
 
@@ -107,7 +117,8 @@ export default function Sidebar() {
             </div>
             <Link
               href="/admin"
-              className="w-full text-left p-3 rounded-xl font-bold transition-all border flex items-center gap-2 text-indigo-400 border-indigo-500/20 bg-indigo-600/10 hover:bg-indigo-600/20 hover:border-indigo-500/40"
+              onClick={() => onNavigate?.()}
+              className="w-full text-left p-3 rounded-xl font-bold transition-all border flex items-center gap-2 text-indigo-400 border-indigo-500/20 bg-indigo-600/10 hover:bg-indigo-600/20 hover:border-indigo-500/40 min-h-[44px]"
             >
               🛡️ Admin Control Center
             </Link>

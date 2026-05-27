@@ -107,8 +107,8 @@ export default function DocumentCenterView({ facilityId }: Props) {
   };
 
   return (
-    <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm max-w-6xl mx-auto text-slate-800">
-      <div className="flex items-start justify-between mb-6">
+    <div className="bg-white p-5 md:p-8 rounded-xl border border-slate-200 shadow-sm max-w-6xl mx-auto text-slate-800">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-6">
         <div>
           <h2 className="text-lg font-bold mb-2">Document Center</h2>
           <p className="text-xs text-slate-500">
@@ -116,7 +116,7 @@ export default function DocumentCenterView({ facilityId }: Props) {
           </p>
         </div>
         <label
-          className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
+          className={`cursor-pointer px-4 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2 shrink-0 min-h-[44px] justify-center ${
             uploading ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700'
           }`}
         >

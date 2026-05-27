@@ -753,7 +753,7 @@ export default function ComplianceDashboardClient({
           ) : (
             <>
               <label
-                className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all cursor-pointer ${
+                className={`px-3 py-2 rounded-md text-xs font-medium shadow-sm transition-all cursor-pointer min-h-[36px] flex items-center ${
                   userAttestation && !isUploading
                     ? 'bg-blue-600 hover:bg-blue-700 text-white'
                     : 'bg-slate-300 text-slate-500 cursor-not-allowed'
@@ -783,7 +783,7 @@ export default function ComplianceDashboardClient({
                 <button
                   onClick={() => handleSignAttestation(gap)}
                   disabled={!userAttestation || isUploading}
-                  className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
+                  className={`px-3 py-2 rounded-md text-xs font-medium shadow-sm transition-all min-h-[36px] ${
                     userAttestation && !isUploading
                       ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                       : 'bg-slate-300 text-slate-500 cursor-not-allowed'
@@ -795,7 +795,7 @@ export default function ComplianceDashboardClient({
               <button
                 onClick={() => handleMarkNotApplicable(gap)}
                 disabled={!userAttestation || isUploading}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all ${
+                className={`px-3 py-2 rounded-md text-xs font-medium shadow-sm transition-all min-h-[36px] ${
                   userAttestation && !isUploading
                     ? 'bg-slate-600 hover:bg-slate-700 text-white'
                     : 'bg-slate-300 text-slate-500 cursor-not-allowed'
@@ -1016,13 +1016,13 @@ export default function ComplianceDashboardClient({
             role="tab"
             aria-selected={activeTab === 'facility'}
             onClick={() => setActiveTab('facility')}
-            className={`flex-1 px-6 py-4 font-bold text-sm transition-colors ${
+            className={`flex-1 px-3 sm:px-6 py-4 font-bold text-xs sm:text-sm transition-colors min-h-[48px] ${
               activeTab === 'facility'
                 ? 'bg-slate-900 text-white'
                 : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
             }`}
           >
-            🏢 Building &amp; Facility Checklist
+            🏢 <span className="hidden sm:inline">Building &amp; </span>Facility
             {facilityAttentionCount > 0 && (
               <span className="ml-2 inline-flex items-center justify-center min-w-[1.5rem] px-1.5 py-0.5 rounded-full text-[10px] bg-rose-100 text-rose-800">
                 {facilityAttentionCount}
@@ -1033,13 +1033,13 @@ export default function ComplianceDashboardClient({
             role="tab"
             aria-selected={activeTab === 'personnel'}
             onClick={() => setActiveTab('personnel')}
-            className={`flex-1 px-6 py-4 font-bold text-sm transition-colors ${
+            className={`flex-1 px-3 sm:px-6 py-4 font-bold text-xs sm:text-sm transition-colors min-h-[48px] ${
               activeTab === 'personnel'
                 ? 'bg-slate-900 text-white'
                 : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
             }`}
           >
-            👥 Staff &amp; Personnel Vault
+            👥 <span className="hidden sm:inline">Staff &amp; </span>Personnel
             {personnelAttentionCount > 0 && (
               <span className="ml-2 inline-flex items-center justify-center min-w-[1.5rem] px-1.5 py-0.5 rounded-full text-[10px] bg-rose-100 text-rose-800">
                 {personnelAttentionCount}

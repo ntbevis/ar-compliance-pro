@@ -106,16 +106,16 @@ export default function AdminRequestsPage() {
               </svg>
             </div>
             <div>
-              <h1 className="text-4xl font-black tracking-tight">Inbound Lead Control Center</h1>
+              <h1 className="text-2xl md:text-4xl font-black tracking-tight">Inbound Lead Control Center</h1>
               <p className="text-slate-400 text-sm mt-1">Platform Access Request Management</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-4 mt-6">
+          <div className="flex flex-wrap items-center gap-3 mt-6">
             <button
               onClick={loadRequests}
               disabled={loading}
-              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+              className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 min-h-[44px]"
             >
               {loading ? 'Refreshing...' : '🔄 Refresh'}
             </button>

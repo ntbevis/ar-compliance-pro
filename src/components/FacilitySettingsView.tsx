@@ -134,7 +134,7 @@ export default function FacilitySettingsView({ facilityId }: Props) {
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       {/* ── Core Profile ─────────────────────────────────────────────────── */}
-      <section className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm text-slate-800 space-y-5">
+      <section className="bg-white p-5 md:p-8 rounded-xl border border-slate-200 shadow-sm text-slate-800 space-y-5">
         <header>
           <h2 className="text-xl font-bold">🏢 Facility Profile</h2>
           <p className="text-sm text-slate-500 mt-1">
@@ -184,15 +184,14 @@ export default function FacilitySettingsView({ facilityId }: Props) {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 pt-1">
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
           <span className="text-xs font-mono text-slate-400">
             {facility.facility_type === 'childcare_center' ? 'Childcare Center • DCCECE' : 'Nursing Home • OLTC'}
           </span>
-          <span className="flex-1" />
           <button
             onClick={handleSaveProfile}
             disabled={savingProfile}
-            className={`px-5 py-2 rounded-lg font-bold text-sm transition-all ${
+            className={`px-5 py-2.5 rounded-lg font-bold text-sm transition-all min-h-[44px] ${
               savingProfile
                 ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
                 : 'bg-blue-600 hover:bg-blue-700 text-white shadow-sm'
@@ -204,7 +203,7 @@ export default function FacilitySettingsView({ facilityId }: Props) {
       </section>
 
       {/* ── Scope Flags ──────────────────────────────────────────────────── */}
-      <section className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm text-slate-800 space-y-5">
+      <section className="bg-white p-5 md:p-8 rounded-xl border border-slate-200 shadow-sm text-slate-800 space-y-5">
         <header>
           <h2 className="text-xl font-bold">⚙️ Compliance Scope Flags</h2>
           <p className="text-sm text-slate-500 mt-1">

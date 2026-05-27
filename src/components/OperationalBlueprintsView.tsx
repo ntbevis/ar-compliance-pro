@@ -117,7 +117,7 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
 
       {/* ── Liability & Operations Acknowledgment ─────────────────────────── */}
       <div className="bg-white rounded-2xl border border-indigo-200 shadow-sm overflow-hidden">
-        <div className="bg-gradient-to-r from-indigo-900 to-indigo-700 px-8 py-5">
+        <div className="bg-gradient-to-r from-indigo-900 to-indigo-700 px-5 py-4 md:px-8 md:py-5">
           <p className="text-indigo-300 text-xs font-bold uppercase tracking-widest mb-1">
             Facility Director
           </p>
@@ -130,7 +130,7 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
           </p>
         </div>
 
-        <div className="p-8">
+        <div className="p-5 md:p-8">
           {lastAck ? (
             <div className="space-y-5">
               {/* Current acknowledgment status */}
@@ -223,7 +223,7 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
 
       {/* ── Reference Manual ──────────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-8 py-5">
+        <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-5 py-4 md:px-8 md:py-5">
           <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1">
             Reference Manual
           </p>
@@ -250,7 +250,7 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
             {sortedFrequencyEntries(grouped).map(([frequency, group]) => (
               <div key={frequency}>
                 {/* Frequency group header */}
-                <div className="bg-slate-50 px-8 py-3 flex items-center gap-3">
+                <div className="bg-slate-50 px-4 py-3 md:px-8 flex items-center gap-3">
                   <span className="text-xs font-bold uppercase tracking-widest text-slate-500">
                     {frequency.replace(/_/g, ' ')}
                   </span>
@@ -262,7 +262,7 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
                 {/* Rule cards */}
                 <ul className="divide-y divide-slate-100">
                   {group.map((item) => (
-                    <li key={item.id} className="px-8 py-4 flex items-start justify-between gap-4">
+                    <li key={item.id} className="px-4 py-4 md:px-8 flex items-start justify-between gap-4">
                       <div className="min-w-0">
                         <p
                           className={`text-sm text-slate-800 ${
@@ -300,7 +300,7 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
         )}
 
         {!loading && items.length > 0 && (
-          <div className="px-8 py-4 bg-slate-50 border-t border-slate-200 text-right">
+          <div className="px-4 py-4 md:px-8 bg-slate-50 border-t border-slate-200 text-right">
             <p className="text-xs text-slate-400">
               {items.length} standard{items.length !== 1 ? 's' : ''} •{' '}
               {items.filter((i) => i.severity === 'critical').length} critical

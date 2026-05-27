@@ -153,7 +153,7 @@ export default function OnboardingPage() {
   const visibleToggles = facType ? TOGGLES_BY_FACILITY_TYPE[facType] : [];
 
   return (
-    <div className="min-h-screen bg-black text-white p-8 md:p-24 selection:bg-blue-500">
+    <div className="min-h-screen bg-black text-white p-6 md:p-12 lg:p-24 selection:bg-blue-500">
       <div className="max-w-2xl mx-auto">
         {/* Step Progress Tracker */}
         <div className="flex gap-2 mb-16">
@@ -168,8 +168,8 @@ export default function OnboardingPage() {
         {/* STEP 1 */}
         {step === 1 && (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-700">
-            <h1 className="text-5xl font-bold mb-6 tracking-tight">Your Company.</h1>
-            <p className="text-gray-400 mb-10 text-xl leading-relaxed">
+            <h1 className="text-3xl md:text-5xl font-bold mb-6 tracking-tight">Your Company.</h1>
+            <p className="text-gray-400 mb-10 text-lg md:text-xl leading-relaxed">
               Establish your corporate management hub to coordinate Arkansas properties from a unified command center.
             </p>
             <input
@@ -183,7 +183,7 @@ export default function OnboardingPage() {
             <button
               onClick={() => setStep(2)}
               disabled={!orgName}
-              className="mt-10 w-full md:w-auto bg-white text-black font-bold py-4 px-12 rounded-2xl hover:bg-blue-600 hover:text-white transition-all disabled:opacity-30"
+              className="mt-10 w-full sm:w-auto bg-white text-black font-bold py-4 px-12 rounded-2xl hover:bg-blue-600 hover:text-white transition-all disabled:opacity-30 min-h-[56px]"
             >
               Continue
             </button>
@@ -193,7 +193,7 @@ export default function OnboardingPage() {
         {/* STEP 2 */}
         {step === 2 && (
           <div className="animate-in fade-in slide-in-from-right-4 duration-700">
-            <h1 className="text-5xl font-bold mb-2 tracking-tight">Add Locations.</h1>
+            <h1 className="text-3xl md:text-5xl font-bold mb-2 tracking-tight">Add Locations.</h1>
             <p className="text-gray-400 mb-8 text-base">
               Bind each operations center to its regulatory authority and pick the scope flags that
               apply. The dashboard will then load the precise rule set you need.
@@ -370,8 +370,8 @@ export default function OnboardingPage() {
         {/* STEP 3 */}
         {step === 3 && (
           <div className="animate-in fade-in zoom-in-95 duration-700">
-            <h1 className="text-5xl font-bold mb-4 tracking-tight">Audit Checklist.</h1>
-            <p className="text-gray-400 mb-10 text-lg leading-relaxed">
+            <h1 className="text-3xl md:text-5xl font-bold mb-4 tracking-tight">Audit Checklist.</h1>
+            <p className="text-gray-400 mb-10 text-base md:text-lg leading-relaxed">
               We&apos;ve cross-referenced Arkansas rulesets and structured your compliance pipeline.
             </p>
 

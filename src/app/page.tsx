@@ -88,7 +88,7 @@ function LandingPageInner() {
             </div>
             <Link
               href="/request-access"
-              className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-2.5 rounded-lg transition-colors shadow-lg"
+              className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 sm:px-6 py-2.5 rounded-lg transition-colors shadow-lg text-sm sm:text-base min-h-[44px] flex items-center"
             >
               Request Access
             </Link>
@@ -97,19 +97,19 @@ function LandingPageInner() {
       </header>
 
       {/* Main Content */}
-      <div className="flex items-center justify-center min-h-screen px-4 pt-20">
-        <div className="max-w-6xl w-full grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+      <div className="flex items-center justify-center min-h-screen px-4 pt-24 pb-16 lg:pb-24">
+        <div className="max-w-6xl w-full grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-center">
           {/* Left Side - Marketing Content */}
           <div className="text-white space-y-6">
             <div className="inline-block bg-blue-500/20 border border-blue-400/30 rounded-full px-4 py-2 mb-4">
               <span className="text-blue-300 text-sm font-medium">Trusted by Arkansas Facilities</span>
             </div>
             
-            <h2 className="text-5xl font-bold leading-tight">
+            <h2 className="text-3xl md:text-5xl font-bold leading-tight">
               Automated Compliance Management for Arkansas Facilities
             </h2>
             
-            <p className="text-xl text-blue-200 leading-relaxed">
+            <p className="text-lg md:text-xl text-blue-200 leading-relaxed">
               Twin-score regulatory monitoring, dynamic facility scope flags, and real-time
               personnel licensing oversight for childcare centers and nursing homes.
             </p>
@@ -239,7 +239,7 @@ function LandingPageInner() {
       </div>
 
       {/* Footer */}
-      <footer className="absolute bottom-0 left-0 right-0 py-6">
+      <footer className="relative py-6 mt-8 lg:absolute lg:bottom-0 lg:left-0 lg:right-0 lg:mt-0">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <p className="text-center text-blue-300 text-sm">
             © 2026 AR Compliance Guard. Strictly-typed regulatory intelligence.

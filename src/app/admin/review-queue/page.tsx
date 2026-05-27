@@ -97,10 +97,10 @@ function ReviewModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
       <div
-        className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-5xl flex flex-col overflow-hidden"
-        style={{ maxHeight: '92vh' }}
+        className="bg-slate-900 border border-slate-700 sm:rounded-2xl shadow-2xl w-full sm:max-w-5xl flex flex-col overflow-hidden"
+        style={{ maxHeight: '95vh' }}
       >
         {/* Header */}
         <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 flex items-center justify-between shrink-0">
@@ -329,24 +329,24 @@ export default function DocumentReviewQueuePage() {
               🗂️
             </div>
             <div>
-              <h1 className="text-4xl font-black tracking-tight">Document Review Queue</h1>
+              <h1 className="text-2xl md:text-4xl font-black tracking-tight">Document Review Queue</h1>
               <p className="text-slate-400 text-sm mt-1">
                 Global queue of facility documents pending human review.
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-4 mt-6">
+          <div className="flex flex-wrap items-center gap-3 mt-6">
             <Link
               href="/admin"
-              className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-sm font-medium transition-colors text-slate-300"
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-sm font-medium transition-colors text-slate-300 min-h-[44px]"
             >
               ← Admin Home
             </Link>
             <button
               onClick={loadDocuments}
               disabled={loading}
-              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+              className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 min-h-[44px]"
             >
               {loading ? 'Refreshing…' : '🔄 Refresh'}
             </button>
@@ -379,6 +379,7 @@ export default function DocumentReviewQueuePage() {
         {/* Table */}
         {!loading && documents.length > 0 && (
           <div className="bg-slate-900/50 border border-slate-800 rounded-2xl overflow-hidden backdrop-blur-sm">
+            <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-800 text-[10px] font-black text-slate-500 uppercase tracking-widest">
@@ -424,6 +425,7 @@ export default function DocumentReviewQueuePage() {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         )}
       </div>

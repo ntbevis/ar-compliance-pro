@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 import { createClient } from 'src/app/utils/supabase/server';
 import { createAdminClient } from 'src/app/utils/supabase/admin';
 import { FacilityProvider } from 'src/context/FacilityContext';
-import Sidebar from 'src/components/Sidebar';
+import DashboardShell from 'src/components/DashboardShell';
 
 export default async function DashboardLayout({
   children,
@@ -31,15 +31,9 @@ export default async function DashboardLayout({
 
   return (
     <FacilityProvider>
-      <div className="flex min-h-screen bg-black text-white">
-        {/* The Sidebar is fixed to the left */}
-        <Sidebar />
-
-        {/* The Main Content Area */}
-        <main className="flex-1 overflow-y-auto">
-          {children}
-        </main>
-      </div>
+      <DashboardShell>
+        {children}
+      </DashboardShell>
     </FacilityProvider>
   );
 }

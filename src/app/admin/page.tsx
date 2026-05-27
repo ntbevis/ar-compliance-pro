@@ -45,7 +45,7 @@ export default function AdminDashboardPage() {
               🛡️
             </div>
             <div>
-              <h1 className="text-4xl font-black tracking-tight">Admin Control Center</h1>
+              <h1 className="text-2xl md:text-4xl font-black tracking-tight">Admin Control Center</h1>
               <p className="text-slate-400 text-sm mt-1">
                 Platform-level administration — restricted to authorized personnel only.
               </p>

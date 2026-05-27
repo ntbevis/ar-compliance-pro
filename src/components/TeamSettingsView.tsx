@@ -114,7 +114,7 @@ export default function TeamSettingsView() {
     <div className="max-w-4xl mx-auto space-y-8">
       {/* ── Invite New Director ─────────────────────────────────────────── */}
       <section className="bg-slate-800 border border-slate-700 rounded-2xl overflow-hidden shadow-lg">
-        <div className="bg-gradient-to-r from-indigo-900 to-slate-800 px-8 py-5 border-b border-slate-700">
+        <div className="bg-gradient-to-r from-indigo-900 to-slate-800 px-5 py-4 md:px-8 md:py-5 border-b border-slate-700">
           <h2 className="text-xl font-bold text-white flex items-center gap-2">
             👥 Invite New Director
           </h2>
@@ -124,7 +124,7 @@ export default function TeamSettingsView() {
           </p>
         </div>
 
-        <form onSubmit={handleInvite} noValidate className="p-8 space-y-5">
+        <form onSubmit={handleInvite} noValidate className="p-5 md:p-8 space-y-5">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             {/* Full Name */}
             <div>
@@ -235,7 +235,7 @@ export default function TeamSettingsView() {
             <button
               type="submit"
               disabled={inviting}
-              className={`px-6 py-2.5 rounded-xl font-bold text-sm transition-all shadow-sm ${
+              className={`px-6 py-2.5 rounded-xl font-bold text-sm transition-all shadow-sm min-h-[44px] ${
                 inviting
                   ? 'bg-slate-700 text-slate-500 cursor-not-allowed'
                   : 'bg-indigo-600 hover:bg-indigo-500 text-white'
@@ -259,7 +259,7 @@ export default function TeamSettingsView() {
 
       {/* ── Active Team Management ──────────────────────────────────────── */}
       <section className="bg-slate-800 border border-slate-700 rounded-2xl overflow-hidden shadow-lg">
-        <div className="bg-gradient-to-r from-slate-900 to-slate-800 px-8 py-5 border-b border-slate-700">
+        <div className="bg-gradient-to-r from-slate-900 to-slate-800 px-5 py-4 md:px-8 md:py-5 border-b border-slate-700">
           <h2 className="text-xl font-bold text-white flex items-center gap-2">
             🗂️ Active Team Management
           </h2>
