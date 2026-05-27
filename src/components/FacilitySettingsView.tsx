@@ -56,6 +56,7 @@ export default function FacilitySettingsView({ facilityId }: Props) {
             sick_care: fac.sick_care,
             school_age: fac.school_age,
             night_care: fac.night_care,
+            clinical: fac.clinical,
             private_water: fac.private_water,
             memory_care: fac.memory_care,
           });

@@ -32,6 +32,7 @@ const EMPTY_TOGGLES: FacilityScopeToggles = {
   sick_care: false,
   school_age: false,
   night_care: false,
+  clinical: false,
   private_water: false,
   memory_care: false,
 };
