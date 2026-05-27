@@ -1510,8 +1510,20 @@ export async function getOrgDirectors(): Promise<
 }
 
 /**
- * Sends a Supabase Auth invitation to a new Facility Director, creates their
- * profile record, and assigns them to one or more facilities.
+ * Idempotent invite for a Facility Director. Safe to call multiple times for
+ * the same email (supports "Resend Invite") and handles the case where a user
+ * was deleted from Supabase Auth but still has a lingering profiles row.
+ *
+ * Flow:
+ *  1. Look up any existing profile row for this email (zombie detection).
+ *  2. Attempt `inviteUserByEmail`.
+ *     - Success → fresh invite; resolved user ID comes from the invite response.
+ *       If a zombie profile existed with a different ID it is removed first.
+ *     - `user_already_exists` → the user has an active Auth account; send a
+ *       password-reset / magic-link email instead and resolve the ID from the
+ *       existing profile row.
+ *  3. Upsert the director profile with the resolved ID.
+ *  4. Assign the director to the requested facilities.
  *
  * Caller must be an 'owner' or 'admin'.
  */
@@ -1547,20 +1559,69 @@ export async function inviteFacilityDirector(
     const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000';
     const redirectTo = `${siteUrl}/auth/callback?next=/auth/reset-password`;
 
+    // ── 1. Check for a pre-existing profile row (catches zombie profiles) ────
+    const { data: existingProfile } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('email', email)
+      .maybeSingle();
+
+    // ── 2. Attempt the Supabase Auth invitation ───────────────────────────────
+    let resolvedUserId: string;
+
     const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(
       email,
       { redirectTo }
     );
 
-    if (inviteError || !inviteData?.user) {
+    const isUserAlreadyExists =
+      inviteError?.code === 'user_already_exists' ||
+      (inviteError?.message?.toLowerCase().includes('already') &&
+        inviteError?.message?.toLowerCase().includes('registered'));
+
+    if (inviteError && !isUserAlreadyExists) {
       console.error('❌ inviteUserByEmail error:', inviteError);
-      return { success: false, error: inviteError?.message ?? 'Failed to send invitation' };
+      return { success: false, error: inviteError.message ?? 'Failed to send invitation' };
     }
 
-    const newUserId = inviteData.user.id;
+    if (isUserAlreadyExists) {
+      // The user already has an active Auth account. Send a password-reset /
+      // magic-link email so they can still access the platform.
+      console.log('ℹ️ User already exists in Auth — sending password reset email to:', email);
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo,
+      });
+      if (resetError) {
+        // Non-fatal — profile and facility assignment still proceeds.
+        console.error('⚠️ resetPasswordForEmail error (non-fatal):', resetError);
+      }
 
+      if (!existingProfile?.id) {
+        // Extremely rare: user_already_exists in Auth but no profile row exists.
+        // This indicates data corruption; surface a clear message.
+        console.error('❌ user_already_exists in Auth but no matching profile row found for:', email);
+        return {
+          success: false,
+          error: 'This email is already registered in the authentication system but has no associated profile. Please contact support.',
+        };
+      }
+
+      resolvedUserId = existingProfile.id;
+    } else {
+      // Fresh invite succeeded — use the new Auth user's ID.
+      resolvedUserId = inviteData!.user.id;
+
+      // If a zombie profile with a different ID is lingering, remove it before
+      // upserting so we don't violate the unique email constraint.
+      if (existingProfile && existingProfile.id !== resolvedUserId) {
+        console.log('⚠️ Removing stale zombie profile for:', email, '(old id:', existingProfile.id, ')');
+        await supabase.from('profiles').delete().eq('id', existingProfile.id);
+      }
+    }
+
+    // ── 3. Upsert the director profile ───────────────────────────────────────
     const { error: profileError } = await supabase.from('profiles').upsert({
-      id: newUserId,
+      id: resolvedUserId,
       org_id: orgId,
       role: 'director',
       full_name: fullName,
@@ -1570,13 +1631,14 @@ export async function inviteFacilityDirector(
     });
 
     if (profileError) {
-      console.error('❌ Profile insert error:', profileError);
-      return { success: false, error: 'Invitation sent but failed to create profile record' };
+      console.error('❌ Profile upsert error:', profileError);
+      return { success: false, error: 'Invitation sent but failed to create/update profile record' };
     }
 
+    // ── 4. Assign director to selected facilities ─────────────────────────────
     const { error: facilityUpdateError } = await supabase
       .from('facilities')
-      .update({ director_id: newUserId })
+      .update({ director_id: resolvedUserId })
       .in('id', facilityIds);
 
     if (facilityUpdateError) {
