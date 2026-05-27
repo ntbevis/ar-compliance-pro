@@ -213,7 +213,7 @@ export async function approveRegistrationRequest(requestId: string) {
     // ── 6. Mark request as approved ───────────────────────────────────────────
     const { error: updateError } = await supabase
       .from('registration_requests')
-      .update({ status: 'approved', approved_at: new Date().toISOString() })
+      .update({ status: 'approved' })
       .eq('id', requestId);
 
     if (updateError) {
@@ -260,7 +260,7 @@ export async function denyRegistrationRequest(requestId: string) {
 
     const { error: updateError } = await supabase
       .from('registration_requests')
-      .update({ status: 'rejected', approved_at: new Date().toISOString() })
+      .update({ status: 'rejected' })
       .eq('id', requestId);
 
     if (updateError) throw new Error(updateError.message);
