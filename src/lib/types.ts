@@ -22,6 +22,7 @@ export interface FacilityScopeToggles {
   sick_care: boolean;
   school_age: boolean;
   night_care: boolean;
+  clinical: boolean;
 
   // --- Nursing Home toggles ---
   private_water: boolean;
@@ -38,6 +39,7 @@ export const FACILITY_TOGGLE_KEYS: ReadonlyArray<keyof FacilityScopeToggles> = [
   'sick_care',
   'school_age',
   'night_care',
+  'clinical',
   'private_water',
   'memory_care',
 ] as const;
@@ -57,6 +59,7 @@ export const FACILITY_TOGGLE_LABELS: Record<FacilityToggleKey, string> = {
   sick_care: 'Sick Care',
   school_age: 'School Age Program',
   night_care: 'Night Care',
+  clinical: 'EIDT / Clinical Services',
   private_water: 'Private Water Source',
   memory_care: "Alzheimer's / Memory Care Unit",
 };
@@ -75,6 +78,7 @@ export const TOGGLES_BY_FACILITY_TYPE: Record<FacilityType, ReadonlyArray<Facili
     'sick_care',
     'school_age',
     'night_care',
+    'clinical',
   ],
   nursing_home: ['private_water', 'memory_care'],
 };
@@ -123,6 +127,8 @@ export interface ComplianceRule {
   frequency: ComplianceFrequency;
   is_scored: boolean;
   score_category: ScoreCategory;
+  /** Role-specific override. When non-empty, only staff whose role is listed here are subject to this rule. */
+  applicable_roles?: string[] | null;
 }
 
 /**

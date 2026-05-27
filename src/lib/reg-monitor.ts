@@ -61,23 +61,24 @@ function activeToggleKeys(facility: Pick<Facility, FacilityToggleKey>): Set<stri
  *
  * A rule applies to a facility IF:
  *   - rule.facility_type === facility.facility_type, AND
- *   - rule.sub_classification IS NULL, OR
+ *   - rule.sub_classification IS NULL / undefined / 'null' (universal rule), OR
+ *   - rule.sub_classification is a universal baseline tag that always applies
+ *     regardless of optional scope toggles ('all_staff', 'facility_management', 'education'), OR
  *   - rule.sub_classification matches a toggle currently set to TRUE on the facility profile.
  */
+const UNIVERSAL_BASELINE_TAGS = new Set(['all_staff', 'facility_management', 'education']);
+
 export function ruleAppliesToFacility(
   rule: Pick<ComplianceRule, 'facility_type' | 'sub_classification'>,
   facility: Pick<Facility, 'facility_type' | FacilityToggleKey>
 ): boolean {
   if (rule.facility_type !== facility.facility_type) return false;
-  if (
-    rule.sub_classification === null ||
-    rule.sub_classification === undefined ||
-    String(rule.sub_classification) === 'null'
-  ) {
+  const sub = rule.sub_classification as string | null | undefined;
+  if (sub === null || sub === undefined || sub === 'null' || UNIVERSAL_BASELINE_TAGS.has(sub)) {
     return true;
   }
   const activated = activeToggleKeys(facility);
-  return activated.has(rule.sub_classification);
+  return activated.has(rule.sub_classification as string);
 }
 
 /**
