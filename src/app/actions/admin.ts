@@ -263,7 +263,7 @@ export async function denyRegistrationRequest(requestId: string) {
       .update({ status: 'rejected', approved_at: new Date().toISOString() })
       .eq('id', requestId);
 
-    if (updateError) throw updateError;
+    if (updateError) throw new Error(updateError.message);
 
     console.log('✅ Registration request rejected:', requestId);
 
@@ -469,7 +469,7 @@ export async function approveDocument(
       .update({ status: 'approved' })
       .eq('id', documentId);
 
-    if (updateError) throw updateError;
+    if (updateError) throw new Error(updateError.message);
 
     await writeAdminAuditLog({
       supabase,
@@ -535,7 +535,7 @@ export async function rejectDocument(
       .update({ status: 'rejected', metadata: updatedMetadata })
       .eq('id', documentId);
 
-    if (updateError) throw updateError;
+    if (updateError) throw new Error(updateError.message);
 
     await writeAdminAuditLog({
       supabase,
