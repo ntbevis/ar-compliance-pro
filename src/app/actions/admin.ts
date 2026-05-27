@@ -105,13 +105,14 @@ export async function getPendingRequests() {
 }
 
 /**
- * Approves a pending registration request and performs the full onboarding cycle:
+ * Approves a pending registration request and performs the account provisioning cycle:
  * 1. Fetches the request details.
  * 2. Creates the Organization record.
- * 3. Creates an initial Facility record linked to the organization.
- * 4. Sends the Supabase Auth invite email (redirectTo → /auth/reset-password).
- * 5. Creates the owner Profile linked to the new org.
- * 6. Marks the request as 'approved'.
+ * 3. Sends the Supabase Auth invite email (redirectTo → /auth/reset-password).
+ * 4. Creates the owner Profile linked to the new org.
+ * 5. Marks the request as 'approved'.
+ *
+ * Facility creation is intentionally deferred to the owner's onboarding flow.
  *
  * SECURITY: Only accessible by users with 'admin' role.
  */
@@ -157,22 +158,7 @@ export async function approveRegistrationRequest(requestId: string) {
 
     console.log('✅ Organization created:', org.id);
 
-    // ── 3. Create initial facility ────────────────────────────────────────────
-    const { error: facilityError } = await supabase
-      .from('facilities')
-      .insert([{
-        org_id: org.id,
-        name: request.business_name,
-      }]);
-
-    if (facilityError) {
-      console.error('❌ Error creating initial facility:', facilityError);
-      throw new Error('Failed to create initial facility');
-    }
-
-    console.log('✅ Initial facility created for org:', org.id);
-
-    // ── 4. Send auth invitation email ─────────────────────────────────────────
+    // ── 3. Send auth invitation email ─────────────────────────────────────────
     const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(
       request.email,
       {
@@ -193,7 +179,7 @@ export async function approveRegistrationRequest(requestId: string) {
     const newUserId = inviteData.user.id;
     console.log('✅ Invitation sent to:', request.email, '| User ID:', newUserId);
 
-    // ── 5. Create owner profile linked to org ─────────────────────────────────
+    // ── 4. Create owner profile linked to org ─────────────────────────────────
     const { error: profileError } = await supabase.from('profiles').insert([{
       id: newUserId,
       org_id: org.id,
@@ -210,7 +196,7 @@ export async function approveRegistrationRequest(requestId: string) {
 
     console.log('✅ Owner profile created for:', newUserId);
 
-    // ── 6. Mark request as approved ───────────────────────────────────────────
+    // ── 5. Mark request as approved ───────────────────────────────────────────
     const { error: updateError } = await supabase
       .from('registration_requests')
       .update({ status: 'approved' })
