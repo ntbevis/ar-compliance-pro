@@ -6,6 +6,17 @@ import { createClient } from 'src/app/utils/supabase/server';
 import { headers } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 
+// Mirror the same priority chain used in registration.ts so the invite link
+// always points at the real production domain even when NEXT_PUBLIC_SITE_URL
+// is absent from the environment.
+const siteUrl =
+  process.env.SITE_URL ??
+  (process.env.NODE_ENV === 'production'
+    ? 'https://app.complianceguardpro.io'
+    : 'http://localhost:3000');
+
+const inviteRedirectTo = `${siteUrl}/auth/callback?next=/auth/reset-password`;
+
 /**
  * Multi-Tenant Security Helper
  * Verifies authenticated user session and retrieves their organization context.
@@ -94,132 +105,140 @@ export async function getPendingRequests() {
 }
 
 /**
- * Approves a registration request and performs full onboarding cycle:
- * 1. Creates organization
- * 2. Sends auth invitation email
- * 3. Creates user profile with owner role
- * 4. Updates request status to approved
- * * SECURITY: Only accessible by users with 'admin' role.
+ * Approves a pending registration request and performs the full onboarding cycle:
+ * 1. Fetches the request details.
+ * 2. Creates the Organization record.
+ * 3. Creates an initial Facility record linked to the organization.
+ * 4. Sends the Supabase Auth invite email (redirectTo → /auth/reset-password).
+ * 5. Creates the owner Profile linked to the new org.
+ * 6. Marks the request as 'approved'.
+ *
+ * SECURITY: Only accessible by users with 'admin' role.
  */
 export async function approveRegistrationRequest(requestId: string) {
   try {
-    // 1. Authenticate and verify admin role
     const { role } = await getAuthenticatedUserContext();
-    
+
     if (role !== 'admin') {
       throw new Error('Forbidden: Admin access required');
     }
-    
+
     const supabase = createAdminClient();
-    
-    // 2. Fetch the specific registration request
+
+    // ── 1. Fetch the pending request ─────────────────────────────────────────
     const { data: request, error: fetchError } = await supabase
       .from('registration_requests')
       .select('*')
       .eq('id', requestId)
       .single();
-    
+
     if (fetchError || !request) {
       console.error('❌ Error fetching registration request:', fetchError);
       throw new Error('Registration request not found');
     }
-    
+
     if (request.status !== 'pending') {
       throw new Error(`Request has already been ${request.status}`);
     }
-    
+
     console.log('📝 Processing approval for:', request.business_name);
-    
-    // 3. Create organization
+
+    // ── 2. Create organization ────────────────────────────────────────────────
     const { data: org, error: orgError } = await supabase
       .from('organizations')
       .insert([{ name: request.business_name }])
-      .select()
+      .select('id')
       .single();
-    
+
     if (orgError || !org) {
       console.error('❌ Error creating organization:', orgError);
       throw new Error('Failed to create organization');
     }
-    
+
     console.log('✅ Organization created:', org.id);
-    
-    // 4. Send auth invitation email using Supabase Admin API
+
+    // ── 3. Create initial facility ────────────────────────────────────────────
+    const { error: facilityError } = await supabase
+      .from('facilities')
+      .insert([{
+        org_id: org.id,
+        name: request.business_name,
+      }]);
+
+    if (facilityError) {
+      console.error('❌ Error creating initial facility:', facilityError);
+      throw new Error('Failed to create initial facility');
+    }
+
+    console.log('✅ Initial facility created for org:', org.id);
+
+    // ── 4. Send auth invitation email ─────────────────────────────────────────
     const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(
       request.email,
       {
         data: {
           business_name: request.business_name,
           contact_name: request.contact_name,
-          org_id: org.id
+          org_id: org.id,
         },
-        redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/auth/callback?next=${encodeURIComponent('/auth/reset-password?next=/onboarding')}`
+        redirectTo: inviteRedirectTo,
       }
     );
-    
+
     if (inviteError || !inviteData.user) {
       console.error('❌ Error sending invitation:', inviteError);
       throw new Error('Failed to send invitation email');
     }
-    
+
     const newUserId = inviteData.user.id;
     console.log('✅ Invitation sent to:', request.email, '| User ID:', newUserId);
-    
-    // 5. Create user profile with owner role
-    const { error: profileError } = await supabase
-      .from('profiles')
-      .insert([{
-        id: newUserId,
-        org_id: org.id,
-        role: 'owner',
-        account_status: 'active',
-        email: request.email,
-        full_name: request.contact_name
-      }]);
-    
+
+    // ── 5. Create owner profile linked to org ─────────────────────────────────
+    const { error: profileError } = await supabase.from('profiles').insert([{
+      id: newUserId,
+      org_id: org.id,
+      role: 'owner',
+      account_status: 'active',
+      email: request.email,
+      full_name: request.contact_name,
+    }]);
+
     if (profileError) {
       console.error('❌ Error creating user profile:', profileError);
       throw new Error('Failed to create user profile');
     }
-    
-    console.log('✅ User profile created for:', newUserId);
-    
-    // 6. Update registration request status to approved
+
+    console.log('✅ Owner profile created for:', newUserId);
+
+    // ── 6. Mark request as approved ───────────────────────────────────────────
     const { error: updateError } = await supabase
       .from('registration_requests')
-      .update({
-        status: 'approved',
-        approved_at: new Date().toISOString()
-      })
+      .update({ status: 'approved', approved_at: new Date().toISOString() })
       .eq('id', requestId);
-    
+
     if (updateError) {
       console.error('❌ Error updating request status:', updateError);
       throw new Error('Failed to update request status');
     }
-    
+
     console.log('✅ Registration request approved:', requestId);
-    
+
     return {
       success: true,
       message: `Successfully approved ${request.business_name} and sent invitation to ${request.email}`,
       orgId: org.id,
-      userId: newUserId
+      userId: newUserId,
     };
-    
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'An unexpected error occurred';
     console.error('❌ Exception in approveRegistrationRequest:', error);
-    return {
-      success: false,
-      error: message
-    };
+    return { success: false, error: message };
   }
 }
 
 /**
- * Denies a pending registration request.
- * Marks it as 'denied' in the database — no invite is sent.
+ * Rejects a pending registration request.
+ * Marks it as 'rejected' in the database — no invite is sent.
  *
  * SECURITY: Only accessible by users with 'admin' role.
  */
@@ -241,14 +260,16 @@ export async function denyRegistrationRequest(requestId: string) {
 
     const { error: updateError } = await supabase
       .from('registration_requests')
-      .update({ status: 'denied', approved_at: new Date().toISOString() })
+      .update({ status: 'rejected', approved_at: new Date().toISOString() })
       .eq('id', requestId);
 
     if (updateError) throw updateError;
 
+    console.log('✅ Registration request rejected:', requestId);
+
     return {
       success: true,
-      message: `Registration request from ${request.business_name} has been denied.`,
+      message: `Registration request from ${request.business_name} has been rejected.`,
     };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'An unexpected error occurred';

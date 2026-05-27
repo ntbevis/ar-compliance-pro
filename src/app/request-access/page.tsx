@@ -58,16 +58,16 @@ export default function RequestAccessPage() {
         <div className="max-w-md w-full bg-white rounded-2xl shadow-2xl p-8 text-center">
           <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
             <svg className="w-8 h-8 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <h2 className="text-2xl font-bold text-slate-900 mb-2">Check Your Email</h2>
+          <h2 className="text-2xl font-bold text-slate-900 mb-2">Request Received</h2>
           <p className="text-slate-600 mb-2">
-            Your account has been created. We&apos;ve sent an invitation link to:
+            Your access request for
           </p>
-          <p className="text-blue-700 font-semibold mb-6 break-all">{submittedEmail}</p>
-          <p className="text-slate-500 text-sm mb-6">
-            Click the link in the email to set your password and begin onboarding your facilities. Check your spam folder if you don&apos;t see it within a few minutes.
+          <p className="text-blue-700 font-semibold mb-2 break-all">{submittedEmail}</p>
+          <p className="text-slate-600 mb-6">
+            is under review. Once approved, you will receive an invitation email with a link to set your password and begin onboarding.
           </p>
           <Link
             href="/"
@@ -241,10 +241,10 @@ export default function RequestAccessPage() {
               {submitting ? (
                 <span className="flex items-center justify-center gap-2">
                   <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  Creating Your Account...
+                  Submitting Request...
                 </span>
               ) : (
-                'Create Account & Get Started'
+                'Request Platform Access'
               )}
             </button>
 
