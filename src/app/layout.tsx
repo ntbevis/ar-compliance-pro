@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AR Compliance Guard",
-  description: "Arkansas DHS regulatory compliance management for childcare centers and nursing homes.",
+  title: "Compliance Guard Pro",
+  description: "Arkansas regulatory compliance management for childcare centers and nursing homes.",
 };
 
 export default function RootLayout({

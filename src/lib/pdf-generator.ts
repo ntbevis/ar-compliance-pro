@@ -449,7 +449,7 @@ export async function generateAuditReport(facilityId: string): Promise<void> {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(6.5);
     doc.text(
-      `AR Compliance Guard  •  ${facilityName}  •  Page ${i} of ${totalPages}`,
+      `Compliance Guard Pro  •  ${facilityName}  •  Page ${i} of ${totalPages}`,
       pageW / 2, pageH - 7.5, { align: 'center' }
     );
     doc.text('CONFIDENTIAL — FOR OFFICIAL USE ONLY', pageW / 2, pageH - 4, { align: 'center' });

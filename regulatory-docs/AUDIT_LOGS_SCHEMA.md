@@ -1,6 +1,6 @@
 # Audit Logs Table Schema
 
-This table provides immutable audit logging for all compliance-related actions to protect against fraud and ensure DHS auditing standards.
+This table provides immutable audit logging for all compliance-related actions to protect against fraud and ensure regulatory auditing standards.
 
 ## SQL Schema
 
@@ -96,5 +96,5 @@ This audit trail provides:
 - **Non-repudiation**: SHA-256 file hashes prove document integrity
 - **User accountability**: Explicit user attestation recorded
 - **Fraud detection**: IP addresses and timestamps for investigation
-- **DHS compliance**: Complete audit trail for regulatory inspections
+- **Regulatory compliance**: Complete audit trail for regulatory inspections
 - **Immutability**: No updates or deletes allowed after creation

@@ -82,8 +82,8 @@ function LandingPageInner() {
                 <span className="text-white font-bold text-lg sm:text-xl">🛡️</span>
               </div>
               <div>
-                <h1 className="text-white font-bold text-base sm:text-xl truncate">AR Compliance Guard</h1>
-                <p className="hidden sm:block text-blue-300 text-xs">Arkansas DHS Regulatory Engine</p>
+                <h1 className="text-white font-bold text-base sm:text-xl truncate">Compliance Guard Pro</h1>
+                <p className="hidden sm:block text-blue-300 text-xs">Arkansas Regulatory Compliance Engine</p>
               </div>
             </div>
             <Link
@@ -123,7 +123,7 @@ function LandingPageInner() {
                 </div>
                 <div>
                   <h3 className="font-semibold text-lg">Real-Time Compliance Scoring</h3>
-                  <p className="text-blue-200 text-sm">Instant facility readiness calculations against Arkansas DHS requirements</p>
+                  <p className="text-blue-200 text-sm">Instant facility readiness calculations against Arkansas regulatory requirements</p>
                 </div>
               </div>
 
@@ -242,7 +242,7 @@ function LandingPageInner() {
       <footer className="relative py-6 mt-8 lg:absolute lg:bottom-0 lg:left-0 lg:right-0 lg:mt-0">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <p className="text-center text-blue-300 text-sm">
-            © 2026 AR Compliance Guard. Strictly-typed regulatory intelligence.
+            © 2026 Compliance Guard Pro. Strictly-typed regulatory intelligence.
           </p>
         </div>
       </footer>

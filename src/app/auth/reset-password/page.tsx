@@ -77,7 +77,7 @@ function ResetPasswordForm() {
             </div>
             <h1 className="text-2xl font-bold text-slate-900 mb-1">Set your password</h1>
             <p className="text-slate-500 text-sm">
-              Choose a strong password for your AR Compliance Guard account.
+              Choose a strong password for your Compliance Guard Pro account.
             </p>
           </div>
 

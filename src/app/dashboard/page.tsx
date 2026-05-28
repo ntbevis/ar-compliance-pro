@@ -280,7 +280,7 @@ export default function DashboardPage() {
         <header className="mb-6 flex items-start justify-between flex-wrap gap-4">
           <div>
             <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
-              DHS Regulatory Engine
+              Regulatory Compliance Engine
             </p>
             <h1 className="text-2xl md:text-4xl font-bold tracking-tight text-slate-900 mb-2">
               Audit Trail &amp; Compliance Logs
@@ -431,7 +431,7 @@ export default function DashboardPage() {
       <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
         <header className="mb-2">
           <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
-            DHS Regulatory Engine
+            Regulatory Compliance Engine
           </p>
           <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900">
             Team Settings
@@ -450,7 +450,7 @@ export default function DashboardPage() {
       <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700">
         <header className="mb-8">
           <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
-            DHS Regulatory Engine
+            Regulatory Compliance Engine
           </p>
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-2">
             <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900">
@@ -531,7 +531,7 @@ export default function DashboardPage() {
                     Regulatory Domain <span className="text-red-500">*</span>
                   </label>
                   <p className="text-xs text-slate-500 mb-3">
-                    This determines which Arkansas DHS rule set applies. Select carefully — it cannot be changed after creation.
+                    This determines which Arkansas regulatory rule set applies. Select carefully — it cannot be changed after creation.
                   </p>
                   <div className="grid grid-cols-2 gap-3">
                     {([
@@ -1011,7 +1011,7 @@ export default function DashboardPage() {
     <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
       <header className="mb-2">
         <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
-          DHS Regulatory Engine
+          Regulatory Compliance Engine
         </p>
         <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900">
           {currentView === 'overview' && 'Executive Overview'}
