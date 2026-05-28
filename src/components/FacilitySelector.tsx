@@ -3,7 +3,7 @@
 import type { Facility } from '@/lib/types';
 
 interface FacilitySelectorProps {
-  facilities: Pick<Facility, 'id' | 'name'>[];
+  facilities?: Pick<Facility, 'id' | 'name'>[];
   selectedFacilityId: string | null;
   onSelect: (value: string) => void;
 }
@@ -21,7 +21,7 @@ export default function FacilitySelector({ facilities, selectedFacilityId, onSel
         <option value="all" className="text-slate-900 bg-white">
           Master View (All Facilities)
         </option>
-        {facilities.map((f) => (
+        {(facilities ?? []).map((f) => (
           <option key={f.id} value={f.id} className="text-slate-900 bg-white">
             {f.name}
           </option>
