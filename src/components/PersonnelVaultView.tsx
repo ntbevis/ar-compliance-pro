@@ -129,11 +129,9 @@ const US_STATES = [
 ];
 
 const NURSING_LICENSE_ROLES = [
-  'rn',
-  'lpn',
-  'director of nursing',
-  'registered nurse',
-  'licensed practical nurse',
+  'registered nurse (rn)',
+  'licensed practical nurse (lpn)',
+  'director of nursing (don)',
 ];
 
 function isNursingLicenseRequirement(req: RoleRequirement, personRole: string): boolean {
