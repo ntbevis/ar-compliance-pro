@@ -128,7 +128,13 @@ const US_STATES = [
   'SD','TN','TX','UT','VT','VA','WA','WV','WI','WY',
 ];
 
-const NURSING_LICENSE_ROLES = ['rn', 'lpn', 'director of nursing'];
+const NURSING_LICENSE_ROLES = [
+  'rn',
+  'lpn',
+  'director of nursing',
+  'registered nurse',
+  'licensed practical nurse',
+];
 
 function isNursingLicenseRequirement(req: RoleRequirement, personRole: string): boolean {
   const reqNameLower = req.name.toLowerCase();
