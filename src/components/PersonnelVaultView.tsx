@@ -132,6 +132,8 @@ const NURSING_LICENSE_ROLES = [
   'registered nurse (rn)',
   'licensed practical nurse (lpn)',
   'director of nursing (don)',
+  'registered nurse (rn) - childcare',
+  'licensed practical nurse (lpn) - childcare',
 ];
 
 function isNursingLicenseRequirement(req: RoleRequirement, personRole: string): boolean {
