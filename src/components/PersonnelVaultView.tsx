@@ -309,17 +309,11 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       return;
     }
     setExpandedPersonId(person.id);
-    if (!requirementsByPerson[person.id]) {
-      const result = await getRequirementsForRole(facilityId, person.role);
-      if (result.success) {
-        setRequirementsByPerson((prev) => ({ ...prev, [person.id]: result.requirements }));
-        // Compute & cache worst-case status for the row indicator
-        const worst = computeWorstStatus(person.id, result.requirements);
-        setPersonWorstStatus((prev) => ({ ...prev, [person.id]: worst }));
-      }
-    } else {
-      // Requirements already loaded — just refresh the cached status
-      const worst = computeWorstStatus(person.id, requirementsByPerson[person.id]);
+    // Always refetch so DB/migration updates appear without a full page reload.
+    const result = await getRequirementsForRole(facilityId, person.role);
+    if (result.success) {
+      setRequirementsByPerson((prev) => ({ ...prev, [person.id]: result.requirements }));
+      const worst = computeWorstStatus(person.id, result.requirements);
       setPersonWorstStatus((prev) => ({ ...prev, [person.id]: worst }));
     }
   };
@@ -335,6 +329,17 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         setShowAddForm(false);
         const refreshed = await getPersonnelData(facilityId);
         setActive(refreshed);
+        const added = result.personnel as PersonnelRecord | undefined;
+        if (added?.id && added.role) {
+          const reqResult = await getRequirementsForRole(facilityId, added.role);
+          if (reqResult.success) {
+            setRequirementsByPerson((prev) => ({
+              ...prev,
+              [added.id]: reqResult.requirements,
+            }));
+            setExpandedPersonId(added.id);
+          }
+        }
       } else {
         toast.error(result.error ?? 'Operation failed.');
       }

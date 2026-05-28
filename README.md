@@ -1,4 +1,6 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AR Compliance Guard
+
+Next.js application for Arkansas childcare center and nursing home compliance tracking (facility operations + personnel vault).
 
 ## Getting Started
 
@@ -29,8 +31,8 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
-## Deploy on Vercel
+## Production deploy
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+See **[DEPLOY.md](./DEPLOY.md)** for the full checklist and **[supabase/README.md](./supabase/README.md)** for database migrations.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Regulatory PDFs and ingest notes: [regulatory-docs/README.md](./regulatory-docs/README.md).

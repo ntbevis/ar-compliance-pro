@@ -66,7 +66,8 @@ function activeToggleKeys(facility: Pick<Facility, FacilityToggleKey>): Set<stri
  *     regardless of optional scope toggles ('all_staff', 'facility_management', 'education'), OR
  *   - rule.sub_classification matches a toggle currently set to TRUE on the facility profile.
  */
-const UNIVERSAL_BASELINE_TAGS = new Set(['all_staff', 'facility_management', 'education']);
+/** Scope tags that apply without a matching facility toggle (see ruleAppliesToFacility). */
+export const UNIVERSAL_BASELINE_TAGS = new Set(['all_staff', 'facility_management', 'education']);
 
 export function ruleAppliesToFacility(
   rule: Pick<ComplianceRule, 'facility_type' | 'sub_classification'>,

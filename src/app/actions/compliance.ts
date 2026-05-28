@@ -6,9 +6,39 @@ import { createClient } from 'src/app/utils/supabase/server';
 import { getRegulatoryStatus, ruleAppliesToFacility } from '@/lib/reg-monitor';
 import { createHash } from 'crypto';
 import { headers } from 'next/headers';
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, unstable_noStore as noStore } from 'next/cache';
 import type { ComplianceRule, Facility, FacilityScopeToggles, FacilityType, IdentifiedGap } from '@/lib/types';
 import { FACILITY_TOGGLE_KEYS } from '@/lib/types';
+import { UNIVERSAL_BASELINE_TAGS } from '@/lib/reg-monitor';
+
+/** Normalize applicable_roles from Supabase (text[] or legacy string forms). */
+function normalizeApplicableRoles(raw: unknown): string[] | null {
+  if (raw == null) return null;
+  if (Array.isArray(raw)) {
+    const roles = raw.filter((r): r is string => typeof r === 'string' && r.trim().length > 0);
+    return roles.length > 0 ? roles : null;
+  }
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === '{}' || trimmed === '[]') return null;
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) {
+        const roles = parsed.filter((r): r is string => typeof r === 'string' && r.trim().length > 0);
+        return roles.length > 0 ? roles : null;
+      }
+    } catch {
+      // PostgreSQL text[] literal: {Role A,Role B}
+      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        const inner = trimmed.slice(1, -1);
+        if (!inner) return null;
+        const roles = inner.split(',').map((s) => s.trim().replace(/^"|"$/g, '')).filter(Boolean);
+        return roles.length > 0 ? roles : null;
+      }
+    }
+  }
+  return null;
+}
 
 // =============================================================================
 // AUTH HELPERS
@@ -748,6 +778,7 @@ export async function markEmployeeSeparated(personnelId: string) {
  *   - role.sub_classification IS NULL OR the facility has that toggle set to TRUE.
  */
 export async function getAvailableRoles(facilityId: string) {
+  noStore();
   try {
     const { orgId } = await getAuthenticatedUserContext();
     const supabase = createAdminClient();
@@ -812,9 +843,14 @@ export async function getAvailableRoles(facilityId: string) {
  * with the given role at the given facility.
  */
 export async function getRequirementsForRole(facilityId: string, roleName: string) {
+  noStore();
   try {
     const { orgId } = await getAuthenticatedUserContext();
     const supabase = createAdminClient();
+    const normalizedRoleName = roleName.trim();
+    if (!normalizedRoleName) {
+      return { success: true, requirements: [] as Array<{ id: string; name: string; typeKey: string; severity: string; frequency: string }> };
+    }
 
     const { data: facility, error: facilityError } = await supabase
       .from('facilities')
@@ -836,28 +872,29 @@ export async function getRequirementsForRole(facilityId: string, roleName: strin
     const applicable = (rules ?? []).filter((rule: Record<string, unknown>) => {
       if (rule.facility_type !== facilityType) return false;
 
-      // Role-specific absolute override: if applicable_roles is a non-empty array, the
-      // result is determined solely by the role match — the sub_classification and facility
-      // toggle checks below are completely bypassed in either direction.
-      const applicableRoles = Array.isArray(rule.applicable_roles)
-        ? (rule.applicable_roles as string[])
-        : null;
-      if (applicableRoles !== null && applicableRoles.length > 0) {
-        return applicableRoles.some((r) => r.toLowerCase() === roleName.toLowerCase());
-      }
-
-      const subClass = rule.sub_classification;
-      if (subClass !== null && subClass !== undefined && String(subClass) !== 'null') {
-        if (facilityRow[subClass as string] !== true) return false;
-      }
       const scoreCategory =
         rule.score_category ??
         (rule.is_personnel_requirement === true ? 'personnel' : 'facility');
       if (scoreCategory !== 'personnel') return false;
+
+      // Role-specific override: non-empty applicable_roles determines inclusion outright.
+      const applicableRoles = normalizeApplicableRoles(rule.applicable_roles);
+      if (applicableRoles !== null) {
+        return applicableRoles.some((r) => r.toLowerCase() === normalizedRoleName.toLowerCase());
+      }
+
+      const subClass = rule.sub_classification;
+      const subKey =
+        subClass === null || subClass === undefined || String(subClass) === 'null'
+          ? null
+          : String(subClass);
+      if (subKey !== null && !UNIVERSAL_BASELINE_TAGS.has(subKey)) {
+        if (facilityRow[subKey] !== true) return false;
+      }
+
       const ruleRole = (rule.applies_to_role as string | null | undefined) ?? null;
-      // If a rule explicitly targets a role, match it; otherwise treat it as universal-personnel.
       if (ruleRole === null) return true;
-      return ruleRole.toLowerCase() === roleName.toLowerCase();
+      return ruleRole.toLowerCase() === normalizedRoleName.toLowerCase();
     });
 
     return {
