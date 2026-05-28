@@ -139,10 +139,15 @@ const NURSING_LICENSE_ROLES = [
 function isNursingLicenseRequirement(req: RoleRequirement, personRole: string): boolean {
   const reqNameLower = req.name.toLowerCase();
   const roleLower = personRole.toLowerCase();
-  return (
+
+  const isLicenseReq =
     reqNameLower.includes('license') ||
-    NURSING_LICENSE_ROLES.includes(roleLower)
-  );
+    reqNameLower.includes('licensure') ||
+    reqNameLower.includes('board verification');
+
+  const isNursingRole = NURSING_LICENSE_ROLES.includes(roleLower);
+
+  return isLicenseReq && isNursingRole;
 }
 
 interface NewPersonnelForm {
