@@ -78,17 +78,17 @@ function LandingPageInner() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-xl">🛡️</span>
+              <div className="w-8 h-8 sm:w-10 sm:h-10 bg-blue-500 rounded-lg flex items-center justify-center">
+                <span className="text-white font-bold text-lg sm:text-xl">🛡️</span>
               </div>
               <div>
-                <h1 className="text-white font-bold text-xl">AR Compliance Guard</h1>
-                <p className="text-blue-300 text-xs">Arkansas DHS Regulatory Engine</p>
+                <h1 className="text-white font-bold text-base sm:text-xl truncate">AR Compliance Guard</h1>
+                <p className="hidden sm:block text-blue-300 text-xs">Arkansas DHS Regulatory Engine</p>
               </div>
             </div>
             <Link
               href="/request-access"
-              className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 sm:px-6 py-2.5 rounded-lg transition-colors shadow-lg text-sm sm:text-base min-h-[44px] flex items-center"
+              className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-3 sm:px-6 py-2 sm:py-2.5 rounded-lg transition-colors shadow-lg text-sm sm:text-base min-h-[44px] flex items-center justify-center whitespace-nowrap text-center shrink-0"
             >
               Request Access
             </Link>
@@ -97,7 +97,7 @@ function LandingPageInner() {
       </header>
 
       {/* Main Content */}
-      <div className="flex items-center justify-center min-h-screen px-4 pt-24 pb-16 lg:pb-24">
+      <div className="flex items-center justify-center min-h-screen px-4 pt-28 sm:pt-24 lg:pt-32 pb-16 lg:pb-24">
         <div className="max-w-6xl w-full grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-center">
           {/* Left Side - Marketing Content */}
           <div className="text-white space-y-6">
