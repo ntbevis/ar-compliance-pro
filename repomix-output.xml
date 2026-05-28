@@ -396,109 +396,6 @@ Expected output: Successful build with no errors or warnings.
 <svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M1.5 2.5h13v10a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM0 1h16v11.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 0 12.5zm3.75 4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5M7 4.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0m1.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5" fill="#666"/></svg>
 </file>
 
-<file path="regulatory-docs/AUDIT_LOGS_SCHEMA.md">
-# Audit Logs Table Schema
-
-This table provides immutable audit logging for all compliance-related actions to protect against fraud and ensure DHS auditing standards.
-
-## SQL Schema
-
-```sql
-CREATE TABLE audit_logs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  facility_id UUID NOT NULL REFERENCES facilities(id) ON DELETE CASCADE,
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  action_type TEXT NOT NULL, -- 'document_upload', 'digital_attestation', 'document_approval', 'document_rejection'
-  ip_address TEXT,
-  file_hash TEXT, -- SHA-256 hash for uploaded files (null for attestations)
-  metadata JSONB DEFAULT '{}', -- Stores additional context: filename, document_type, user_attestation, etc.
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Index for facility lookups
-CREATE INDEX idx_audit_logs_facility ON audit_logs(facility_id);
-
--- Index for user lookups
-CREATE INDEX idx_audit_logs_user ON audit_logs(user_id);
-
--- Index for action type filtering
-CREATE INDEX idx_audit_logs_action_type ON audit_logs(action_type);
-
--- Index for timestamp-based queries
-CREATE INDEX idx_audit_logs_created_at ON audit_logs(created_at DESC);
-
--- Enable Row Level Security
-ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
-
--- Policy: Users can only view audit logs for their own organization's facilities
-CREATE POLICY "Users can view audit logs for their organization"
-  ON audit_logs
-  FOR SELECT
-  USING (
-    facility_id IN (
-      SELECT f.id FROM facilities f
-      INNER JOIN organizations o ON f.org_id = o.id
-      INNER JOIN auth.users u ON o.id = (
-        SELECT org_id FROM organizations WHERE id = (
-          SELECT org_id FROM facilities WHERE id = facility_id LIMIT 1
-        )
-      )
-      WHERE u.id = auth.uid()
-    )
-  );
-
--- Policy: System can insert audit logs (no user updates/deletes allowed for immutability)
-CREATE POLICY "System can insert audit logs"
-  ON audit_logs
-  FOR INSERT
-  WITH CHECK (true);
-```
-
-## Columns
-
-- **id**: UUID primary key
-- **facility_id**: Reference to the facility where the action occurred
-- **user_id**: Reference to the user who performed the action
-- **action_type**: Type of action performed
-  - `document_upload`: User uploaded a compliance document
-  - `digital_attestation`: User signed a digital attestation
-  - `document_approval`: AI/system approved a document
-  - `document_rejection`: AI/system flagged a document
-- **ip_address**: IP address of the user (for fraud detection)
-- **file_hash**: SHA-256 hash of uploaded file (null for attestations)
-- **metadata**: JSONB containing:
-  - `filename`: Original filename
-  - `document_type`: Classified document type
-  - `user_attestation`: Boolean indicating if user certified authenticity
-  - `attestation_text`: The exact legal text the user agreed to
-  - `requirement_id`: ID of the compliance requirement being satisfied
-  - `requirement_name`: Name of the requirement
-- **created_at**: Immutable timestamp of when the action occurred
-
-## Usage
-
-Audit logs are automatically created by server actions. Users cannot modify or delete audit logs (immutability enforced by RLS policies).
-
-Query audit logs for a facility:
-
-```typescript
-const { data: logs } = await supabase
-  .from('audit_logs')
-  .select('*')
-  .eq('facility_id', facilityId)
-  .order('created_at', { ascending: false });
-```
-
-## Legal Protection
-
-This audit trail provides:
-- **Non-repudiation**: SHA-256 file hashes prove document integrity
-- **User accountability**: Explicit user attestation recorded
-- **Fraud detection**: IP addresses and timestamps for investigation
-- **DHS compliance**: Complete audit trail for regulatory inspections
-- **Immutability**: No updates or deletes allowed after creation
-</file>
-
 <file path="regulatory-docs/FACILITIES_SCHEMA_UPDATE.md">
 # Facilities Table Schema Update
 
@@ -643,94 +540,6 @@ const { data: roles } = await supabase
   .eq('facility_type', facilityType)
   .eq('sub_classification', subClassification);
 ```
-</file>
-
-<file path="src/app/actions/ai-verify.ts">
-'use server';
-
-import { generateObject } from 'ai';
-import { openai } from '@ai-sdk/openai';
-import { z } from 'zod';
-
-const VerificationSchema = z.object({
-  is_valid_match: z
-    .boolean()
-    .describe('Does this document fulfill the stated compliance requirement?'),
-  detected_document_type: z
-    .string()
-    .describe('What type of document is this? Be concise (e.g. "CPR Card", "Food Handler Permit").'),
-  confidence_score: z
-    .number()
-    .min(0)
-    .max(100)
-    .describe('Confidence percentage (0-100) that the document matches the requirement.'),
-  expiration_date: z
-    .string()
-    .nullable()
-    .describe(
-      'Expiration or renewal date found on the document in YYYY-MM-DD format. Return null if not present.'
-    ),
-  rejection_reason: z
-    .string()
-    .nullable()
-    .describe(
-      'If is_valid_match is false, a concise, practical explanation of why. Return null when valid.'
-    ),
-});
-
-export type AIVerificationResult = z.infer<typeof VerificationSchema>;
-
-export async function verifyDocumentWithAI(
-  formData: FormData
-): Promise<
-  | { success: true; object: AIVerificationResult }
-  | { success: false; error: string }
-> {
-  try {
-    const file = formData.get('file') as File | null;
-    const requirementName = (formData.get('requirementName') as string | null) ?? 'Unknown requirement';
-
-    if (!file) {
-      return { success: false, error: 'No file provided for verification.' };
-    }
-
-    // Convert the uploaded file to a raw buffer for the VLM
-    const arrayBuffer = await file.arrayBuffer();
-    const imageBuffer = Buffer.from(arrayBuffer);
-    const mediaType = file.type || 'image/jpeg';
-
-    const systemPrompt = `You are an expert but practical Arkansas DHS Compliance Auditor. Analyze the provided image/document. The user claims this document satisfies the requirement: '${requirementName}'. Verify if this is true and extract the requested data.
-
-CRITICAL INSTRUCTION: You must be highly tolerant of real-world upload conditions. Accept photos with glare, angled shots, mobile screenshots, and handwritten forms as long as the core identifying information is reasonably legible. Do not reject a document for poor aesthetic quality. Only return is_valid_match: false if the document is completely unreadable, is missing critical identifying data due to cropping, or is clearly the wrong document type entirely (e.g., an animal photo instead of a CPR card).`;
-
-    const { object } = await generateObject({
-      model: openai('gpt-4o'),
-      schema: VerificationSchema,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: systemPrompt,
-            },
-            {
-              type: 'image',
-              image: imageBuffer,
-              mediaType,
-            },
-          ],
-        },
-      ],
-    });
-
-    return { success: true, object };
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Unknown AI verification error';
-    console.error('❌ AI document verification failed:', message);
-    return { success: false, error: message };
-  }
-}
 </file>
 
 <file path="src/app/dashboard/error.tsx">
@@ -985,473 +794,6 @@ export default function ToastProvider() {
 }
 </file>
 
-<file path="src/lib/pdf-generator.ts">
-// src/lib/pdf-generator.ts
-// Client-only utility — must only be called inside 'use client' components.
-// jsPDF and jspdf-autotable are dynamically imported to prevent SSR build errors.
-
-import {
-  getFacilityComplianceData,
-  getFacilitySettings,
-  getPersonnelData,
-  getLatestOperationalAcknowledgment,
-} from 'src/app/actions/compliance';
-import type { IdentifiedGap } from './types';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-type RGB = [number, number, number];
-
-function fmt(isoString: string | null | undefined): string {
-  if (!isoString) return '—';
-  try {
-    return new Date(isoString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
-  } catch {
-    return '—';
-  }
-}
-
-function fmtLong(isoString: string | null | undefined): string {
-  if (!isoString) return 'N/A';
-  try {
-    return new Date(isoString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return 'N/A';
-  }
-}
-
-function statusLabel(status: IdentifiedGap['compliance_status']): string {
-  switch (status) {
-    case 'satisfied':     return 'Satisfied';
-    case 'expiring_soon': return 'Expiring Soon';
-    case 'expired':       return 'Expired';
-    case 'missing':       return 'Missing';
-    default:              return 'Unknown';
-  }
-}
-
-// ---------------------------------------------------------------------------
-// PDF color palette
-// ---------------------------------------------------------------------------
-
-const C = {
-  navy:     [15,  23,  42]  as RGB,
-  slate800: [30,  41,  59]  as RGB,
-  slate700: [51,  65,  85]  as RGB,
-  slate500: [100, 116, 139] as RGB,
-  slate300: [203, 213, 225] as RGB,
-  slate100: [241, 245, 249] as RGB,
-  slate50:  [248, 250, 252] as RGB,
-  white:    [255, 255, 255] as RGB,
-  green:    [22,  163, 74]  as RGB,
-  greenBg:  [236, 253, 245] as RGB,
-  greenBd:  [167, 243, 208] as RGB,
-  amber:    [217, 119, 6]   as RGB,
-  amberBg:  [255, 251, 235] as RGB,
-  red:      [220, 38,  38]  as RGB,
-  redBg:    [254, 242, 242] as RGB,
-  redBd:    [254, 202, 202] as RGB,
-  indigo:   [67,  56,  202] as RGB,
-};
-
-// ---------------------------------------------------------------------------
-// Main export
-// ---------------------------------------------------------------------------
-
-export async function generateAuditReport(facilityId: string): Promise<void> {
-  // Dynamic imports keep jsPDF out of the SSR/Node bundle
-  const { jsPDF } = await import('jspdf');
-  const { default: autoTable } = await import('jspdf-autotable');
-
-  // Fetch all required data in parallel
-  const [settingsResult, complianceData, personnel, acknowledgment] = await Promise.all([
-    getFacilitySettings(facilityId),
-    getFacilityComplianceData(facilityId),
-    getPersonnelData(facilityId),
-    getLatestOperationalAcknowledgment(facilityId),
-  ]);
-
-  // Safe facility field access (Supabase returns untyped Record)
-  const fac = settingsResult.facility as Record<string, unknown> | null;
-  const facilityName   = typeof fac?.name            === 'string' ? fac.name            : 'Unknown Facility';
-  const licenseNumber  = typeof fac?.license_number  === 'string' ? fac.license_number  : 'N/A';
-  const facilityType   = typeof fac?.facility_type   === 'string' ? fac.facility_type   : '';
-  const facilityTypeLabel = facilityType === 'childcare_center' ? 'Childcare Center' : 'Nursing Home';
-  const capacity       = typeof fac?.capacity        === 'number' ? String(fac.capacity) : 'N/A';
-  const enrollment     = complianceData.activeEnrollment != null  ? String(complianceData.activeEnrollment) : 'Not Set';
-
-  const today     = new Date();
-  const todayLong = today.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-  const fileDate  = today.toISOString().split('T')[0];
-
-  // ---------------------------------------------------------------------------
-  // Document setup
-  // ---------------------------------------------------------------------------
-
-  const doc    = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-  const pageW  = doc.internal.pageSize.getWidth();
-  const pageH  = doc.internal.pageSize.getHeight();
-  const MARGIN = 18;
-  const COL_W  = pageW - MARGIN * 2;
-
-  // Shorthand color setters (avoids spread-arg TS overload ambiguity)
-  const fill  = (c: RGB) => doc.setFillColor(c[0], c[1], c[2]);
-  const draw  = (c: RGB) => doc.setDrawColor(c[0], c[1], c[2]);
-  const tint  = (c: RGB) => doc.setTextColor(c[0], c[1], c[2]);
-
-  let y = 0;
-
-  // ---------------------------------------------------------------------------
-  // HEADER BANNER
-  // ---------------------------------------------------------------------------
-
-  fill(C.navy);
-  doc.rect(0, 0, pageW, 40, 'F');
-
-  tint(C.white);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(18);
-  doc.text('AR COMPLIANCE GUARD', MARGIN, 15);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  tint([148, 163, 184]); // slate-400
-  doc.text('OFFICIAL AUDIT REPORT  —  CONFIDENTIAL', MARGIN, 22);
-
-  tint([148, 163, 184]);
-  doc.setFontSize(7.5);
-  doc.text(`Generated: ${todayLong}`, pageW - MARGIN, 15, { align: 'right' });
-  doc.text('For official use only', pageW - MARGIN, 22, { align: 'right' });
-
-  y = 50;
-
-  // ---------------------------------------------------------------------------
-  // FACILITY DETAILS  (2-column grid)
-  // ---------------------------------------------------------------------------
-
-  tint(C.slate500);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6.5);
-  doc.text('FACILITY DETAILS', MARGIN, y);
-  y += 3;
-
-  draw(C.slate100);
-  doc.setLineWidth(0.25);
-  doc.line(MARGIN, y, pageW - MARGIN, y);
-  y += 5;
-
-  const halfW = COL_W / 2;
-  const detailPair = (
-    lLabel: string, lVal: string,
-    rLabel: string, rVal: string,
-    rowY: number
-  ) => {
-    tint(C.slate500);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
-    doc.text(lLabel, MARGIN, rowY);
-    doc.text(rLabel, MARGIN + halfW + 4, rowY);
-
-    tint(C.slate800);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9);
-    doc.text(lVal, MARGIN, rowY + 5);
-    doc.text(rVal, MARGIN + halfW + 4, rowY + 5);
-  };
-
-  detailPair('FACILITY NAME', facilityName, 'FACILITY TYPE', facilityTypeLabel, y);
-  y += 14;
-  detailPair('LICENSE NUMBER', licenseNumber, 'LICENSED CAPACITY', capacity, y);
-  y += 14;
-  detailPair('ACTIVE ENROLLMENT', enrollment, 'ACTIVE STAFF COUNT', String(complianceData.totalPersonnel), y);
-  y += 18;
-
-  // ---------------------------------------------------------------------------
-  // OPERATIONAL ACKNOWLEDGMENT STAMP
-  // ---------------------------------------------------------------------------
-
-  const ackBg: RGB = acknowledgment ? C.greenBg : C.redBg;
-  const ackBd: RGB = acknowledgment ? C.greenBd : C.redBd;
-  const ackTxt: RGB = acknowledgment ? C.green : C.red;
-
-  fill(ackBg);
-  draw(ackBd);
-  doc.setLineWidth(0.4);
-  doc.roundedRect(MARGIN, y, COL_W, acknowledgment ? 17 : 12, 2, 2, 'FD');
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.5);
-  tint(ackTxt);
-
-  if (acknowledgment) {
-    doc.text(
-      `OPERATIONAL STANDARDS ACKNOWLEDGED BY: ${acknowledgment.user_name.toUpperCase()}`,
-      MARGIN + 5, y + 7
-    );
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
-    tint(C.slate500);
-    doc.text(`Signed on: ${fmtLong(acknowledgment.created_at)}`, MARGIN + 5, y + 13);
-  } else {
-    doc.text('⚠  OPERATIONAL ACKNOWLEDGMENT: MISSING / PENDING', MARGIN + 5, y + 7.5);
-  }
-
-  y += (acknowledgment ? 17 : 12) + 10;
-
-  // ---------------------------------------------------------------------------
-  // COMPLIANCE SCORES
-  // ---------------------------------------------------------------------------
-
-  tint(C.slate500);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6.5);
-  doc.text('COMPLIANCE SCORES', MARGIN, y);
-  y += 3;
-
-  draw(C.slate100);
-  doc.setLineWidth(0.25);
-  doc.line(MARGIN, y, pageW - MARGIN, y);
-  y += 4;
-
-  const scoreBox = (label: string, score: number, x: number, bY: number) => {
-    const boxW = halfW - 2;
-    const color: RGB = score >= 80 ? C.green : score >= 50 ? C.amber : C.red;
-
-    fill(C.slate50);
-    draw(C.slate100);
-    doc.setLineWidth(0.25);
-    doc.roundedRect(x, bY, boxW, 20, 2, 2, 'FD');
-
-    tint(C.slate500);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.5);
-    doc.text(label, x + 4, bY + 7);
-
-    tint(color);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(20);
-    doc.text(`${score}%`, x + 4, bY + 17);
-  };
-
-  scoreBox('Facility Readiness Score',   complianceData.facilityReadinessScore,   MARGIN, y);
-  scoreBox('Personnel Readiness Score', complianceData.personnelReadinessScore, MARGIN + halfW + 4, y);
-  y += 28;
-
-  // ---------------------------------------------------------------------------
-  // Helper: section header + divider
-  // ---------------------------------------------------------------------------
-
-  const sectionHeader = (title: string, curY: number): number => {
-    tint(C.slate500);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(6.5);
-    doc.text(title, MARGIN, curY);
-    curY += 2.5;
-    draw(C.slate100);
-    doc.setLineWidth(0.25);
-    doc.line(MARGIN, curY, pageW - MARGIN, curY);
-    return curY + 2;
-  };
-
-  // ---------------------------------------------------------------------------
-  // FACILITY COMPLIANCE REQUIREMENTS TABLE
-  // ---------------------------------------------------------------------------
-
-  const facilityGaps = complianceData.gaps.filter(
-    (g) => g.score_category === 'facility'
-  );
-
-  y = sectionHeader(
-    `FACILITY COMPLIANCE REQUIREMENTS  (${facilityGaps.filter(g => g.compliance_status !== 'missing').length} / ${facilityGaps.length} satisfied)`,
-    y
-  );
-
-  const facilityBody = facilityGaps.map((g) => [
-    g.name,
-    g.severity.toUpperCase(),
-    statusLabel(g.compliance_status),
-    g.document_created_at ? fmt(g.document_created_at) : '—',
-  ]);
-
-  autoTable(doc, {
-    startY: y,
-    head: [['Requirement', 'Severity', 'Status', 'Document Date']],
-    body: facilityBody.length > 0 ? facilityBody : [['No facility requirements configured.', '', '', '']],
-    margin: { left: MARGIN, right: MARGIN },
-    styles:      { fontSize: 8, cellPadding: 2.8, textColor: C.slate800, lineColor: C.slate100, lineWidth: 0.2 },
-    headStyles:  { fillColor: C.navy, textColor: C.white, fontStyle: 'bold', fontSize: 7.5 },
-    alternateRowStyles: { fillColor: C.slate50 },
-    columnStyles: {
-      0: { cellWidth: COL_W * 0.50 },
-      1: { cellWidth: COL_W * 0.14, halign: 'center' },
-      2: { cellWidth: COL_W * 0.20, halign: 'center' },
-      3: { cellWidth: COL_W * 0.16, halign: 'center' },
-    },
-    didParseCell: (data) => {
-      if (data.section !== 'body') return;
-      if (data.column.index === 1) {
-        if (String(data.cell.raw) === 'CRITICAL') data.cell.styles.textColor = C.red;
-      }
-      if (data.column.index === 2) {
-        const v = String(data.cell.raw);
-        if (v === 'Satisfied')     data.cell.styles.textColor = C.green;
-        else if (v === 'Expiring Soon') data.cell.styles.textColor = C.amber;
-        else if (v === 'Expired')  data.cell.styles.textColor = C.red;
-        else if (v === 'Missing')  data.cell.styles.textColor = C.red;
-      }
-    },
-  });
-
-  const docRef = doc as unknown as { lastAutoTable?: { finalY?: number } };
-  y = (docRef.lastAutoTable?.finalY ?? y + 30) + 10;
-
-  // ---------------------------------------------------------------------------
-  // PERSONNEL LICENSING REQUIREMENTS TABLE
-  // ---------------------------------------------------------------------------
-
-  const personnelGaps = complianceData.gaps.filter(
-    (g) => g.score_category === 'personnel'
-  );
-
-  if (personnelGaps.length > 0) {
-    if (y > pageH - 60) { doc.addPage(); y = 20; }
-
-    y = sectionHeader(
-      `PERSONNEL LICENSING REQUIREMENTS  (${personnelGaps.filter(g => g.compliance_status !== 'missing').length} / ${personnelGaps.length} satisfied)`,
-      y
-    );
-
-    const personnelLicBody = personnelGaps.map((g) => [
-      g.name,
-      g.severity.toUpperCase(),
-      statusLabel(g.compliance_status),
-      g.document_created_at ? fmt(g.document_created_at) : '—',
-    ]);
-
-    autoTable(doc, {
-      startY: y,
-      head: [['Requirement', 'Severity', 'Status', 'Document Date']],
-      body: personnelLicBody,
-      margin: { left: MARGIN, right: MARGIN },
-      styles:      { fontSize: 8, cellPadding: 2.8, textColor: C.slate800, lineColor: C.slate100, lineWidth: 0.2 },
-      headStyles:  { fillColor: C.indigo, textColor: C.white, fontStyle: 'bold', fontSize: 7.5 },
-      alternateRowStyles: { fillColor: C.slate50 },
-      columnStyles: {
-        0: { cellWidth: COL_W * 0.50 },
-        1: { cellWidth: COL_W * 0.14, halign: 'center' },
-        2: { cellWidth: COL_W * 0.20, halign: 'center' },
-        3: { cellWidth: COL_W * 0.16, halign: 'center' },
-      },
-      didParseCell: (data) => {
-        if (data.section !== 'body') return;
-        if (data.column.index === 1) {
-          if (String(data.cell.raw) === 'CRITICAL') data.cell.styles.textColor = C.red;
-        }
-        if (data.column.index === 2) {
-          const v = String(data.cell.raw);
-          if (v === 'Satisfied')          data.cell.styles.textColor = C.green;
-          else if (v === 'Expiring Soon') data.cell.styles.textColor = C.amber;
-          else if (v === 'Expired')       data.cell.styles.textColor = C.red;
-          else if (v === 'Missing')       data.cell.styles.textColor = C.red;
-        }
-      },
-    });
-
-    y = (docRef.lastAutoTable?.finalY ?? y + 30) + 10;
-  }
-
-  // ---------------------------------------------------------------------------
-  // ACTIVE PERSONNEL ROSTER TABLE
-  // ---------------------------------------------------------------------------
-
-  if (y > pageH - 60) { doc.addPage(); y = 20; }
-
-  y = sectionHeader(
-    `ACTIVE PERSONNEL ROSTER  (${(personnel as unknown[]).length} employees)`,
-    y
-  );
-
-  type PersonnelRow = {
-    name: string;
-    role: string;
-    clearance_status: string;
-    hire_date: string | null;
-  };
-
-  const rosterBody = (personnel as PersonnelRow[]).map((p) => [
-    p.name  ?? 'Unknown',
-    p.role  ?? 'Unassigned',
-    (p.clearance_status ?? 'pending').toUpperCase(),
-    fmt(p.hire_date),
-  ]);
-
-  autoTable(doc, {
-    startY: y,
-    head: [['Employee Name', 'Role', 'Clearance Status', 'Hire Date']],
-    body: rosterBody.length > 0 ? rosterBody : [['No active personnel on record.', '', '', '']],
-    margin: { left: MARGIN, right: MARGIN },
-    styles:      { fontSize: 8, cellPadding: 2.8, textColor: C.slate800, lineColor: C.slate100, lineWidth: 0.2 },
-    headStyles:  { fillColor: C.slate700, textColor: C.white, fontStyle: 'bold', fontSize: 7.5 },
-    alternateRowStyles: { fillColor: C.slate50 },
-    columnStyles: {
-      0: { cellWidth: COL_W * 0.28 },
-      1: { cellWidth: COL_W * 0.32 },
-      2: { cellWidth: COL_W * 0.22, halign: 'center' },
-      3: { cellWidth: COL_W * 0.18, halign: 'center' },
-    },
-    didParseCell: (data) => {
-      if (data.section !== 'body' || data.column.index !== 2) return;
-      const v = String(data.cell.raw);
-      if (v === 'CLEARED')  data.cell.styles.textColor = C.green;
-      else if (v === 'PENDING') data.cell.styles.textColor = C.amber;
-      else if (v === 'FLAGGED') data.cell.styles.textColor = C.red;
-    },
-  });
-
-  // ---------------------------------------------------------------------------
-  // FOOTER (every page)
-  // ---------------------------------------------------------------------------
-
-  const totalPages = doc.getNumberOfPages();
-  for (let i = 1; i <= totalPages; i++) {
-    doc.setPage(i);
-
-    // Thin rule
-    draw(C.slate300);
-    doc.setLineWidth(0.2);
-    doc.line(MARGIN, pageH - 12, pageW - MARGIN, pageH - 12);
-
-    tint(C.slate500);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(6.5);
-    doc.text(
-      `AR Compliance Guard  •  ${facilityName}  •  Page ${i} of ${totalPages}`,
-      pageW / 2, pageH - 7.5, { align: 'center' }
-    );
-    doc.text('CONFIDENTIAL — FOR OFFICIAL USE ONLY', pageW / 2, pageH - 4, { align: 'center' });
-  }
-
-  // ---------------------------------------------------------------------------
-  // SAVE
-  // ---------------------------------------------------------------------------
-
-  const safeName = facilityName.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_');
-  doc.save(`${safeName}_Audit_Report_${fileDate}.pdf`);
-}
-</file>
-
 <file path="supabase/migrations/20260526000000_add_onboarding_completed_to_profiles.sql">
 -- Add onboarding_completed flag to profiles table.
 -- Defaults to false; set to true once an operator has successfully
@@ -1657,6 +999,197 @@ export default config;
     "**/*.mts"
   ],
   "exclude": ["node_modules"]
+}
+</file>
+
+<file path="regulatory-docs/AUDIT_LOGS_SCHEMA.md">
+# Audit Logs Table Schema
+
+This table provides immutable audit logging for all compliance-related actions to protect against fraud and ensure regulatory auditing standards.
+
+## SQL Schema
+
+```sql
+CREATE TABLE audit_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  facility_id UUID NOT NULL REFERENCES facilities(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  action_type TEXT NOT NULL, -- 'document_upload', 'digital_attestation', 'document_approval', 'document_rejection'
+  ip_address TEXT,
+  file_hash TEXT, -- SHA-256 hash for uploaded files (null for attestations)
+  metadata JSONB DEFAULT '{}', -- Stores additional context: filename, document_type, user_attestation, etc.
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Index for facility lookups
+CREATE INDEX idx_audit_logs_facility ON audit_logs(facility_id);
+
+-- Index for user lookups
+CREATE INDEX idx_audit_logs_user ON audit_logs(user_id);
+
+-- Index for action type filtering
+CREATE INDEX idx_audit_logs_action_type ON audit_logs(action_type);
+
+-- Index for timestamp-based queries
+CREATE INDEX idx_audit_logs_created_at ON audit_logs(created_at DESC);
+
+-- Enable Row Level Security
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- Policy: Users can only view audit logs for their own organization's facilities
+CREATE POLICY "Users can view audit logs for their organization"
+  ON audit_logs
+  FOR SELECT
+  USING (
+    facility_id IN (
+      SELECT f.id FROM facilities f
+      INNER JOIN organizations o ON f.org_id = o.id
+      INNER JOIN auth.users u ON o.id = (
+        SELECT org_id FROM organizations WHERE id = (
+          SELECT org_id FROM facilities WHERE id = facility_id LIMIT 1
+        )
+      )
+      WHERE u.id = auth.uid()
+    )
+  );
+
+-- Policy: System can insert audit logs (no user updates/deletes allowed for immutability)
+CREATE POLICY "System can insert audit logs"
+  ON audit_logs
+  FOR INSERT
+  WITH CHECK (true);
+```
+
+## Columns
+
+- **id**: UUID primary key
+- **facility_id**: Reference to the facility where the action occurred
+- **user_id**: Reference to the user who performed the action
+- **action_type**: Type of action performed
+  - `document_upload`: User uploaded a compliance document
+  - `digital_attestation`: User signed a digital attestation
+  - `document_approval`: AI/system approved a document
+  - `document_rejection`: AI/system flagged a document
+- **ip_address**: IP address of the user (for fraud detection)
+- **file_hash**: SHA-256 hash of uploaded file (null for attestations)
+- **metadata**: JSONB containing:
+  - `filename`: Original filename
+  - `document_type`: Classified document type
+  - `user_attestation`: Boolean indicating if user certified authenticity
+  - `attestation_text`: The exact legal text the user agreed to
+  - `requirement_id`: ID of the compliance requirement being satisfied
+  - `requirement_name`: Name of the requirement
+- **created_at**: Immutable timestamp of when the action occurred
+
+## Usage
+
+Audit logs are automatically created by server actions. Users cannot modify or delete audit logs (immutability enforced by RLS policies).
+
+Query audit logs for a facility:
+
+```typescript
+const { data: logs } = await supabase
+  .from('audit_logs')
+  .select('*')
+  .eq('facility_id', facilityId)
+  .order('created_at', { ascending: false });
+```
+
+## Legal Protection
+
+This audit trail provides:
+- **Non-repudiation**: SHA-256 file hashes prove document integrity
+- **User accountability**: Explicit user attestation recorded
+- **Fraud detection**: IP addresses and timestamps for investigation
+- **Regulatory compliance**: Complete audit trail for regulatory inspections
+- **Immutability**: No updates or deletes allowed after creation
+</file>
+
+<file path="src/app/actions/ai-verify.ts">
+'use server';
+
+import { generateObject } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import { z } from 'zod';
+
+const VerificationSchema = z.object({
+  is_valid_match: z
+    .boolean()
+    .describe('Does this document fulfill the stated compliance requirement?'),
+  detected_document_type: z
+    .string()
+    .describe('What type of document is this? Be concise (e.g. "CPR Card", "Food Handler Permit").'),
+  confidence_score: z
+    .number()
+    .min(0)
+    .max(100)
+    .describe('Confidence percentage (0-100) that the document matches the requirement.'),
+  expiration_date: z
+    .string()
+    .nullable()
+    .describe(
+      'Expiration or renewal date found on the document in YYYY-MM-DD format. Return null if not present.'
+    ),
+  rejection_reason: z
+    .string()
+    .nullable()
+    .describe(
+      'If is_valid_match is false, a concise, practical explanation of why. Return null when valid.'
+    ),
+});
+
+export type AIVerificationResult = z.infer<typeof VerificationSchema>;
+
+export async function verifyDocumentWithAI(
+  formData: FormData
+): Promise<
+  | { success: true; object: AIVerificationResult }
+  | { success: false; error: string }
+> {
+  try {
+    const file = formData.get('file') as File | null;
+    const requirementName = (formData.get('requirementName') as string | null) ?? 'Unknown requirement';
+
+    if (!file) {
+      return { success: false, error: 'No file provided for verification.' };
+    }
+
+    // Convert the uploaded file to a raw buffer for the VLM
+    const arrayBuffer = await file.arrayBuffer();
+    const imageBuffer = Buffer.from(arrayBuffer);
+    const mediaType = file.type || 'image/jpeg';
+
+    const systemPrompt = `You are an expert but practical Arkansas Regulatory Compliance Auditor. Analyze the provided image/document. The user claims this document satisfies the requirement: '${requirementName}'. Verify if this is true and extract the requested data.
+
+CRITICAL INSTRUCTION: You must be highly tolerant of real-world upload conditions. Accept photos with glare, angled shots, mobile screenshots, and handwritten forms as long as the core identifying information is reasonably legible. Do not reject a document for poor aesthetic quality. Only return is_valid_match: false if the document is completely unreadable, is missing critical identifying data due to cropping, or is clearly the wrong document type entirely (e.g., an animal photo instead of a CPR card).`;
+
+    const { object } = await generateObject({
+      model: openai('gpt-4o'),
+      schema: VerificationSchema,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: systemPrompt,
+            },
+            {
+              type: 'image',
+              image: imageBuffer,
+              mediaType,
+            },
+          ],
+        },
+      ],
+    });
+
+    return { success: true, object };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown AI verification error';
+    console.error('❌ AI document verification failed:', message);
+    return { success: false, error: message };
+  }
 }
 </file>
 
@@ -2365,199 +1898,470 @@ export default function ForgotPasswordPage() {
 }
 </file>
 
-<file path="src/app/layout.tsx">
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
-import "./globals.css";
-import ToastProvider from "src/components/ToastProvider";
+<file path="src/lib/pdf-generator.ts">
+// src/lib/pdf-generator.ts
+// Client-only utility — must only be called inside 'use client' components.
+// jsPDF and jspdf-autotable are dynamically imported to prevent SSR build errors.
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
+import {
+  getFacilityComplianceData,
+  getFacilitySettings,
+  getPersonnelData,
+  getLatestOperationalAcknowledgment,
+} from 'src/app/actions/compliance';
+import type { IdentifiedGap } from './types';
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-export const metadata: Metadata = {
-  title: "AR Compliance Guard",
-  description: "Arkansas DHS regulatory compliance management for childcare centers and nursing homes.",
+type RGB = [number, number, number];
+
+function fmt(isoString: string | null | undefined): string {
+  if (!isoString) return '—';
+  try {
+    return new Date(isoString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch {
+    return '—';
+  }
+}
+
+function fmtLong(isoString: string | null | undefined): string {
+  if (!isoString) return 'N/A';
+  try {
+    return new Date(isoString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return 'N/A';
+  }
+}
+
+function statusLabel(status: IdentifiedGap['compliance_status']): string {
+  switch (status) {
+    case 'satisfied':     return 'Satisfied';
+    case 'expiring_soon': return 'Expiring Soon';
+    case 'expired':       return 'Expired';
+    case 'missing':       return 'Missing';
+    default:              return 'Unknown';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PDF color palette
+// ---------------------------------------------------------------------------
+
+const C = {
+  navy:     [15,  23,  42]  as RGB,
+  slate800: [30,  41,  59]  as RGB,
+  slate700: [51,  65,  85]  as RGB,
+  slate500: [100, 116, 139] as RGB,
+  slate300: [203, 213, 225] as RGB,
+  slate100: [241, 245, 249] as RGB,
+  slate50:  [248, 250, 252] as RGB,
+  white:    [255, 255, 255] as RGB,
+  green:    [22,  163, 74]  as RGB,
+  greenBg:  [236, 253, 245] as RGB,
+  greenBd:  [167, 243, 208] as RGB,
+  amber:    [217, 119, 6]   as RGB,
+  amberBg:  [255, 251, 235] as RGB,
+  red:      [220, 38,  38]  as RGB,
+  redBg:    [254, 242, 242] as RGB,
+  redBd:    [254, 202, 202] as RGB,
+  indigo:   [67,  56,  202] as RGB,
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
-  return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col">
-        <ToastProvider />
-        {children}
-      </body>
-    </html>
-  );
-}
-</file>
+// ---------------------------------------------------------------------------
+// Main export
+// ---------------------------------------------------------------------------
 
-<file path="src/app/auth/reset-password/page.tsx">
-'use client';
+export async function generateAuditReport(facilityId: string): Promise<void> {
+  // Dynamic imports keep jsPDF out of the SSR/Node bundle
+  const { jsPDF } = await import('jspdf');
+  const { default: autoTable } = await import('jspdf-autotable');
 
-import { useState, Suspense, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { useSearchParams } from 'next/navigation';
-import { createClient } from 'src/app/utils/supabase/client';
+  // Fetch all required data in parallel
+  const [settingsResult, complianceData, personnel, acknowledgment] = await Promise.all([
+    getFacilitySettings(facilityId),
+    getFacilityComplianceData(facilityId),
+    getPersonnelData(facilityId),
+    getLatestOperationalAcknowledgment(facilityId),
+  ]);
 
-function ResetPasswordForm() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const next = searchParams.get('next') || '/dashboard';
-  const [password, setPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [sessionChecked, setSessionChecked] = useState(false);
+  // Safe facility field access (Supabase returns untyped Record)
+  const fac = settingsResult.facility as Record<string, unknown> | null;
+  const facilityName   = typeof fac?.name            === 'string' ? fac.name            : 'Unknown Facility';
+  const licenseNumber  = typeof fac?.license_number  === 'string' ? fac.license_number  : 'N/A';
+  const facilityType   = typeof fac?.facility_type   === 'string' ? fac.facility_type   : '';
+  const facilityTypeLabel = facilityType === 'childcare_center' ? 'Childcare Center' : 'Nursing Home';
+  const capacity       = typeof fac?.capacity        === 'number' ? String(fac.capacity) : 'N/A';
+  const enrollment     = complianceData.activeEnrollment != null  ? String(complianceData.activeEnrollment) : 'Not Set';
 
-  // Guard: if there is no active session the invite link was not processed correctly.
-  // Redirect back to login with a descriptive error so the user knows what happened.
-  useEffect(() => {
-    const checkSession = async () => {
-      const supabase = createClient();
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        router.replace('/?error=session_required');
-        return;
-      }
-      setSessionChecked(true);
-    };
-    checkSession();
-  }, [router]);
+  const today     = new Date();
+  const todayLong = today.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const fileDate  = today.toISOString().split('T')[0];
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
+  // ---------------------------------------------------------------------------
+  // Document setup
+  // ---------------------------------------------------------------------------
 
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters.');
-      return;
-    }
-    if (password !== confirm) {
-      setError('Passwords do not match.');
-      return;
-    }
+  const doc    = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageW  = doc.internal.pageSize.getWidth();
+  const pageH  = doc.internal.pageSize.getHeight();
+  const MARGIN = 18;
+  const COL_W  = pageW - MARGIN * 2;
 
-    setSubmitting(true);
-    try {
-      const supabase = createClient();
-      const { error: updateError } = await supabase.auth.updateUser({ password });
-      if (updateError) {
-        setError(updateError.message);
-      } else {
-        router.replace(next);
-      }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'An unexpected error occurred.');
-    } finally {
-      setSubmitting(false);
-    }
+  // Shorthand color setters (avoids spread-arg TS overload ambiguity)
+  const fill  = (c: RGB) => doc.setFillColor(c[0], c[1], c[2]);
+  const draw  = (c: RGB) => doc.setDrawColor(c[0], c[1], c[2]);
+  const tint  = (c: RGB) => doc.setTextColor(c[0], c[1], c[2]);
+
+  let y = 0;
+
+  // ---------------------------------------------------------------------------
+  // HEADER BANNER
+  // ---------------------------------------------------------------------------
+
+  fill(C.navy);
+  doc.rect(0, 0, pageW, 40, 'F');
+
+  tint(C.white);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(18);
+  doc.text('AR COMPLIANCE GUARD', MARGIN, 15);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  tint([148, 163, 184]); // slate-400
+  doc.text('OFFICIAL AUDIT REPORT  —  CONFIDENTIAL', MARGIN, 22);
+
+  tint([148, 163, 184]);
+  doc.setFontSize(7.5);
+  doc.text(`Generated: ${todayLong}`, pageW - MARGIN, 15, { align: 'right' });
+  doc.text('For official use only', pageW - MARGIN, 22, { align: 'right' });
+
+  y = 50;
+
+  // ---------------------------------------------------------------------------
+  // FACILITY DETAILS  (2-column grid)
+  // ---------------------------------------------------------------------------
+
+  tint(C.slate500);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.text('FACILITY DETAILS', MARGIN, y);
+  y += 3;
+
+  draw(C.slate100);
+  doc.setLineWidth(0.25);
+  doc.line(MARGIN, y, pageW - MARGIN, y);
+  y += 5;
+
+  const halfW = COL_W / 2;
+  const detailPair = (
+    lLabel: string, lVal: string,
+    rLabel: string, rVal: string,
+    rowY: number
+  ) => {
+    tint(C.slate500);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.text(lLabel, MARGIN, rowY);
+    doc.text(rLabel, MARGIN + halfW + 4, rowY);
+
+    tint(C.slate800);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text(lVal, MARGIN, rowY + 5);
+    doc.text(rVal, MARGIN + halfW + 4, rowY + 5);
   };
 
-  if (!sessionChecked) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-400 border-t-transparent" />
-      </div>
+  detailPair('FACILITY NAME', facilityName, 'FACILITY TYPE', facilityTypeLabel, y);
+  y += 14;
+  detailPair('LICENSE NUMBER', licenseNumber, 'LICENSED CAPACITY', capacity, y);
+  y += 14;
+  detailPair('ACTIVE ENROLLMENT', enrollment, 'ACTIVE STAFF COUNT', String(complianceData.totalPersonnel), y);
+  y += 18;
+
+  // ---------------------------------------------------------------------------
+  // OPERATIONAL ACKNOWLEDGMENT STAMP
+  // ---------------------------------------------------------------------------
+
+  const ackBg: RGB = acknowledgment ? C.greenBg : C.redBg;
+  const ackBd: RGB = acknowledgment ? C.greenBd : C.redBd;
+  const ackTxt: RGB = acknowledgment ? C.green : C.red;
+
+  fill(ackBg);
+  draw(ackBd);
+  doc.setLineWidth(0.4);
+  doc.roundedRect(MARGIN, y, COL_W, acknowledgment ? 17 : 12, 2, 2, 'FD');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  tint(ackTxt);
+
+  if (acknowledgment) {
+    doc.text(
+      `OPERATIONAL STANDARDS ACKNOWLEDGED BY: ${acknowledgment.user_name.toUpperCase()}`,
+      MARGIN + 5, y + 7
     );
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    tint(C.slate500);
+    doc.text(`Signed on: ${fmtLong(acknowledgment.created_at)}`, MARGIN + 5, y + 13);
+  } else {
+    doc.text('⚠  OPERATIONAL ACKNOWLEDGMENT: MISSING / PENDING', MARGIN + 5, y + 7.5);
   }
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center px-4">
-      <div className="w-full max-w-md">
-        <div className="bg-white rounded-2xl shadow-2xl p-8">
-          <div className="mb-8">
-            <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mb-4">
-              <span className="text-2xl">🔒</span>
-            </div>
-            <h1 className="text-2xl font-bold text-slate-900 mb-1">Set your password</h1>
-            <p className="text-slate-500 text-sm">
-              Choose a strong password for your AR Compliance Guard account.
-            </p>
-          </div>
+  y += (acknowledgment ? 17 : 12) + 10;
 
-          <form onSubmit={handleSubmit} className="space-y-5">
-            {error && (
-              <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg">
-                <p className="text-sm text-rose-800 font-medium">❌ {error}</p>
-              </div>
-            )}
+  // ---------------------------------------------------------------------------
+  // COMPLIANCE SCORES
+  // ---------------------------------------------------------------------------
 
-            <div>
-              <label htmlFor="password" className="block text-sm font-semibold text-slate-700 mb-2">
-                New Password
-              </label>
-              <input
-                type="password"
-                id="password"
-                required
-                minLength={8}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-slate-900"
-                placeholder="Min. 8 characters"
-              />
-            </div>
+  tint(C.slate500);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.text('COMPLIANCE SCORES', MARGIN, y);
+  y += 3;
 
-            <div>
-              <label htmlFor="confirm" className="block text-sm font-semibold text-slate-700 mb-2">
-                Confirm New Password
-              </label>
-              <input
-                type="password"
-                id="confirm"
-                required
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-slate-900"
-                placeholder="Re-enter password"
-              />
-            </div>
+  draw(C.slate100);
+  doc.setLineWidth(0.25);
+  doc.line(MARGIN, y, pageW - MARGIN, y);
+  y += 4;
 
-            <button
-              type="submit"
-              disabled={submitting}
-              className={`w-full py-3.5 px-6 rounded-lg font-bold text-white transition-all ${
-                submitting
-                  ? 'bg-slate-400 cursor-not-allowed'
-                  : 'bg-blue-600 hover:bg-blue-700 shadow-lg hover:shadow-xl'
-              }`}
-            >
-              {submitting ? (
-                <span className="flex items-center justify-center gap-2">
-                  <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  Updating…
-                </span>
-              ) : (
-                'Update Password'
-              )}
-            </button>
-          </form>
-        </div>
-      </div>
-    </div>
+  const scoreBox = (label: string, score: number, x: number, bY: number) => {
+    const boxW = halfW - 2;
+    const color: RGB = score >= 80 ? C.green : score >= 50 ? C.amber : C.red;
+
+    fill(C.slate50);
+    draw(C.slate100);
+    doc.setLineWidth(0.25);
+    doc.roundedRect(x, bY, boxW, 20, 2, 2, 'FD');
+
+    tint(C.slate500);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.text(label, x + 4, bY + 7);
+
+    tint(color);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.text(`${score}%`, x + 4, bY + 17);
+  };
+
+  scoreBox('Facility Readiness Score',   complianceData.facilityReadinessScore,   MARGIN, y);
+  scoreBox('Personnel Readiness Score', complianceData.personnelReadinessScore, MARGIN + halfW + 4, y);
+  y += 28;
+
+  // ---------------------------------------------------------------------------
+  // Helper: section header + divider
+  // ---------------------------------------------------------------------------
+
+  const sectionHeader = (title: string, curY: number): number => {
+    tint(C.slate500);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.5);
+    doc.text(title, MARGIN, curY);
+    curY += 2.5;
+    draw(C.slate100);
+    doc.setLineWidth(0.25);
+    doc.line(MARGIN, curY, pageW - MARGIN, curY);
+    return curY + 2;
+  };
+
+  // ---------------------------------------------------------------------------
+  // FACILITY COMPLIANCE REQUIREMENTS TABLE
+  // ---------------------------------------------------------------------------
+
+  const facilityGaps = complianceData.gaps.filter(
+    (g) => g.score_category === 'facility'
   );
-}
 
-export default function ResetPasswordPage() {
-  return (
-    <Suspense>
-      <ResetPasswordForm />
-    </Suspense>
+  y = sectionHeader(
+    `FACILITY COMPLIANCE REQUIREMENTS  (${facilityGaps.filter(g => g.compliance_status !== 'missing').length} / ${facilityGaps.length} satisfied)`,
+    y
   );
+
+  const facilityBody = facilityGaps.map((g) => [
+    g.name,
+    g.severity.toUpperCase(),
+    statusLabel(g.compliance_status),
+    g.document_created_at ? fmt(g.document_created_at) : '—',
+  ]);
+
+  autoTable(doc, {
+    startY: y,
+    head: [['Requirement', 'Severity', 'Status', 'Document Date']],
+    body: facilityBody.length > 0 ? facilityBody : [['No facility requirements configured.', '', '', '']],
+    margin: { left: MARGIN, right: MARGIN },
+    styles:      { fontSize: 8, cellPadding: 2.8, textColor: C.slate800, lineColor: C.slate100, lineWidth: 0.2 },
+    headStyles:  { fillColor: C.navy, textColor: C.white, fontStyle: 'bold', fontSize: 7.5 },
+    alternateRowStyles: { fillColor: C.slate50 },
+    columnStyles: {
+      0: { cellWidth: COL_W * 0.50 },
+      1: { cellWidth: COL_W * 0.14, halign: 'center' },
+      2: { cellWidth: COL_W * 0.20, halign: 'center' },
+      3: { cellWidth: COL_W * 0.16, halign: 'center' },
+    },
+    didParseCell: (data) => {
+      if (data.section !== 'body') return;
+      if (data.column.index === 1) {
+        if (String(data.cell.raw) === 'CRITICAL') data.cell.styles.textColor = C.red;
+      }
+      if (data.column.index === 2) {
+        const v = String(data.cell.raw);
+        if (v === 'Satisfied')     data.cell.styles.textColor = C.green;
+        else if (v === 'Expiring Soon') data.cell.styles.textColor = C.amber;
+        else if (v === 'Expired')  data.cell.styles.textColor = C.red;
+        else if (v === 'Missing')  data.cell.styles.textColor = C.red;
+      }
+    },
+  });
+
+  const docRef = doc as unknown as { lastAutoTable?: { finalY?: number } };
+  y = (docRef.lastAutoTable?.finalY ?? y + 30) + 10;
+
+  // ---------------------------------------------------------------------------
+  // PERSONNEL LICENSING REQUIREMENTS TABLE
+  // ---------------------------------------------------------------------------
+
+  const personnelGaps = complianceData.gaps.filter(
+    (g) => g.score_category === 'personnel'
+  );
+
+  if (personnelGaps.length > 0) {
+    if (y > pageH - 60) { doc.addPage(); y = 20; }
+
+    y = sectionHeader(
+      `PERSONNEL LICENSING REQUIREMENTS  (${personnelGaps.filter(g => g.compliance_status !== 'missing').length} / ${personnelGaps.length} satisfied)`,
+      y
+    );
+
+    const personnelLicBody = personnelGaps.map((g) => [
+      g.name,
+      g.severity.toUpperCase(),
+      statusLabel(g.compliance_status),
+      g.document_created_at ? fmt(g.document_created_at) : '—',
+    ]);
+
+    autoTable(doc, {
+      startY: y,
+      head: [['Requirement', 'Severity', 'Status', 'Document Date']],
+      body: personnelLicBody,
+      margin: { left: MARGIN, right: MARGIN },
+      styles:      { fontSize: 8, cellPadding: 2.8, textColor: C.slate800, lineColor: C.slate100, lineWidth: 0.2 },
+      headStyles:  { fillColor: C.indigo, textColor: C.white, fontStyle: 'bold', fontSize: 7.5 },
+      alternateRowStyles: { fillColor: C.slate50 },
+      columnStyles: {
+        0: { cellWidth: COL_W * 0.50 },
+        1: { cellWidth: COL_W * 0.14, halign: 'center' },
+        2: { cellWidth: COL_W * 0.20, halign: 'center' },
+        3: { cellWidth: COL_W * 0.16, halign: 'center' },
+      },
+      didParseCell: (data) => {
+        if (data.section !== 'body') return;
+        if (data.column.index === 1) {
+          if (String(data.cell.raw) === 'CRITICAL') data.cell.styles.textColor = C.red;
+        }
+        if (data.column.index === 2) {
+          const v = String(data.cell.raw);
+          if (v === 'Satisfied')          data.cell.styles.textColor = C.green;
+          else if (v === 'Expiring Soon') data.cell.styles.textColor = C.amber;
+          else if (v === 'Expired')       data.cell.styles.textColor = C.red;
+          else if (v === 'Missing')       data.cell.styles.textColor = C.red;
+        }
+      },
+    });
+
+    y = (docRef.lastAutoTable?.finalY ?? y + 30) + 10;
+  }
+
+  // ---------------------------------------------------------------------------
+  // ACTIVE PERSONNEL ROSTER TABLE
+  // ---------------------------------------------------------------------------
+
+  if (y > pageH - 60) { doc.addPage(); y = 20; }
+
+  y = sectionHeader(
+    `ACTIVE PERSONNEL ROSTER  (${(personnel as unknown[]).length} employees)`,
+    y
+  );
+
+  type PersonnelRow = {
+    name: string;
+    role: string;
+    clearance_status: string;
+    hire_date: string | null;
+  };
+
+  const rosterBody = (personnel as PersonnelRow[]).map((p) => [
+    p.name  ?? 'Unknown',
+    p.role  ?? 'Unassigned',
+    (p.clearance_status ?? 'pending').toUpperCase(),
+    fmt(p.hire_date),
+  ]);
+
+  autoTable(doc, {
+    startY: y,
+    head: [['Employee Name', 'Role', 'Clearance Status', 'Hire Date']],
+    body: rosterBody.length > 0 ? rosterBody : [['No active personnel on record.', '', '', '']],
+    margin: { left: MARGIN, right: MARGIN },
+    styles:      { fontSize: 8, cellPadding: 2.8, textColor: C.slate800, lineColor: C.slate100, lineWidth: 0.2 },
+    headStyles:  { fillColor: C.slate700, textColor: C.white, fontStyle: 'bold', fontSize: 7.5 },
+    alternateRowStyles: { fillColor: C.slate50 },
+    columnStyles: {
+      0: { cellWidth: COL_W * 0.28 },
+      1: { cellWidth: COL_W * 0.32 },
+      2: { cellWidth: COL_W * 0.22, halign: 'center' },
+      3: { cellWidth: COL_W * 0.18, halign: 'center' },
+    },
+    didParseCell: (data) => {
+      if (data.section !== 'body' || data.column.index !== 2) return;
+      const v = String(data.cell.raw);
+      if (v === 'CLEARED')  data.cell.styles.textColor = C.green;
+      else if (v === 'PENDING') data.cell.styles.textColor = C.amber;
+      else if (v === 'FLAGGED') data.cell.styles.textColor = C.red;
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // FOOTER (every page)
+  // ---------------------------------------------------------------------------
+
+  const totalPages = doc.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+
+    // Thin rule
+    draw(C.slate300);
+    doc.setLineWidth(0.2);
+    doc.line(MARGIN, pageH - 12, pageW - MARGIN, pageH - 12);
+
+    tint(C.slate500);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.5);
+    doc.text(
+      `Compliance Guard Pro  •  ${facilityName}  •  Page ${i} of ${totalPages}`,
+      pageW / 2, pageH - 7.5, { align: 'center' }
+    );
+    doc.text('CONFIDENTIAL — FOR OFFICIAL USE ONLY', pageW / 2, pageH - 4, { align: 'center' });
+  }
+
+  // ---------------------------------------------------------------------------
+  // SAVE
+  // ---------------------------------------------------------------------------
+
+  const safeName = facilityName.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_');
+  doc.save(`${safeName}_Audit_Report_${fileDate}.pdf`);
 }
 </file>
 
@@ -2599,6 +2403,46 @@ export default async function DashboardLayout({
         {children}
       </DashboardShell>
     </FacilityProvider>
+  );
+}
+</file>
+
+<file path="src/app/layout.tsx">
+import type { Metadata } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import "./globals.css";
+import ToastProvider from "src/components/ToastProvider";
+
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
+
+export const metadata: Metadata = {
+  title: "Compliance Guard Pro",
+  description: "Arkansas regulatory compliance management for childcare centers and nursing homes.",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html
+      lang="en"
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+    >
+      <body className="min-h-full flex flex-col">
+        <ToastProvider />
+        {children}
+      </body>
+    </html>
   );
 }
 </file>
@@ -3361,37 +3205,158 @@ export async function forgotPasswordAction(
 }
 </file>
 
-<file path="src/components/FacilitySelector.tsx">
+<file path="src/app/auth/reset-password/page.tsx">
 'use client';
 
-import type { Facility } from '@/lib/types';
+import { useState, Suspense, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
+import { createClient } from 'src/app/utils/supabase/client';
 
-interface FacilitySelectorProps {
-  facilities: Pick<Facility, 'id' | 'name'>[];
-  selectedFacilityId: string | null;
-  onSelect: (value: string) => void;
+function ResetPasswordForm() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const next = searchParams.get('next') || '/dashboard';
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
+
+  // Guard: if there is no active session the invite link was not processed correctly.
+  // Redirect back to login with a descriptive error so the user knows what happened.
+  useEffect(() => {
+    const checkSession = async () => {
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        router.replace('/?error=session_required');
+        return;
+      }
+      setSessionChecked(true);
+    };
+    checkSession();
+  }, [router]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters.');
+      return;
+    }
+    if (password !== confirm) {
+      setError('Passwords do not match.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const supabase = createClient();
+      const { error: updateError } = await supabase.auth.updateUser({ password });
+      if (updateError) {
+        setError(updateError.message);
+      } else {
+        router.replace(next);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!sessionChecked) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-400 border-t-transparent" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center px-4">
+      <div className="w-full max-w-md">
+        <div className="bg-white rounded-2xl shadow-2xl p-8">
+          <div className="mb-8">
+            <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mb-4">
+              <span className="text-2xl">🔒</span>
+            </div>
+            <h1 className="text-2xl font-bold text-slate-900 mb-1">Set your password</h1>
+            <p className="text-slate-500 text-sm">
+              Choose a strong password for your Compliance Guard Pro account.
+            </p>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {error && (
+              <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg">
+                <p className="text-sm text-rose-800 font-medium">❌ {error}</p>
+              </div>
+            )}
+
+            <div>
+              <label htmlFor="password" className="block text-sm font-semibold text-slate-700 mb-2">
+                New Password
+              </label>
+              <input
+                type="password"
+                id="password"
+                required
+                minLength={8}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-slate-900"
+                placeholder="Min. 8 characters"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="confirm" className="block text-sm font-semibold text-slate-700 mb-2">
+                Confirm New Password
+              </label>
+              <input
+                type="password"
+                id="confirm"
+                required
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-slate-900"
+                placeholder="Re-enter password"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className={`w-full py-3.5 px-6 rounded-lg font-bold text-white transition-all ${
+                submitting
+                  ? 'bg-slate-400 cursor-not-allowed'
+                  : 'bg-blue-600 hover:bg-blue-700 shadow-lg hover:shadow-xl'
+              }`}
+            >
+              {submitting ? (
+                <span className="flex items-center justify-center gap-2">
+                  <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  Updating…
+                </span>
+              ) : (
+                'Update Password'
+              )}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
 }
 
-export default function FacilitySelector({ facilities, selectedFacilityId, onSelect }: FacilitySelectorProps) {
+export default function ResetPasswordPage() {
   return (
-    <div className="p-4 border-b border-gray-800">
-      <label className="text-xs uppercase text-gray-500 font-bold tracking-widest">Select Facility</label>
-      <select
-        value={selectedFacilityId || 'all'}
-        onChange={(e) => onSelect(e.target.value)}
-        className="w-full mt-2 bg-black text-white border border-gray-700 rounded-md p-2 cursor-pointer focus:outline-none focus:border-blue-500"
-      >
-        {/* Forcing explicit dark charcoal text on white backgrounds inside the expanded native Safari menus */}
-        <option value="all" className="text-slate-900 bg-white">
-          Master View (All Facilities)
-        </option>
-        {facilities.map((f) => (
-          <option key={f.id} value={f.id} className="text-slate-900 bg-white">
-            {f.name}
-          </option>
-        ))}
-      </select>
-    </div>
+    <Suspense>
+      <ResetPasswordForm />
+    </Suspense>
   );
 }
 </file>
@@ -4486,6 +4451,41 @@ export default function RequestAccessPage() {
 }
 </file>
 
+<file path="src/components/FacilitySelector.tsx">
+'use client';
+
+import type { Facility } from '@/lib/types';
+
+interface FacilitySelectorProps {
+  facilities?: Pick<Facility, 'id' | 'name'>[];
+  selectedFacilityId: string | null;
+  onSelect: (value: string) => void;
+}
+
+export default function FacilitySelector({ facilities, selectedFacilityId, onSelect }: FacilitySelectorProps) {
+  return (
+    <div className="p-4 border-b border-gray-800">
+      <label className="text-xs uppercase text-gray-500 font-bold tracking-widest">Select Facility</label>
+      <select
+        value={selectedFacilityId || 'all'}
+        onChange={(e) => onSelect(e.target.value)}
+        className="w-full mt-2 bg-black text-white border border-gray-700 rounded-md p-2 cursor-pointer focus:outline-none focus:border-blue-500"
+      >
+        {/* Forcing explicit dark charcoal text on white backgrounds inside the expanded native Safari menus */}
+        <option value="all" className="text-slate-900 bg-white">
+          Master View (All Facilities)
+        </option>
+        {(facilities ?? []).map((f) => (
+          <option key={f.id} value={f.id} className="text-slate-900 bg-white">
+            {f.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+</file>
+
 <file path="src/context/FacilityContext.tsx">
 'use client';
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
@@ -5456,272 +5456,6 @@ export default function OnboardingPage() {
 }
 </file>
 
-<file path="src/app/page.tsx">
-'use client';
-
-import { Suspense, useEffect, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { createClient } from 'src/app/utils/supabase/client';
-import Link from 'next/link';
-
-function LandingPageInner() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const [loading, setLoading] = useState(true);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [signingIn, setSigningIn] = useState(false);
-  const errorParam = searchParams.get('error');
-  const [error, setError] = useState<string | null>(
-    errorParam === 'auth_callback_failed'
-      ? 'Your sign-in link has expired or is invalid. Please try again.'
-      : errorParam === 'session_required'
-        ? 'Your invitation link was not recognized. Please contact support or request a new invite.'
-        : null
-  );
-
-  useEffect(() => {
-    // Check if user is already authenticated
-    const checkAuth = async () => {
-      const supabase = createClient();
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (session) {
-        // User is authenticated, redirect to dashboard
-        router.replace('/dashboard');
-      } else {
-        setLoading(false);
-      }
-    };
-
-    checkAuth();
-  }, [router]);
-
-  const handleSignIn = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSigningIn(true);
-    setError(null);
-
-    try {
-      const supabase = createClient();
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password
-      });
-
-      if (error) {
-        setError(error.message);
-      } else if (data.session) {
-        router.replace('/dashboard');
-      }
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'An unexpected error occurred';
-      setError(message);
-    } finally {
-      setSigningIn(false);
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-400 border-t-transparent" />
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900">
-      {/* Header */}
-      <header className="absolute top-0 left-0 right-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-xl">🛡️</span>
-              </div>
-              <div>
-                <h1 className="text-white font-bold text-xl">AR Compliance Guard</h1>
-                <p className="text-blue-300 text-xs">Arkansas DHS Regulatory Engine</p>
-              </div>
-            </div>
-            <Link
-              href="/request-access"
-              className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 sm:px-6 py-2.5 rounded-lg transition-colors shadow-lg text-sm sm:text-base min-h-[44px] flex items-center"
-            >
-              Request Access
-            </Link>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <div className="flex items-center justify-center min-h-screen px-4 pt-24 pb-16 lg:pb-24">
-        <div className="max-w-6xl w-full grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-center">
-          {/* Left Side - Marketing Content */}
-          <div className="text-white space-y-6">
-            <div className="inline-block bg-blue-500/20 border border-blue-400/30 rounded-full px-4 py-2 mb-4">
-              <span className="text-blue-300 text-sm font-medium">Trusted by Arkansas Facilities</span>
-            </div>
-            
-            <h2 className="text-3xl md:text-5xl font-bold leading-tight">
-              Automated Compliance Management for Arkansas Facilities
-            </h2>
-            
-            <p className="text-lg md:text-xl text-blue-200 leading-relaxed">
-              Twin-score regulatory monitoring, dynamic facility scope flags, and real-time
-              personnel licensing oversight for childcare centers and nursing homes.
-            </p>
-
-            <div className="space-y-4 pt-4">
-              <div className="flex items-start gap-3">
-                <div className="w-6 h-6 bg-emerald-500 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
-                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <div>
-                  <h3 className="font-semibold text-lg">Real-Time Compliance Scoring</h3>
-                  <p className="text-blue-200 text-sm">Instant facility readiness calculations against Arkansas DHS requirements</p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3">
-                <div className="w-6 h-6 bg-emerald-500 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
-                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <div>
-                  <h3 className="font-semibold text-lg">Operator-Verified Document Vault</h3>
-                  <p className="text-blue-200 text-sm">Director attestations and uploaded evidence with full audit trail.</p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3">
-                <div className="w-6 h-6 bg-emerald-500 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
-                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <div>
-                  <h3 className="font-semibold text-lg">Staffing Ratio Enforcement</h3>
-                  <p className="text-blue-200 text-sm">Automated monitoring of regulatory staff-to-resident requirements</p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Right Side - Login Form */}
-          <div className="bg-white rounded-2xl shadow-2xl p-8 lg:p-10">
-            <div className="mb-8">
-              <h3 className="text-2xl font-bold text-slate-900 mb-2">Sign In to Your Account</h3>
-              <p className="text-slate-600">Access your compliance dashboard</p>
-            </div>
-
-            {error && (
-              <div className="mb-6 p-4 bg-rose-50 border border-rose-200 rounded-lg">
-                <p className="text-sm text-rose-800 font-medium">❌ {error}</p>
-              </div>
-            )}
-
-            <form onSubmit={handleSignIn} className="space-y-6">
-              <div>
-                <label htmlFor="email" className="block text-sm font-semibold text-slate-700 mb-2">
-                  Email Address
-                </label>
-                <input
-                  type="email"
-                  id="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                  placeholder="you@facility.com"
-                />
-              </div>
-
-              <div>
-                <label htmlFor="password" className="block text-sm font-semibold text-slate-700 mb-2">
-                  Password
-                </label>
-                <input
-                  type="password"
-                  id="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                  placeholder="••••••••"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={signingIn}
-                className={`w-full py-3.5 px-6 rounded-lg font-bold text-white transition-all ${
-                  signingIn
-                    ? 'bg-slate-400 cursor-not-allowed'
-                    : 'bg-blue-600 hover:bg-blue-700 shadow-lg hover:shadow-xl'
-                }`}
-              >
-                {signingIn ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
-                    Signing In...
-                  </span>
-                ) : (
-                  'Sign In'
-                )}
-              </button>
-
-              <div className="text-right">
-                <Link
-                  href="/auth/forgot-password"
-                  className="text-sm text-slate-500 hover:text-blue-600 transition-colors"
-                >
-                  Forgot your password?
-                </Link>
-              </div>
-            </form>
-
-            <div className="mt-8 pt-6 border-t border-slate-200">
-              <p className="text-center text-sm text-slate-600">
-                Don&apos;t have an account?{' '}
-                <Link href="/request-access" className="text-blue-600 hover:text-blue-700 font-semibold">
-                  Request Access
-                </Link>
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Footer */}
-      <footer className="relative py-6 mt-8 lg:absolute lg:bottom-0 lg:left-0 lg:right-0 lg:mt-0">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <p className="text-center text-blue-300 text-sm">
-            © 2026 AR Compliance Guard. Strictly-typed regulatory intelligence.
-          </p>
-        </div>
-      </footer>
-    </div>
-  );
-}
-
-export default function LandingPage() {
-  return (
-    <Suspense fallback={
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-400 border-t-transparent" />
-      </div>
-    }>
-      <LandingPageInner />
-    </Suspense>
-  );
-}
-</file>
-
 <file path="src/app/actions/registration.ts">
 // src/app/actions/registration.ts
 'use server';
@@ -6550,6 +6284,272 @@ async function writeAdminAuditLog(params: {
   if (error) {
     console.error(`❌ Failed to create admin audit log (${params.actionType}):`, error);
   }
+}
+</file>
+
+<file path="src/app/page.tsx">
+'use client';
+
+import { Suspense, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { createClient } from 'src/app/utils/supabase/client';
+import Link from 'next/link';
+
+function LandingPageInner() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [loading, setLoading] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [signingIn, setSigningIn] = useState(false);
+  const errorParam = searchParams.get('error');
+  const [error, setError] = useState<string | null>(
+    errorParam === 'auth_callback_failed'
+      ? 'Your sign-in link has expired or is invalid. Please try again.'
+      : errorParam === 'session_required'
+        ? 'Your invitation link was not recognized. Please contact support or request a new invite.'
+        : null
+  );
+
+  useEffect(() => {
+    // Check if user is already authenticated
+    const checkAuth = async () => {
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (session) {
+        // User is authenticated, redirect to dashboard
+        router.replace('/dashboard');
+      } else {
+        setLoading(false);
+      }
+    };
+
+    checkAuth();
+  }, [router]);
+
+  const handleSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSigningIn(true);
+    setError(null);
+
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password
+      });
+
+      if (error) {
+        setError(error.message);
+      } else if (data.session) {
+        router.replace('/dashboard');
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'An unexpected error occurred';
+      setError(message);
+    } finally {
+      setSigningIn(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-400 border-t-transparent" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900">
+      {/* Header */}
+      <header className="absolute top-0 left-0 right-0 z-10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 sm:w-10 sm:h-10 bg-blue-500 rounded-lg flex items-center justify-center">
+                <span className="text-white font-bold text-lg sm:text-xl">🛡️</span>
+              </div>
+              <div>
+                <h1 className="text-white font-bold text-base sm:text-xl truncate">Compliance Guard Pro</h1>
+                <p className="hidden sm:block text-blue-300 text-xs">Arkansas Regulatory Compliance Engine</p>
+              </div>
+            </div>
+            <Link
+              href="/request-access"
+              className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-3 sm:px-6 py-2 sm:py-2.5 rounded-lg transition-colors shadow-lg text-sm sm:text-base min-h-[44px] flex items-center justify-center whitespace-nowrap text-center shrink-0"
+            >
+              Request Access
+            </Link>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <div className="flex items-center justify-center min-h-screen px-4 pt-28 sm:pt-24 lg:pt-32 pb-16 lg:pb-24">
+        <div className="max-w-6xl w-full grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-center">
+          {/* Left Side - Marketing Content */}
+          <div className="text-white space-y-6">
+            <div className="inline-block bg-blue-500/20 border border-blue-400/30 rounded-full px-4 py-2 mb-4">
+              <span className="text-blue-300 text-sm font-medium">Trusted by Arkansas Facilities</span>
+            </div>
+            
+            <h2 className="text-3xl md:text-5xl font-bold leading-tight">
+              Automated Compliance Management for Arkansas Facilities
+            </h2>
+            
+            <p className="text-lg md:text-xl text-blue-200 leading-relaxed">
+              Twin-score regulatory monitoring, dynamic facility scope flags, and real-time
+              personnel licensing oversight for childcare centers and nursing homes.
+            </p>
+
+            <div className="space-y-4 pt-4">
+              <div className="flex items-start gap-3">
+                <div className="w-6 h-6 bg-emerald-500 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
+                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="font-semibold text-lg">Real-Time Compliance Scoring</h3>
+                  <p className="text-blue-200 text-sm">Instant facility readiness calculations against Arkansas regulatory requirements</p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3">
+                <div className="w-6 h-6 bg-emerald-500 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
+                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="font-semibold text-lg">Operator-Verified Document Vault</h3>
+                  <p className="text-blue-200 text-sm">Director attestations and uploaded evidence with full audit trail.</p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3">
+                <div className="w-6 h-6 bg-emerald-500 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
+                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="font-semibold text-lg">Staffing Ratio Enforcement</h3>
+                  <p className="text-blue-200 text-sm">Automated monitoring of regulatory staff-to-resident requirements</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Right Side - Login Form */}
+          <div className="bg-white rounded-2xl shadow-2xl p-8 lg:p-10">
+            <div className="mb-8">
+              <h3 className="text-2xl font-bold text-slate-900 mb-2">Sign In to Your Account</h3>
+              <p className="text-slate-600">Access your compliance dashboard</p>
+            </div>
+
+            {error && (
+              <div className="mb-6 p-4 bg-rose-50 border border-rose-200 rounded-lg">
+                <p className="text-sm text-rose-800 font-medium">❌ {error}</p>
+              </div>
+            )}
+
+            <form onSubmit={handleSignIn} className="space-y-6">
+              <div>
+                <label htmlFor="email" className="block text-sm font-semibold text-slate-700 mb-2">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  id="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                  placeholder="you@facility.com"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="password" className="block text-sm font-semibold text-slate-700 mb-2">
+                  Password
+                </label>
+                <input
+                  type="password"
+                  id="password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                  placeholder="••••••••"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={signingIn}
+                className={`w-full py-3.5 px-6 rounded-lg font-bold text-white transition-all ${
+                  signingIn
+                    ? 'bg-slate-400 cursor-not-allowed'
+                    : 'bg-blue-600 hover:bg-blue-700 shadow-lg hover:shadow-xl'
+                }`}
+              >
+                {signingIn ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                    Signing In...
+                  </span>
+                ) : (
+                  'Sign In'
+                )}
+              </button>
+
+              <div className="text-right">
+                <Link
+                  href="/auth/forgot-password"
+                  className="text-sm text-slate-500 hover:text-blue-600 transition-colors"
+                >
+                  Forgot your password?
+                </Link>
+              </div>
+            </form>
+
+            <div className="mt-8 pt-6 border-t border-slate-200">
+              <p className="text-center text-sm text-slate-600">
+                Don&apos;t have an account?{' '}
+                <Link href="/request-access" className="text-blue-600 hover:text-blue-700 font-semibold">
+                  Request Access
+                </Link>
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <footer className="relative py-6 mt-8 lg:absolute lg:bottom-0 lg:left-0 lg:right-0 lg:mt-0">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <p className="text-center text-blue-300 text-sm">
+            © 2026 Compliance Guard Pro. Strictly-typed regulatory intelligence.
+          </p>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+export default function LandingPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-400 border-t-transparent" />
+      </div>
+    }>
+      <LandingPageInner />
+    </Suspense>
+  );
 }
 </file>
 
@@ -7867,6 +7867,377 @@ export default function PersonnelVaultView({ facilityId }: Props) {
 }
 </file>
 
+<file path="src/lib/reg-monitor.ts">
+// src/lib/reg-monitor.ts
+import { createAdminClient } from 'src/app/utils/supabase/admin';
+import type {
+  ComplianceRule,
+  ComplianceFrequency,
+  DocumentComplianceStatus,
+  Facility,
+  FacilityToggleKey,
+  IdentifiedGap,
+  RegulatoryStatus,
+  ScoreCategory,
+} from './types';
+import { FACILITY_TOGGLE_KEYS } from './types';
+
+/**
+ * String normalization helper for resilient fuzzy matching against uploaded documents.
+ */
+function normalizeDocumentKey(input: string | null | undefined): string {
+  if (!input) return '';
+  return input
+    .toLowerCase()
+    .trim()
+    .replace(/[\s\-]+/g, '_')
+    .replace(/[^a-z0-9_]/g, '');
+}
+
+/**
+ * Fuzzy token matching helper. Returns true if a rule's slug overlaps with an uploaded
+ * document's classified document_type.
+ */
+function tokensMatch(ruleKey: string, docKey: string): boolean {
+  const normalizedRule = normalizeDocumentKey(ruleKey);
+  const normalizedDoc = normalizeDocumentKey(docKey);
+
+  if (!normalizedRule || !normalizedDoc) return false;
+  if (normalizedRule === normalizedDoc) return true;
+  if (normalizedRule.includes(normalizedDoc) || normalizedDoc.includes(normalizedRule)) {
+    return true;
+  }
+
+  const ruleTokens = normalizedRule.split('_').filter((t) => t.length > 2);
+  const docTokens = normalizedDoc.split('_').filter((t) => t.length > 2);
+  const sharedTokens = ruleTokens.filter((token) => docTokens.includes(token));
+  return sharedTokens.length >= 2;
+}
+
+/**
+ * Returns the list of toggle keys that are TRUE on a given facility.
+ * These represent the activated scope flags that a rule's sub_classification can match.
+ */
+function activeToggleKeys(facility: Pick<Facility, FacilityToggleKey>): Set<string> {
+  const activated = new Set<string>();
+  for (const key of FACILITY_TOGGLE_KEYS) {
+    if (facility[key]) activated.add(key);
+  }
+  return activated;
+}
+
+/**
+ * THE SMART FILTER.
+ *
+ * A rule applies to a facility IF:
+ *   - rule.facility_type === facility.facility_type, AND
+ *   - rule.sub_classification IS NULL / undefined / 'null' (universal rule), OR
+ *   - rule.sub_classification is a universal baseline tag that always applies
+ *     regardless of optional scope toggles ('all_staff', 'facility_management', 'education'), OR
+ *   - rule.sub_classification matches a toggle currently set to TRUE on the facility profile.
+ */
+const UNIVERSAL_BASELINE_TAGS = new Set(['all_staff', 'facility_management', 'education']);
+
+export function ruleAppliesToFacility(
+  rule: Pick<ComplianceRule, 'facility_type' | 'sub_classification'>,
+  facility: Pick<Facility, 'facility_type' | FacilityToggleKey>
+): boolean {
+  if (rule.facility_type !== facility.facility_type) return false;
+  const sub = rule.sub_classification as string | null | undefined;
+  if (sub === null || sub === undefined || sub === 'null' || UNIVERSAL_BASELINE_TAGS.has(sub)) {
+    return true;
+  }
+  const activated = activeToggleKeys(facility);
+  return activated.has(rule.sub_classification as string);
+}
+
+/**
+ * Resolve the score category for a rule, gracefully handling legacy `is_personnel_requirement`
+ * rows that have not yet been backfilled with `score_category`.
+ */
+function resolveScoreCategory(rule: Record<string, unknown>): ScoreCategory {
+  const raw = rule.score_category;
+  if (raw === 'facility' || raw === 'personnel') return raw;
+  if (rule.is_personnel_requirement === true) return 'personnel';
+  if (rule.is_personnel_requirement === false) return 'facility';
+  return null;
+}
+
+/**
+ * Resolve whether a rule should be included in the twin-score math, with safe defaults
+ * for rows missing `is_scored` (treat them as scored).
+ */
+function resolveIsScored(rule: Record<string, unknown>): boolean {
+  if (typeof rule.is_scored === 'boolean') return rule.is_scored;
+  return true;
+}
+
+/**
+ * Safely parses a date string to a Date object.
+ * Returns null if the string is missing, empty, or does not produce a valid Date.
+ */
+function safeParseDate(value: string | null | undefined): Date | null {
+  if (!value || typeof value !== 'string') return null;
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Calculates the expiration date for a document.
+ *
+ * Priority:
+ *   1. `aiExpirationDate` — the printed expiration extracted by the AI (YYYY-MM-DD).
+ *   2. Fall back to `createdAt + frequency` calculation if no AI date is available.
+ *
+ * Returns null for frequencies with no defined expiration (e.g. 'ongoing', 'one-time').
+ */
+function calcExpirationDate(
+  createdAt: string,
+  frequency: ComplianceFrequency,
+  aiExpirationDate?: string | null
+): Date | null {
+  // Priority 1: AI-extracted printed expiration date
+  const aiDate = safeParseDate(aiExpirationDate);
+  if (aiDate) return aiDate;
+
+  // Priority 2: calculate from upload date + renewal frequency
+  const created = safeParseDate(createdAt);
+  if (!created) return null;
+
+  const d = new Date(created);
+  switch (frequency) {
+    case 'daily':      d.setDate(d.getDate() + 1); break;
+    case 'weekly':     d.setDate(d.getDate() + 7); break;
+    case 'monthly':    d.setMonth(d.getMonth() + 1); break;
+    case 'quarterly':  d.setMonth(d.getMonth() + 3); break;
+    case 'biannual':   d.setMonth(d.getMonth() + 6); break;
+    case 'annual':     d.setFullYear(d.getFullYear() + 1); break;
+    case '2_years':    d.setFullYear(d.getFullYear() + 2); break;
+    case '3_years':    d.setFullYear(d.getFullYear() + 3); break;
+    case '5_years':    d.setFullYear(d.getFullYear() + 5); break;
+    case '10_years':   d.setFullYear(d.getFullYear() + 10); break;
+    // one-time, ongoing, and unknown frequencies do not expire
+    default:           return null;
+  }
+  return d;
+}
+
+/**
+ * Determines the compliance status of a satisfied requirement based on:
+ *   1. The AI-extracted expiration date stored in `metadata.ai_extracted_expiration` (preferred), OR
+ *   2. The rule's renewal frequency applied to the document's upload date (fallback).
+ */
+function calcComplianceStatus(
+  createdAt: string,
+  frequency: ComplianceFrequency,
+  docMetadata?: Record<string, unknown> | null
+): DocumentComplianceStatus {
+  const aiExpirationDate =
+    typeof docMetadata?.ai_extracted_expiration === 'string'
+      ? docMetadata.ai_extracted_expiration
+      : null;
+
+  const expiration = calcExpirationDate(createdAt, frequency, aiExpirationDate);
+  if (!expiration) return 'satisfied'; // ongoing / one-time — never expires
+
+  const daysUntilExpiry = (expiration.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+
+  if (daysUntilExpiry < 0) return 'expired';
+  if (daysUntilExpiry <= 30) return 'expiring_soon';
+  return 'satisfied';
+}
+
+/**
+ * Reads from our database to calculate twin-score metrics for the dashboard.
+ *
+ * Returns:
+ *   - facilityReadinessScore:    (uploaded documents / total scored rules where score_category === 'facility') * 100
+ *   - personnelReadinessScore:   (uploaded documents / total scored rules where score_category === 'personnel') * 100
+ *   - identifiedGaps:            dynamically filtered list of outstanding rules
+ *   - staffCount, capacity, activeEnrollment, enrollmentUpdatedAt
+ *
+ * The "dumb fetch + smart filter" pattern keeps the UI alive even if Supabase has issues.
+ */
+export async function getRegulatoryStatus(facilityId: string): Promise<RegulatoryStatus> {
+  const supabase = createAdminClient();
+
+  // 1. Fetch the facility profile with capacity, active_enrollment, and ALL scope toggle columns
+  const { data: facility, error: facilityError } = await supabase
+    .from('facilities')
+    .select(
+      [
+        'id',
+        'facility_type',
+        'capacity',
+        'active_enrollment',
+        'enrollment_updated_at',
+        ...FACILITY_TOGGLE_KEYS,
+      ].join(', ')
+    )
+    .eq('id', facilityId)
+    .single();
+
+  if (facilityError || !facility) {
+    console.error('❌ Failed to load facility profile for compliance scoring:', facilityError);
+    return {
+      facilityReadinessScore: 0,
+      personnelReadinessScore: 0,
+      identifiedGaps: [],
+      staffCount: 0,
+      capacity: null,
+      activeEnrollment: null,
+      enrollmentUpdatedAt: null,
+    };
+  }
+
+  const facilityProfile = facility as unknown as Facility;
+
+  // 2. THE DUMB FETCH: pull every rule. We will filter in TypeScript.
+  const { data: allRules, error: rulesError } = await supabase
+    .from('compliance_criteria')
+    .select('*');
+
+  if (rulesError) {
+    console.error('❌ Supabase fetch error on compliance_criteria:', rulesError);
+    // Fail gracefully so dependent UI (staffing math, blueprints) still renders.
+  }
+
+  // 3. THE SMART FILTER: keep rules that match the facility type AND scope toggles.
+  const applicableRules: ComplianceRule[] = (allRules || [])
+    .filter((rule: Record<string, unknown>) =>
+      ruleAppliesToFacility(rule as unknown as ComplianceRule, facilityProfile)
+    )
+    .map((rule: Record<string, unknown>) => ({
+      id: rule.id as string,
+      facility_type: rule.facility_type as ComplianceRule['facility_type'],
+      sub_classification: (rule.sub_classification ?? null) as ComplianceRule['sub_classification'],
+      requirement_name: (rule.requirement_name as string) ?? '',
+      required_document_type: (rule.required_document_type as string) ?? '',
+      severity: ((rule.severity as ComplianceRule['severity']) ?? 'standard'),
+      frequency: (rule.frequency as ComplianceRule['frequency']) ?? 'annual',
+      is_scored: resolveIsScored(rule),
+      score_category: resolveScoreCategory(rule),
+    }));
+
+  console.log(
+    `📋 Compliance Engine: ${allRules?.length ?? 0} total rules → ${applicableRules.length} applicable for ${facilityProfile.facility_type}.`
+  );
+
+  // 4. Fetch approved AND pending facility documents to compute satisfied requirements.
+  //    Pending documents surface as 'pending_review' and do not count toward the score.
+  const { data: uploadedDocs } = await supabase
+    .from('facility_documents')
+    .select('id, document_type, status, created_at, metadata')
+    .eq('facility_id', facilityId)
+    .in('status', ['approved', 'pending'])
+    .order('created_at', { ascending: false }); // newest first so we pick the freshest match
+
+  type UploadedDoc = {
+    id: string;
+    document_type: string | null;
+    status: string;
+    created_at: string;
+    metadata: Record<string, unknown> | null;
+  };
+  const docs: UploadedDoc[] = (uploadedDocs || []) as UploadedDoc[];
+
+  // Map from rule id → the best matching document (most recent)
+  const satisfiedRuleMap = new Map<string, { docId: string; createdAt: string; status: DocumentComplianceStatus }>();
+
+  for (const rule of applicableRules) {
+    const matchingDoc = docs.find(
+      (d) => d.document_type && tokensMatch(rule.required_document_type, d.document_type)
+    );
+    if (matchingDoc) {
+      // Pending documents are awaiting human review — surface as 'pending_review' without scoring.
+      const status: DocumentComplianceStatus = matchingDoc.status === 'pending'
+        ? 'pending_review'
+        : calcComplianceStatus(matchingDoc.created_at, rule.frequency, matchingDoc.metadata);
+      satisfiedRuleMap.set(rule.id, {
+        docId: matchingDoc.id,
+        createdAt: matchingDoc.created_at,
+        status,
+      });
+    }
+  }
+
+  // A rule is "satisfied enough" for score purposes if the doc exists (even if expired/expiring)
+  const satisfiedRuleIds = new Set(satisfiedRuleMap.keys());
+
+  // 5. THE TWIN-SCORE MATH: separate buckets for facility vs. personnel rules.
+  //    Daily-frequency rules are operational expectations, not verifiable upload events —
+  //    they are intentionally excluded from both score buckets.
+  const facilityScoredRules = applicableRules.filter(
+    (r) => r.is_scored && r.score_category === 'facility' && r.frequency !== 'daily'
+  );
+  const personnelScoredRules = applicableRules.filter(
+    (r) => r.is_scored && r.score_category === 'personnel' && r.frequency !== 'daily'
+  );
+
+  // Pending-review docs do not grant compliance points — they are awaiting human approval.
+  const facilityVerified = facilityScoredRules.filter(
+    (r) => satisfiedRuleIds.has(r.id) && satisfiedRuleMap.get(r.id)?.status !== 'pending_review'
+  ).length;
+  const personnelVerified = personnelScoredRules.filter(
+    (r) => satisfiedRuleIds.has(r.id) && satisfiedRuleMap.get(r.id)?.status !== 'pending_review'
+  ).length;
+
+  const facilityReadinessScore =
+    facilityScoredRules.length > 0
+      ? Math.round((facilityVerified / facilityScoredRules.length) * 100)
+      : 100;
+
+  const personnelReadinessScore =
+    personnelScoredRules.length > 0
+      ? Math.round((personnelVerified / personnelScoredRules.length) * 100)
+      : 100;
+
+  console.log(
+    `📊 Twin-Score → Facility: ${facilityVerified}/${facilityScoredRules.length} = ${facilityReadinessScore}% | Personnel: ${personnelVerified}/${personnelScoredRules.length} = ${personnelReadinessScore}%`
+  );
+
+  // 6. Build the gap list for the UI.
+  //    Daily-frequency rules are surfaced only in the Operational Blueprints reference manual,
+  //    never as compliance gaps — so they are excluded here.
+  //    Rules with an existing (possibly expired) document are still included so the user
+  //    can see their expiration status and replace the document if needed.
+  const identifiedGaps: IdentifiedGap[] = applicableRules
+    .filter((rule) => rule.frequency !== 'daily')
+    .map((rule) => {
+      const satisfaction = satisfiedRuleMap.get(rule.id);
+      return {
+        id: rule.id,
+        name: rule.requirement_name,
+        typeKey: rule.required_document_type,
+        severity: rule.severity,
+        frequency: rule.frequency,
+        is_scored: rule.is_scored,
+        score_category: rule.score_category,
+        compliance_status: satisfaction ? satisfaction.status : 'missing',
+        document_id: satisfaction?.docId,
+        document_created_at: satisfaction?.createdAt,
+      };
+    });
+
+  // 7. Active staff count for the personnel headcount widget.
+  const { count: personnelCount } = await supabase
+    .from('personnel')
+    .select('*', { count: 'exact', head: true })
+    .eq('facility_id', facilityId)
+    .eq('status', 'active');
+
+  return {
+    facilityReadinessScore,
+    personnelReadinessScore,
+    identifiedGaps,
+    staffCount: personnelCount ?? 0,
+    capacity: facilityProfile.capacity ?? null,
+    activeEnrollment: facilityProfile.active_enrollment ?? null,
+    enrollmentUpdatedAt: facilityProfile.enrollment_updated_at ?? null,
+  };
+}
+</file>
+
 <file path="src/components/ComplianceDashboardClient.tsx">
 'use client';
 
@@ -8863,7 +9234,7 @@ export default function ComplianceDashboardClient({
               </span>
             </div>
             <p className="text-sm text-amber-900 leading-relaxed">
-              I certify that this information is authentic, unaltered, and satisfies Arkansas DHS
+              I certify that this information is authentic, unaltered, and satisfies Arkansas regulatory
               requirements. I understand that providing false information may result in penalties under
               state and federal law.
             </p>
@@ -8929,377 +9300,6 @@ export default function ComplianceDashboardClient({
       </div>
     </div>
   );
-}
-</file>
-
-<file path="src/lib/reg-monitor.ts">
-// src/lib/reg-monitor.ts
-import { createAdminClient } from 'src/app/utils/supabase/admin';
-import type {
-  ComplianceRule,
-  ComplianceFrequency,
-  DocumentComplianceStatus,
-  Facility,
-  FacilityToggleKey,
-  IdentifiedGap,
-  RegulatoryStatus,
-  ScoreCategory,
-} from './types';
-import { FACILITY_TOGGLE_KEYS } from './types';
-
-/**
- * String normalization helper for resilient fuzzy matching against uploaded documents.
- */
-function normalizeDocumentKey(input: string | null | undefined): string {
-  if (!input) return '';
-  return input
-    .toLowerCase()
-    .trim()
-    .replace(/[\s\-]+/g, '_')
-    .replace(/[^a-z0-9_]/g, '');
-}
-
-/**
- * Fuzzy token matching helper. Returns true if a rule's slug overlaps with an uploaded
- * document's classified document_type.
- */
-function tokensMatch(ruleKey: string, docKey: string): boolean {
-  const normalizedRule = normalizeDocumentKey(ruleKey);
-  const normalizedDoc = normalizeDocumentKey(docKey);
-
-  if (!normalizedRule || !normalizedDoc) return false;
-  if (normalizedRule === normalizedDoc) return true;
-  if (normalizedRule.includes(normalizedDoc) || normalizedDoc.includes(normalizedRule)) {
-    return true;
-  }
-
-  const ruleTokens = normalizedRule.split('_').filter((t) => t.length > 2);
-  const docTokens = normalizedDoc.split('_').filter((t) => t.length > 2);
-  const sharedTokens = ruleTokens.filter((token) => docTokens.includes(token));
-  return sharedTokens.length >= 2;
-}
-
-/**
- * Returns the list of toggle keys that are TRUE on a given facility.
- * These represent the activated scope flags that a rule's sub_classification can match.
- */
-function activeToggleKeys(facility: Pick<Facility, FacilityToggleKey>): Set<string> {
-  const activated = new Set<string>();
-  for (const key of FACILITY_TOGGLE_KEYS) {
-    if (facility[key]) activated.add(key);
-  }
-  return activated;
-}
-
-/**
- * THE SMART FILTER.
- *
- * A rule applies to a facility IF:
- *   - rule.facility_type === facility.facility_type, AND
- *   - rule.sub_classification IS NULL / undefined / 'null' (universal rule), OR
- *   - rule.sub_classification is a universal baseline tag that always applies
- *     regardless of optional scope toggles ('all_staff', 'facility_management', 'education'), OR
- *   - rule.sub_classification matches a toggle currently set to TRUE on the facility profile.
- */
-const UNIVERSAL_BASELINE_TAGS = new Set(['all_staff', 'facility_management', 'education']);
-
-export function ruleAppliesToFacility(
-  rule: Pick<ComplianceRule, 'facility_type' | 'sub_classification'>,
-  facility: Pick<Facility, 'facility_type' | FacilityToggleKey>
-): boolean {
-  if (rule.facility_type !== facility.facility_type) return false;
-  const sub = rule.sub_classification as string | null | undefined;
-  if (sub === null || sub === undefined || sub === 'null' || UNIVERSAL_BASELINE_TAGS.has(sub)) {
-    return true;
-  }
-  const activated = activeToggleKeys(facility);
-  return activated.has(rule.sub_classification as string);
-}
-
-/**
- * Resolve the score category for a rule, gracefully handling legacy `is_personnel_requirement`
- * rows that have not yet been backfilled with `score_category`.
- */
-function resolveScoreCategory(rule: Record<string, unknown>): ScoreCategory {
-  const raw = rule.score_category;
-  if (raw === 'facility' || raw === 'personnel') return raw;
-  if (rule.is_personnel_requirement === true) return 'personnel';
-  if (rule.is_personnel_requirement === false) return 'facility';
-  return null;
-}
-
-/**
- * Resolve whether a rule should be included in the twin-score math, with safe defaults
- * for rows missing `is_scored` (treat them as scored).
- */
-function resolveIsScored(rule: Record<string, unknown>): boolean {
-  if (typeof rule.is_scored === 'boolean') return rule.is_scored;
-  return true;
-}
-
-/**
- * Safely parses a date string to a Date object.
- * Returns null if the string is missing, empty, or does not produce a valid Date.
- */
-function safeParseDate(value: string | null | undefined): Date | null {
-  if (!value || typeof value !== 'string') return null;
-  const d = new Date(value);
-  return isNaN(d.getTime()) ? null : d;
-}
-
-/**
- * Calculates the expiration date for a document.
- *
- * Priority:
- *   1. `aiExpirationDate` — the printed expiration extracted by the AI (YYYY-MM-DD).
- *   2. Fall back to `createdAt + frequency` calculation if no AI date is available.
- *
- * Returns null for frequencies with no defined expiration (e.g. 'ongoing', 'one-time').
- */
-function calcExpirationDate(
-  createdAt: string,
-  frequency: ComplianceFrequency,
-  aiExpirationDate?: string | null
-): Date | null {
-  // Priority 1: AI-extracted printed expiration date
-  const aiDate = safeParseDate(aiExpirationDate);
-  if (aiDate) return aiDate;
-
-  // Priority 2: calculate from upload date + renewal frequency
-  const created = safeParseDate(createdAt);
-  if (!created) return null;
-
-  const d = new Date(created);
-  switch (frequency) {
-    case 'daily':      d.setDate(d.getDate() + 1); break;
-    case 'weekly':     d.setDate(d.getDate() + 7); break;
-    case 'monthly':    d.setMonth(d.getMonth() + 1); break;
-    case 'quarterly':  d.setMonth(d.getMonth() + 3); break;
-    case 'biannual':   d.setMonth(d.getMonth() + 6); break;
-    case 'annual':     d.setFullYear(d.getFullYear() + 1); break;
-    case '2_years':    d.setFullYear(d.getFullYear() + 2); break;
-    case '3_years':    d.setFullYear(d.getFullYear() + 3); break;
-    case '5_years':    d.setFullYear(d.getFullYear() + 5); break;
-    case '10_years':   d.setFullYear(d.getFullYear() + 10); break;
-    // one-time, ongoing, and unknown frequencies do not expire
-    default:           return null;
-  }
-  return d;
-}
-
-/**
- * Determines the compliance status of a satisfied requirement based on:
- *   1. The AI-extracted expiration date stored in `metadata.ai_extracted_expiration` (preferred), OR
- *   2. The rule's renewal frequency applied to the document's upload date (fallback).
- */
-function calcComplianceStatus(
-  createdAt: string,
-  frequency: ComplianceFrequency,
-  docMetadata?: Record<string, unknown> | null
-): DocumentComplianceStatus {
-  const aiExpirationDate =
-    typeof docMetadata?.ai_extracted_expiration === 'string'
-      ? docMetadata.ai_extracted_expiration
-      : null;
-
-  const expiration = calcExpirationDate(createdAt, frequency, aiExpirationDate);
-  if (!expiration) return 'satisfied'; // ongoing / one-time — never expires
-
-  const daysUntilExpiry = (expiration.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
-
-  if (daysUntilExpiry < 0) return 'expired';
-  if (daysUntilExpiry <= 30) return 'expiring_soon';
-  return 'satisfied';
-}
-
-/**
- * Reads from our database to calculate twin-score metrics for the dashboard.
- *
- * Returns:
- *   - facilityReadinessScore:    (uploaded documents / total scored rules where score_category === 'facility') * 100
- *   - personnelReadinessScore:   (uploaded documents / total scored rules where score_category === 'personnel') * 100
- *   - identifiedGaps:            dynamically filtered list of outstanding rules
- *   - staffCount, capacity, activeEnrollment, enrollmentUpdatedAt
- *
- * The "dumb fetch + smart filter" pattern keeps the UI alive even if Supabase has issues.
- */
-export async function getRegulatoryStatus(facilityId: string): Promise<RegulatoryStatus> {
-  const supabase = createAdminClient();
-
-  // 1. Fetch the facility profile with capacity, active_enrollment, and ALL scope toggle columns
-  const { data: facility, error: facilityError } = await supabase
-    .from('facilities')
-    .select(
-      [
-        'id',
-        'facility_type',
-        'capacity',
-        'active_enrollment',
-        'enrollment_updated_at',
-        ...FACILITY_TOGGLE_KEYS,
-      ].join(', ')
-    )
-    .eq('id', facilityId)
-    .single();
-
-  if (facilityError || !facility) {
-    console.error('❌ Failed to load facility profile for compliance scoring:', facilityError);
-    return {
-      facilityReadinessScore: 0,
-      personnelReadinessScore: 0,
-      identifiedGaps: [],
-      staffCount: 0,
-      capacity: null,
-      activeEnrollment: null,
-      enrollmentUpdatedAt: null,
-    };
-  }
-
-  const facilityProfile = facility as unknown as Facility;
-
-  // 2. THE DUMB FETCH: pull every rule. We will filter in TypeScript.
-  const { data: allRules, error: rulesError } = await supabase
-    .from('compliance_criteria')
-    .select('*');
-
-  if (rulesError) {
-    console.error('❌ Supabase fetch error on compliance_criteria:', rulesError);
-    // Fail gracefully so dependent UI (staffing math, blueprints) still renders.
-  }
-
-  // 3. THE SMART FILTER: keep rules that match the facility type AND scope toggles.
-  const applicableRules: ComplianceRule[] = (allRules || [])
-    .filter((rule: Record<string, unknown>) =>
-      ruleAppliesToFacility(rule as unknown as ComplianceRule, facilityProfile)
-    )
-    .map((rule: Record<string, unknown>) => ({
-      id: rule.id as string,
-      facility_type: rule.facility_type as ComplianceRule['facility_type'],
-      sub_classification: (rule.sub_classification ?? null) as ComplianceRule['sub_classification'],
-      requirement_name: (rule.requirement_name as string) ?? '',
-      required_document_type: (rule.required_document_type as string) ?? '',
-      severity: ((rule.severity as ComplianceRule['severity']) ?? 'standard'),
-      frequency: (rule.frequency as ComplianceRule['frequency']) ?? 'annual',
-      is_scored: resolveIsScored(rule),
-      score_category: resolveScoreCategory(rule),
-    }));
-
-  console.log(
-    `📋 Compliance Engine: ${allRules?.length ?? 0} total rules → ${applicableRules.length} applicable for ${facilityProfile.facility_type}.`
-  );
-
-  // 4. Fetch approved AND pending facility documents to compute satisfied requirements.
-  //    Pending documents surface as 'pending_review' and do not count toward the score.
-  const { data: uploadedDocs } = await supabase
-    .from('facility_documents')
-    .select('id, document_type, status, created_at, metadata')
-    .eq('facility_id', facilityId)
-    .in('status', ['approved', 'pending'])
-    .order('created_at', { ascending: false }); // newest first so we pick the freshest match
-
-  type UploadedDoc = {
-    id: string;
-    document_type: string | null;
-    status: string;
-    created_at: string;
-    metadata: Record<string, unknown> | null;
-  };
-  const docs: UploadedDoc[] = (uploadedDocs || []) as UploadedDoc[];
-
-  // Map from rule id → the best matching document (most recent)
-  const satisfiedRuleMap = new Map<string, { docId: string; createdAt: string; status: DocumentComplianceStatus }>();
-
-  for (const rule of applicableRules) {
-    const matchingDoc = docs.find(
-      (d) => d.document_type && tokensMatch(rule.required_document_type, d.document_type)
-    );
-    if (matchingDoc) {
-      // Pending documents are awaiting human review — surface as 'pending_review' without scoring.
-      const status: DocumentComplianceStatus = matchingDoc.status === 'pending'
-        ? 'pending_review'
-        : calcComplianceStatus(matchingDoc.created_at, rule.frequency, matchingDoc.metadata);
-      satisfiedRuleMap.set(rule.id, {
-        docId: matchingDoc.id,
-        createdAt: matchingDoc.created_at,
-        status,
-      });
-    }
-  }
-
-  // A rule is "satisfied enough" for score purposes if the doc exists (even if expired/expiring)
-  const satisfiedRuleIds = new Set(satisfiedRuleMap.keys());
-
-  // 5. THE TWIN-SCORE MATH: separate buckets for facility vs. personnel rules.
-  //    Daily-frequency rules are operational expectations, not verifiable upload events —
-  //    they are intentionally excluded from both score buckets.
-  const facilityScoredRules = applicableRules.filter(
-    (r) => r.is_scored && r.score_category === 'facility' && r.frequency !== 'daily'
-  );
-  const personnelScoredRules = applicableRules.filter(
-    (r) => r.is_scored && r.score_category === 'personnel' && r.frequency !== 'daily'
-  );
-
-  // Pending-review docs do not grant compliance points — they are awaiting human approval.
-  const facilityVerified = facilityScoredRules.filter(
-    (r) => satisfiedRuleIds.has(r.id) && satisfiedRuleMap.get(r.id)?.status !== 'pending_review'
-  ).length;
-  const personnelVerified = personnelScoredRules.filter(
-    (r) => satisfiedRuleIds.has(r.id) && satisfiedRuleMap.get(r.id)?.status !== 'pending_review'
-  ).length;
-
-  const facilityReadinessScore =
-    facilityScoredRules.length > 0
-      ? Math.round((facilityVerified / facilityScoredRules.length) * 100)
-      : 100;
-
-  const personnelReadinessScore =
-    personnelScoredRules.length > 0
-      ? Math.round((personnelVerified / personnelScoredRules.length) * 100)
-      : 100;
-
-  console.log(
-    `📊 Twin-Score → Facility: ${facilityVerified}/${facilityScoredRules.length} = ${facilityReadinessScore}% | Personnel: ${personnelVerified}/${personnelScoredRules.length} = ${personnelReadinessScore}%`
-  );
-
-  // 6. Build the gap list for the UI.
-  //    Daily-frequency rules are surfaced only in the Operational Blueprints reference manual,
-  //    never as compliance gaps — so they are excluded here.
-  //    Rules with an existing (possibly expired) document are still included so the user
-  //    can see their expiration status and replace the document if needed.
-  const identifiedGaps: IdentifiedGap[] = applicableRules
-    .filter((rule) => rule.frequency !== 'daily')
-    .map((rule) => {
-      const satisfaction = satisfiedRuleMap.get(rule.id);
-      return {
-        id: rule.id,
-        name: rule.requirement_name,
-        typeKey: rule.required_document_type,
-        severity: rule.severity,
-        frequency: rule.frequency,
-        is_scored: rule.is_scored,
-        score_category: rule.score_category,
-        compliance_status: satisfaction ? satisfaction.status : 'missing',
-        document_id: satisfaction?.docId,
-        document_created_at: satisfaction?.createdAt,
-      };
-    });
-
-  // 7. Active staff count for the personnel headcount widget.
-  const { count: personnelCount } = await supabase
-    .from('personnel')
-    .select('*', { count: 'exact', head: true })
-    .eq('facility_id', facilityId)
-    .eq('status', 'active');
-
-  return {
-    facilityReadinessScore,
-    personnelReadinessScore,
-    identifiedGaps,
-    staffCount: personnelCount ?? 0,
-    capacity: facilityProfile.capacity ?? null,
-    activeEnrollment: facilityProfile.active_enrollment ?? null,
-    enrollmentUpdatedAt: facilityProfile.enrollment_updated_at ?? null,
-  };
 }
 </file>
 
@@ -9586,7 +9586,7 @@ export default function DashboardPage() {
         <header className="mb-6 flex items-start justify-between flex-wrap gap-4">
           <div>
             <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
-              DHS Regulatory Engine
+              Regulatory Compliance Engine
             </p>
             <h1 className="text-2xl md:text-4xl font-bold tracking-tight text-slate-900 mb-2">
               Audit Trail &amp; Compliance Logs
@@ -9737,7 +9737,7 @@ export default function DashboardPage() {
       <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
         <header className="mb-2">
           <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
-            DHS Regulatory Engine
+            Regulatory Compliance Engine
           </p>
           <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900">
             Team Settings
@@ -9756,7 +9756,7 @@ export default function DashboardPage() {
       <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700">
         <header className="mb-8">
           <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
-            DHS Regulatory Engine
+            Regulatory Compliance Engine
           </p>
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-2">
             <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900">
@@ -9837,7 +9837,7 @@ export default function DashboardPage() {
                     Regulatory Domain <span className="text-red-500">*</span>
                   </label>
                   <p className="text-xs text-slate-500 mb-3">
-                    This determines which Arkansas DHS rule set applies. Select carefully — it cannot be changed after creation.
+                    This determines which Arkansas regulatory rule set applies. Select carefully — it cannot be changed after creation.
                   </p>
                   <div className="grid grid-cols-2 gap-3">
                     {([
@@ -10317,7 +10317,7 @@ export default function DashboardPage() {
     <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
       <header className="mb-2">
         <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
-          DHS Regulatory Engine
+          Regulatory Compliance Engine
         </p>
         <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900">
           {currentView === 'overview' && 'Executive Overview'}

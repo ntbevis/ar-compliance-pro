@@ -750,6 +750,10 @@ export default function ComplianceDashboardClient({
               <span className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></span>
               Uploading…
             </div>
+          ) : activeTab === 'personnel' ? (
+            <span className="text-xs text-slate-400 italic px-2 py-1 rounded-md bg-slate-50 border border-slate-200">
+              Upload via Personnel Vault
+            </span>
           ) : (
             <>
               <label
@@ -1048,6 +1052,15 @@ export default function ComplianceDashboardClient({
           </button>
         </div>
 
+        {activeTab === 'personnel' && (
+          <div className="flex items-center gap-3 px-5 py-3 bg-blue-50 border-b border-blue-100 text-blue-700 text-xs">
+            <span className="text-base shrink-0">🔒</span>
+            <span>
+              <strong>Read-only view.</strong> Personnel documents must be uploaded from within the{' '}
+              <strong>Personnel Vault</strong> under a specific employee to ensure they are tied to a valid employee record.
+            </span>
+          </div>
+        )}
         {activeGaps.length === 0 ? (
           <div className="p-12 text-center text-emerald-600 text-sm font-semibold">
             ✅ All scored {activeTab === 'facility' ? 'facility' : 'personnel'} requirements are

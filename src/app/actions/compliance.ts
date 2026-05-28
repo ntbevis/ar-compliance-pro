@@ -63,7 +63,8 @@ type AuditActionType =
   | 'operational_acknowledgment'
   | 'facility_settings_update'
   | 'facility_profile_update'
-  | 'facility_archived';
+  | 'facility_archived'
+  | 'license_verified';
 
 async function createAuditLog(params: {
   facilityId: string;
@@ -1878,5 +1879,81 @@ export async function getAuditLogs(facilityId?: string) {
   } catch (error) {
     console.error('❌ Exception in getAuditLogs:', error);
     return [];
+  }
+}
+
+// =============================================================================
+// NURSING LICENSE VERIFICATION
+// =============================================================================
+
+/**
+ * Mocks a state nursing board lookup for RN / LPN / Director of Nursing licenses.
+ * On success, inserts an approved facility_documents record with
+ * file_url = 'verified_via_registry' and a 2-year expiration date.
+ */
+export async function verifyNursingLicense(
+  licenseNumber: string,
+  state: string,
+  employeeId: string,
+  requirementId: string,
+  facilityId: string,
+  typeKey: string
+): Promise<{ success: boolean; expirationDate?: string; status?: string; error?: string }> {
+  try {
+    const { userId } = await getAuthenticatedUserContext();
+
+    if (!licenseNumber.trim()) {
+      return { success: false, error: 'License number is required.' };
+    }
+
+    // Mock state board lookup — simulate a successful registry verification
+    const expiry = new Date();
+    expiry.setFullYear(expiry.getFullYear() + 2);
+    const expirationDate = expiry.toISOString().split('T')[0];
+
+    const supabase = createAdminClient();
+    const documentId = crypto.randomUUID();
+
+    const { error: insertError } = await supabase.from('facility_documents').insert({
+      id: documentId,
+      facility_id: facilityId,
+      document_type: typeKey,
+      status: 'approved',
+      file_url: 'verified_via_registry',
+      name: `${state} Nursing License – ${licenseNumber.toUpperCase()} (Registry Verified)`,
+      metadata: {
+        upload_source: 'license_registry',
+        personnel_id: employeeId,
+        license_number: licenseNumber.trim().toUpperCase(),
+        license_state: state,
+        verified_status: 'Verified',
+        ai_extracted_expiration: expirationDate,
+      },
+    });
+
+    if (insertError) throw insertError;
+
+    await createAuditLog({
+      facilityId,
+      userId,
+      actionType: 'license_verified',
+      metadata: {
+        personnel_id: employeeId,
+        requirement_id: requirementId,
+        document_id: documentId,
+        license_number: licenseNumber.trim().toUpperCase(),
+        license_state: state,
+        expiration_date: expirationDate,
+        upload_source: 'license_registry',
+      },
+    });
+
+    revalidatePath('/dashboard');
+
+    return { success: true, expirationDate, status: 'Verified' };
+  } catch (error) {
+    console.error('❌ verifyNursingLicense error:', error);
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
   }
 }

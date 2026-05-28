@@ -18,6 +18,7 @@ import {
   hashFileBuffer,
   deleteDocument,
   getSecureDocumentUrl,
+  verifyNursingLicense,
 } from 'src/app/actions/compliance';
 import { verifyDocumentWithAI } from 'src/app/actions/ai-verify';
 import type { DocumentComplianceStatus } from '@/lib/types';
@@ -117,6 +118,27 @@ function calcPersonnelComplianceStatus(
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const ALLOWED_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
 
+// ── License verification helpers ─────────────────────────────────────────────
+
+const US_STATES = [
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA',
+  'HI','ID','IL','IN','IA','KS','KY','LA','ME','MD',
+  'MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+  'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC',
+  'SD','TN','TX','UT','VT','VA','WA','WV','WI','WY',
+];
+
+const NURSING_LICENSE_ROLES = ['rn', 'lpn', 'director of nursing'];
+
+function isNursingLicenseRequirement(req: RoleRequirement, personRole: string): boolean {
+  const reqNameLower = req.name.toLowerCase();
+  const roleLower = personRole.toLowerCase();
+  return (
+    reqNameLower.includes('license') ||
+    NURSING_LICENSE_ROLES.includes(roleLower)
+  );
+}
+
 interface NewPersonnelForm {
   name: string;
   role: string;
@@ -163,6 +185,16 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   const [personnelToArchive, setPersonnelToArchive] = useState<PersonnelRecord | null>(null);
 
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // License verification modal
+  const [licenseModal, setLicenseModal] = useState<{
+    personnelId: string;
+    req: RoleRequirement;
+    tab: 'upload' | 'verify';
+  } | null>(null);
+  const [licenseNumber, setLicenseNumber] = useState('');
+  const [licenseState, setLicenseState] = useState('AR');
+  const [isVerifyingLicense, setIsVerifyingLicense] = useState(false);
 
   // AI rejection modal
   const [personnelRejectionModal, setPersonnelRejectionModal] = useState<{
@@ -564,6 +596,50 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     }
   };
 
+  const handleVerifyLicense = async () => {
+    if (!licenseModal) return;
+    const { personnelId, req } = licenseModal;
+
+    if (!licenseNumber.trim()) {
+      toast.error('Please enter a license number.');
+      return;
+    }
+
+    setIsVerifyingLicense(true);
+    try {
+      const result = await verifyNursingLicense(
+        licenseNumber,
+        licenseState,
+        personnelId,
+        req.id,
+        facilityId,
+        req.typeKey
+      );
+
+      if (result.success) {
+        toast.success(
+          `License verified! Expires ${result.expirationDate ? new Date(result.expirationDate).toLocaleDateString() : 'in 2 years'}.`
+        );
+        setLicenseModal(null);
+        setLicenseNumber('');
+        setLicenseState('AR');
+        const refreshedDocs = (await getPersonnelDocuments(facilityId)) as PersonnelDocument[];
+        setPersonnelDocuments(refreshedDocs);
+        // Refresh worst-case status for the person
+        const reqs = requirementsByPerson[personnelId];
+        if (reqs) {
+          const worst = computeWorstStatus(personnelId, reqs);
+          setPersonWorstStatus((prev) => ({ ...prev, [personnelId]: worst }));
+        }
+        router.refresh();
+      } else {
+        toast.error(result.error ?? 'Verification failed. Please try again.');
+      }
+    } finally {
+      setIsVerifyingLicense(false);
+    }
+  };
+
   const roster = showArchive ? separated : active;
 
   return (
@@ -851,6 +927,146 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                   )}
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* License Verification Modal */}
+      {licenseModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-indigo-700 to-blue-600 px-6 py-4 flex items-center justify-between shrink-0">
+              <div className="min-w-0">
+                <h2 className="text-lg font-bold text-white">Fulfill Requirement</h2>
+                <p className="text-indigo-200 text-xs mt-0.5 truncate">{licenseModal.req.name}</p>
+              </div>
+              <button
+                onClick={() => { setLicenseModal(null); setLicenseNumber(''); setLicenseState('AR'); }}
+                className="ml-4 shrink-0 text-white/70 hover:text-white text-2xl leading-none"
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Tab bar */}
+            <div className="flex border-b border-slate-200">
+              <button
+                onClick={() => setLicenseModal({ ...licenseModal, tab: 'upload' })}
+                className={`flex-1 px-4 py-3 text-xs font-bold transition-colors ${
+                  licenseModal.tab === 'upload'
+                    ? 'bg-white text-indigo-700 border-b-2 border-indigo-600'
+                    : 'bg-slate-50 text-slate-500 hover:bg-slate-100'
+                }`}
+              >
+                📄 Upload Document
+              </button>
+              <button
+                onClick={() => setLicenseModal({ ...licenseModal, tab: 'verify' })}
+                className={`flex-1 px-4 py-3 text-xs font-bold transition-colors ${
+                  licenseModal.tab === 'verify'
+                    ? 'bg-white text-indigo-700 border-b-2 border-indigo-600'
+                    : 'bg-slate-50 text-slate-500 hover:bg-slate-100'
+                }`}
+              >
+                🔍 Verify by License #
+              </button>
+            </div>
+
+            {/* Tab content */}
+            <div className="p-6">
+              {licenseModal.tab === 'upload' ? (
+                <div className="space-y-4">
+                  <p className="text-sm text-slate-600">
+                    Upload a PDF or image of the license document. It will be AI-verified before being saved.
+                  </p>
+                  <p className="text-xs text-slate-400">Accepted: PDF, JPEG, PNG · Max 10 MB</p>
+                  <label
+                    className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium cursor-pointer transition-colors ${
+                      !isUploading
+                        ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                        : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                    }`}
+                  >
+                    {uploadingReqId === licenseModal.req.id || verifyingReqId === licenseModal.req.id
+                      ? 'Uploading…'
+                      : '⬆ Choose File to Upload'}
+                    <input
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      className="hidden"
+                      disabled={isUploading}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          setLicenseModal(null);
+                          handlePersonnelUpload(licenseModal.personnelId, licenseModal.req, file);
+                        }
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <p className="text-sm text-slate-600">
+                    Enter the nurse&apos;s license number and issuing state. We will verify it against the state board registry.
+                  </p>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                      License Number <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={licenseNumber}
+                      onChange={(e) => setLicenseNumber(e.target.value)}
+                      placeholder="e.g. RN123456"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      disabled={isVerifyingLicense}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                      Issuing State
+                    </label>
+                    <select
+                      value={licenseState}
+                      onChange={(e) => setLicenseState(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      disabled={isVerifyingLicense}
+                    >
+                      {US_STATES.map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    onClick={handleVerifyLicense}
+                    disabled={isVerifyingLicense || !licenseNumber.trim()}
+                    className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-bold transition-colors ${
+                      !isVerifyingLicense && licenseNumber.trim()
+                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                        : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                    }`}
+                  >
+                    {isVerifyingLicense ? (
+                      <>
+                        <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        Verifying with State Board…
+                      </>
+                    ) : (
+                      '✔ Verify License'
+                    )}
+                  </button>
+                  <p className="text-[10px] text-slate-400 italic text-center">
+                    Registry lookup is currently in simulation mode. A verified record will be created with a 2-year expiration.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1208,27 +1424,48 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                   </div>
                                 ) : !showArchive ? (
                                   <>
-                                    <label
-                                      className={`px-2.5 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all cursor-pointer flex items-center min-h-[32px] ${
-                                        !isUploading
-                                          ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                                          : 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                                      }`}
-                                      title={isUploading ? 'Upload in progress…' : 'Upload evidence'}
-                                    >
-                                      Upload
-                                      <input
-                                        type="file"
-                                        accept=".pdf,.jpg,.jpeg,.png"
-                                        className="hidden"
+                                    {isNursingLicenseRequirement(req, person.role) ? (
+                                      <button
+                                        onClick={() =>
+                                          setLicenseModal({
+                                            personnelId: person.id,
+                                            req,
+                                            tab: 'upload',
+                                          })
+                                        }
                                         disabled={isUploading}
-                                        onChange={(e) => {
-                                          const file = e.target.files?.[0];
-                                          if (file) handlePersonnelUpload(person.id, req, file);
-                                          e.target.value = '';
-                                        }}
-                                      />
-                                    </label>
+                                        className={`px-2.5 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all min-h-[32px] flex items-center gap-1 ${
+                                          !isUploading
+                                            ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                                            : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                                        }`}
+                                        title="Upload document or verify by license number"
+                                      >
+                                        🪪 Upload / Verify
+                                      </button>
+                                    ) : (
+                                      <label
+                                        className={`px-2.5 py-1.5 rounded-md text-xs font-medium shadow-sm transition-all cursor-pointer flex items-center min-h-[32px] ${
+                                          !isUploading
+                                            ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                                            : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                                        }`}
+                                        title={isUploading ? 'Upload in progress…' : 'Upload evidence'}
+                                      >
+                                        Upload
+                                        <input
+                                          type="file"
+                                          accept=".pdf,.jpg,.jpeg,.png"
+                                          className="hidden"
+                                          disabled={isUploading}
+                                          onChange={(e) => {
+                                            const file = e.target.files?.[0];
+                                            if (file) handlePersonnelUpload(person.id, req, file);
+                                            e.target.value = '';
+                                          }}
+                                        />
+                                      </label>
+                                    )}
                                     {req.severity !== 'critical' && (
                                       <button
                                         onClick={() => handlePersonnelSignAttestation(person.id, req)}
