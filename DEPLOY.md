@@ -34,6 +34,8 @@ Deploy the build output (e.g. Vercel). No schema changes are required in the app
 - [ ] Log in with test org; open a **childcare** and **nursing home** facility
 - [ ] Personnel Vault: add employee with role from dropdown; expand row — requirements list loads
 - [ ] **RN** does **not** show LPN Board Verification; **LPN** does not show RN Board Verification
+- [ ] **Infant/Toddler Caregiver** does **not** show New Director Orientation (QRIS); **Center Director** does
+- [ ] Infant/Toddler Caregiver **does** show 8-Hour Basic Orientation and background checks
 - [ ] **SLP** shows Therapy Board; does **not** show nurse license rules
 - [ ] Dashboard facility/personnel scores still load
 - [ ] Optional: enable facility toggles (transportation, memory_care) and confirm scoped rules appear

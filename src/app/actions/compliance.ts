@@ -4,6 +4,7 @@
 import { createAdminClient } from 'src/app/utils/supabase/admin';
 import { createClient } from 'src/app/utils/supabase/server';
 import { getRegulatoryStatus, ruleAppliesToFacility } from '@/lib/reg-monitor';
+import { computeStaffingAdequacy } from '@/lib/staffing';
 import { createHash } from 'crypto';
 import { headers } from 'next/headers';
 import { revalidatePath, unstable_noStore as noStore } from 'next/cache';
@@ -37,6 +38,73 @@ function normalizeApplicableRoles(raw: unknown): string[] | null {
       }
     }
   }
+  return null;
+}
+
+/**
+ * Title-based role exclusivity (backstop when applicable_roles in DB is too broad).
+ * Returns allowed role_name values, or null if the title is not exclusive.
+ */
+function exclusiveRolesForRequirement(
+  requirementName: string,
+  facilityType: FacilityType
+): string[] | null {
+  const name = requirementName.toLowerCase();
+
+  if (facilityType === 'childcare_center') {
+    if (name.includes('new director orientation') || name.includes('director educational')) {
+      return ['Center Director'];
+    }
+    if (name.includes('sick care director') && name.includes('training')) {
+      return ['Sick Care Director'];
+    }
+    if (name.includes('lifeguard')) {
+      return ['Lifeguard / Water Safety'];
+    }
+    if (
+      name.includes('driver') &&
+      (name.includes('license') || name.includes('safety') || name.includes('cpr'))
+    ) {
+      return ['Driver / Transportation Staff'];
+    }
+    if (name.includes('licensed practical nurse') || (name.includes('lpn') && name.includes('board'))) {
+      return ['Licensed Practical Nurse (LPN) - Childcare'];
+    }
+    if (name.includes('registered nurse') && name.includes('board')) {
+      return ['Registered Nurse (RN) - Childcare'];
+    }
+  }
+
+  if (facilityType === 'nursing_home') {
+    if (name.includes('medical director')) {
+      return ['Medical Director'];
+    }
+    if (name.includes('pharmacist') || name.includes('pharmacy')) {
+      return ['Consulting Pharmacist'];
+    }
+    if (name.includes('dietitian') && !name.includes('consultation')) {
+      return ['Consulting Dietitian'];
+    }
+    if (name.includes('administrator license') || name.includes('administrator licensure')) {
+      return ['Nursing Home Administrator'];
+    }
+    if (name.includes('director of nursing') && name.includes('agreement')) {
+      return ['Director of Nursing (DON)'];
+    }
+    if (name.includes('licensed practical nurse') || (name.includes('lpn') && name.includes('board'))) {
+      return ['Licensed Practical Nurse (LPN)'];
+    }
+    if (name.includes('registered nurse') && name.includes('board')) {
+      return ['Registered Nurse (RN)', 'Director of Nursing (DON)'];
+    }
+    if (name.includes('cna')) {
+      return ['Certified Nursing Assistant (CNA)'];
+    }
+    if (name.includes('rehabilitation therapist')) {
+      return ['Rehabilitation Therapist (OT/PT/SLP)'];
+    }
+  }
+
   return null;
 }
 
@@ -172,6 +240,7 @@ export async function getFacilityComplianceData(facilityId: string) {
       capacity: status.capacity,
       activeEnrollment: status.activeEnrollment,
       enrollmentUpdatedAt: status.enrollmentUpdatedAt,
+      staffing: status.staffing,
     };
   } catch (error) {
     console.error('❌ Error in getFacilityComplianceData:', error);
@@ -183,6 +252,12 @@ export async function getFacilityComplianceData(facilityId: string) {
       capacity: null,
       activeEnrollment: null,
       enrollmentUpdatedAt: null,
+      staffing: computeStaffingAdequacy({
+        facilityType: 'childcare_center',
+        enrollment: null,
+        actualStaff: 0,
+        toggles: {},
+      }),
     };
   }
 }
@@ -876,6 +951,14 @@ export async function getRequirementsForRole(facilityId: string, roleName: strin
         rule.score_category ??
         (rule.is_personnel_requirement === true ? 'personnel' : 'facility');
       if (scoreCategory !== 'personnel') return false;
+
+      const requirementName = String(rule.requirement_name ?? '');
+      const exclusiveRoles = exclusiveRolesForRequirement(requirementName, facilityType);
+      if (exclusiveRoles !== null) {
+        return exclusiveRoles.some(
+          (r) => r.toLowerCase() === normalizedRoleName.toLowerCase()
+        );
+      }
 
       // Role-specific override: non-empty applicable_roles determines inclusion outright.
       const applicableRoles = normalizeApplicableRoles(rule.applicable_roles);

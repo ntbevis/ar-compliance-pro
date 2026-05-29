@@ -16,6 +16,7 @@ import {
 import type { FacilityType, FacilityScopeToggles } from '@/lib/types';
 import { FACILITY_TOGGLE_LABELS, TOGGLES_BY_FACILITY_TYPE } from '@/lib/types';
 import ComplianceDashboardClient from 'src/components/ComplianceDashboardClient';
+import StaffingAdequacyPanel from 'src/components/StaffingAdequacyPanel';
 import PersonnelVaultView from 'src/components/PersonnelVaultView';
 import DocumentCenterView from 'src/components/DocumentCenterView';
 import OperationalBlueprintsView from 'src/components/OperationalBlueprintsView';
@@ -1030,8 +1031,8 @@ export default function DashboardPage() {
               Baseline Active Enrollment
             </label>
             <p className="text-xs text-slate-500 mb-3">
-              Set your baseline enrolled headcount. The system uses this to calculate required minimum
-              staff and inform the personnel score.
+              Set your baseline enrolled headcount once — we use it to estimate your minimum required
+              staffing and flag potential coverage gaps. No daily attendance updates needed.
             </p>
             <div className="flex flex-wrap items-center gap-3">
               <input
@@ -1099,6 +1100,9 @@ export default function DashboardPage() {
                 </div>
               );
             })()}
+
+            {/* Baseline staffing-adequacy estimate (derived from enrollment, not daily attendance) */}
+            <StaffingAdequacyPanel staffing={compliance.staffing} />
           </div>
 
           <ComplianceDashboardClient

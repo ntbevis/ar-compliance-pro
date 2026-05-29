@@ -179,6 +179,34 @@ export interface IdentifiedGap {
 }
 
 /**
+ * Baseline staffing-adequacy assessment.
+ * Derived entirely from the facility's *baseline* enrollment/census and active
+ * personnel count — never from daily attendance — so directors never have to
+ * update a number every day. Treated as a planning guideline, not a hard score.
+ */
+export type StaffingStatus = 'adequate' | 'tight' | 'understaffed' | 'unknown';
+
+export interface StaffingAdequacy {
+  status: StaffingStatus;
+  /** Baseline enrollment (childcare) or resident census (nursing home). */
+  enrollment: number | null;
+  /** Active personnel currently on record for the facility. */
+  actualStaff: number;
+  /** Minimum staff implied by the regulatory ratio; null when enrollment unknown. */
+  requiredStaff: number | null;
+  /** max(0, requiredStaff - actualStaff). */
+  shortfall: number;
+  /** The "N per staff" threshold used for the estimate. */
+  perStaffThreshold: number;
+  /** 'children' for childcare, 'residents' for nursing homes. */
+  unitLabel: 'children' | 'residents';
+  /** Human-readable description of the ratio basis. */
+  basisLabel: string;
+  /** Honest caveat shown beneath the panel. */
+  note: string;
+}
+
+/**
  * Aggregated payload returned to the dashboard.
  */
 export interface RegulatoryStatus {
@@ -189,4 +217,5 @@ export interface RegulatoryStatus {
   capacity: number | null;
   activeEnrollment: number | null;
   enrollmentUpdatedAt: string | null;
+  staffing: StaffingAdequacy;
 }

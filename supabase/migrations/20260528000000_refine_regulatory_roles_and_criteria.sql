@@ -168,8 +168,11 @@ WHERE facility_type = 'childcare_center'
     sub_classification = 'all_staff'
     OR requirement_name ILIKE '%Background%'
     OR requirement_name ILIKE '%Maltreatment%'
-    OR requirement_name ILIKE '%Orientation%'
     OR requirement_name ILIKE '%8-Hour%'
+    OR (
+      requirement_name ILIKE '%Orientation%'
+      AND requirement_name NOT ILIKE '%Director%'
+    )
   )
   AND id NOT IN (
     '6ed6dbee-b858-4b09-baf1-6f0cbdbc5cef',
@@ -388,6 +391,14 @@ WHERE NOT EXISTS (
   WHERE facility_type = 'childcare_center'
     AND requirement_name = 'New Director Orientation (QRIS)'
 );
+
+-- Lock director QRIS orientation to Center Director (not caught by all-staff orientation bulk update)
+UPDATE compliance_criteria
+SET applicable_roles = ARRAY['Center Director'],
+    score_category = 'personnel',
+    sub_classification = NULL
+WHERE facility_type = 'childcare_center'
+  AND requirement_name = 'New Director Orientation (QRIS)';
 
 INSERT INTO compliance_criteria (
   facility_type, requirement_name, required_document_type,

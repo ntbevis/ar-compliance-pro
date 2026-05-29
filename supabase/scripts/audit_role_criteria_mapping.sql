@@ -148,7 +148,36 @@ WHERE c.score_category = 'personnel'
   AND c.requirement_name ILIKE '%Therapy Board%'
   AND (r ILIKE '%Nurse%' OR r ILIKE '%LPN%' OR r ILIKE '%(RN)%');
 
--- 12) Personnel rules that should be facility-scored but still have roles
+-- 12) Director-only requirements on non-director roles (e.g. New Director Orientation)
+SELECT 'DIRECTOR_ONLY_LEAK' AS issue_type,
+       c.id,
+       c.requirement_name,
+       c.facility_type,
+       r AS wrong_role
+FROM compliance_criteria c,
+     unnest(c.applicable_roles) AS r
+WHERE c.score_category = 'personnel'
+  AND c.facility_type = 'childcare_center'
+  AND (
+    c.requirement_name ILIKE '%New Director Orientation%'
+    OR c.requirement_name ILIKE '%Director Educational%'
+  )
+  AND r NOT ILIKE '%Center Director%';
+
+-- 13) Sick care director training on non-sick-care roles
+SELECT 'SICK_CARE_DIRECTOR_LEAK' AS issue_type,
+       c.id,
+       c.requirement_name,
+       c.facility_type,
+       r AS wrong_role
+FROM compliance_criteria c,
+     unnest(c.applicable_roles) AS r
+WHERE c.score_category = 'personnel'
+  AND c.requirement_name ILIKE '%Sick Care Director%'
+  AND c.requirement_name ILIKE '%Training%'
+  AND r NOT ILIKE '%Sick Care Director%';
+
+-- 14) Personnel rules that should be facility-scored but still have roles
 SELECT 'FACILITY_WITH_ROLES' AS issue_type,
        c.id,
        c.requirement_name,

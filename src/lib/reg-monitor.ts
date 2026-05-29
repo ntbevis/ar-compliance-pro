@@ -11,6 +11,7 @@ import type {
   ScoreCategory,
 } from './types';
 import { FACILITY_TOGGLE_KEYS } from './types';
+import { computeStaffingAdequacy } from './staffing';
 
 /**
  * String normalization helper for resilient fuzzy matching against uploaded documents.
@@ -218,6 +219,12 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
       capacity: null,
       activeEnrollment: null,
       enrollmentUpdatedAt: null,
+      staffing: computeStaffingAdequacy({
+        facilityType: 'childcare_center',
+        enrollment: null,
+        actualStaff: 0,
+        toggles: {},
+      }),
     };
   }
 
@@ -357,6 +364,13 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
     .eq('facility_id', facilityId)
     .eq('status', 'active');
 
+  const staffing = computeStaffingAdequacy({
+    facilityType: facilityProfile.facility_type,
+    enrollment: facilityProfile.active_enrollment ?? null,
+    actualStaff: personnelCount ?? 0,
+    toggles: facilityProfile,
+  });
+
   return {
     facilityReadinessScore,
     personnelReadinessScore,
@@ -365,5 +379,6 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
     capacity: facilityProfile.capacity ?? null,
     activeEnrollment: facilityProfile.active_enrollment ?? null,
     enrollmentUpdatedAt: facilityProfile.enrollment_updated_at ?? null,
+    staffing,
   };
 }

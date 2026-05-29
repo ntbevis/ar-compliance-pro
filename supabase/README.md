@@ -9,6 +9,7 @@ Apply in timestamp order via **Supabase Dashboard → SQL Editor** (postgres rol
 | `20260526000000_add_onboarding_completed_to_profiles.sql` | Profiles onboarding flag (if not already applied) |
 | `20260528000000_refine_regulatory_roles_and_criteria.sql` | Arkansas roles + `compliance_criteria` role mappings (`text[]`) |
 | `20260528200000_audit_fix_role_criteria_scoping.sql` | License/therapy/driver scoping fixes (includes LPN/RN split) |
+| `20260528300000_fix_director_orientation_scoping.sql` | Director QRIS orientation vs all-staff orientation (§302.5 vs §306) |
 
 All scripts are **idempotent** — safe to re-run.
 

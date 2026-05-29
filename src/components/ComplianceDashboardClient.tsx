@@ -13,6 +13,7 @@ import {
   getSecureDocumentUrl,
 } from 'src/app/actions/compliance';
 import { verifyDocumentWithAI } from 'src/app/actions/ai-verify';
+import ComplianceScoreWheel from 'src/components/ComplianceScoreWheel';
 import type { DocumentComplianceStatus, IdentifiedGap } from '@/lib/types';
 
 interface DashboardProps {
@@ -25,44 +26,6 @@ interface DashboardProps {
 type DashboardGap = IdentifiedGap;
 
 type ChecklistTab = 'facility' | 'personnel';
-
-// ── Score Dial ──────────────────────────────────────────────────────────────
-
-function ScoreDial({
-  label,
-  emoji,
-  score,
-  description,
-}: {
-  label: string;
-  emoji: string;
-  score: number;
-  description: string;
-}) {
-  const tone =
-    score >= 80
-      ? { border: 'border-emerald-500', text: 'text-emerald-600', bg: 'bg-emerald-50' }
-      : score >= 50
-      ? { border: 'border-amber-500', text: 'text-amber-600', bg: 'bg-amber-50' }
-      : { border: 'border-rose-500', text: 'text-rose-600', bg: 'bg-rose-50' };
-
-  return (
-    <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col items-center justify-center text-center">
-      <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">
-        <span className="mr-1.5" aria-hidden>
-          {emoji}
-        </span>
-        {label}
-      </h3>
-      <div
-        className={`w-32 h-32 rounded-full border-8 flex items-center justify-center text-3xl font-black ${tone.border} ${tone.text} ${tone.bg}`}
-      >
-        {score}%
-      </div>
-      <p className="text-xs text-slate-500 mt-3 max-w-[14rem]">{description}</p>
-    </div>
-  );
-}
 
 // ── Compliance Status Badge ──────────────────────────────────────────────────
 
@@ -890,16 +853,18 @@ export default function ComplianceDashboardClient({
 
       {/* Twin Dials */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <ScoreDial
+        <ComplianceScoreWheel
           label="Facility Operations Score"
           emoji="🏢"
           score={scoreFacility}
+          gaps={facilityGaps}
           description="Building, food service, transportation, water and structural compliance."
         />
-        <ScoreDial
+        <ComplianceScoreWheel
           label="Personnel & Licensing Upkeep"
           emoji="👥"
           score={scorePersonnel}
+          gaps={personnelGaps}
           description="Staff credentials, background checks, role-specific certifications."
         />
       </div>
