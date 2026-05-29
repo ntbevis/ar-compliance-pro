@@ -13,7 +13,7 @@ import {
   addFacility,
   archiveFacility,
 } from 'src/app/actions/compliance';
-import type { FacilityType, FacilityScopeToggles } from '@/lib/types';
+import type { FacilityType, FacilityScopeToggles, StaffingAdequacy } from '@/lib/types';
 import { FACILITY_TOGGLE_LABELS, TOGGLES_BY_FACILITY_TYPE } from '@/lib/types';
 import ComplianceDashboardClient from 'src/components/ComplianceDashboardClient';
 import StaffingAdequacyPanel from 'src/components/StaffingAdequacyPanel';
@@ -49,6 +49,7 @@ interface ComplianceData {
   capacity: number | null;
   activeEnrollment: number | null;
   enrollmentUpdatedAt: string | null;
+  staffing: StaffingAdequacy;
 }
 
 interface AuditLogRow {
