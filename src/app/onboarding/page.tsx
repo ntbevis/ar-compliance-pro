@@ -35,6 +35,7 @@ const EMPTY_TOGGLES: FacilityScopeToggles = {
   clinical: false,
   private_water: false,
   memory_care: false,
+  rehabilitation: false,
 };
 
 interface RequirementPreview {

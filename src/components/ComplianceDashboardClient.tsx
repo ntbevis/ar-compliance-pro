@@ -686,6 +686,18 @@ export default function ComplianceDashboardClient({
                 {String(gap.frequency).replace(/_/g, ' ').toUpperCase()}
               </span>
             )}
+            {gap.coverage && (
+              <span
+                className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                  gap.coverage.covered >= gap.coverage.total
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-amber-100 text-amber-700'
+                }`}
+                title="Active employees in an applicable role who currently hold this credential"
+              >
+                👥 {gap.coverage.covered}/{gap.coverage.total} STAFF
+              </span>
+            )}
           </div>
           <p className="text-[11px] font-mono text-slate-400">
             Requirement Key: {gap.typeKey}

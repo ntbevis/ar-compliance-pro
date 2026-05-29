@@ -3,110 +3,18 @@
 
 import { createAdminClient } from 'src/app/utils/supabase/admin';
 import { createClient } from 'src/app/utils/supabase/server';
-import { getRegulatoryStatus, ruleAppliesToFacility } from '@/lib/reg-monitor';
+import {
+  getRegulatoryStatus,
+  ruleAppliesToFacility,
+  UNIVERSAL_BASELINE_TAGS,
+  personnelRuleMatchesRole,
+} from '@/lib/reg-monitor';
 import { computeStaffingAdequacy } from '@/lib/staffing';
 import { createHash } from 'crypto';
 import { headers } from 'next/headers';
 import { revalidatePath, unstable_noStore as noStore } from 'next/cache';
 import type { ComplianceRule, Facility, FacilityScopeToggles, FacilityType, IdentifiedGap } from '@/lib/types';
 import { FACILITY_TOGGLE_KEYS } from '@/lib/types';
-import { UNIVERSAL_BASELINE_TAGS } from '@/lib/reg-monitor';
-
-/** Normalize applicable_roles from Supabase (text[] or legacy string forms). */
-function normalizeApplicableRoles(raw: unknown): string[] | null {
-  if (raw == null) return null;
-  if (Array.isArray(raw)) {
-    const roles = raw.filter((r): r is string => typeof r === 'string' && r.trim().length > 0);
-    return roles.length > 0 ? roles : null;
-  }
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    if (!trimmed || trimmed === '{}' || trimmed === '[]') return null;
-    try {
-      const parsed = JSON.parse(trimmed) as unknown;
-      if (Array.isArray(parsed)) {
-        const roles = parsed.filter((r): r is string => typeof r === 'string' && r.trim().length > 0);
-        return roles.length > 0 ? roles : null;
-      }
-    } catch {
-      // PostgreSQL text[] literal: {Role A,Role B}
-      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-        const inner = trimmed.slice(1, -1);
-        if (!inner) return null;
-        const roles = inner.split(',').map((s) => s.trim().replace(/^"|"$/g, '')).filter(Boolean);
-        return roles.length > 0 ? roles : null;
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * Title-based role exclusivity (backstop when applicable_roles in DB is too broad).
- * Returns allowed role_name values, or null if the title is not exclusive.
- */
-function exclusiveRolesForRequirement(
-  requirementName: string,
-  facilityType: FacilityType
-): string[] | null {
-  const name = requirementName.toLowerCase();
-
-  if (facilityType === 'childcare_center') {
-    if (name.includes('new director orientation') || name.includes('director educational')) {
-      return ['Center Director'];
-    }
-    if (name.includes('sick care director') && name.includes('training')) {
-      return ['Sick Care Director'];
-    }
-    if (name.includes('lifeguard')) {
-      return ['Lifeguard / Water Safety'];
-    }
-    if (
-      name.includes('driver') &&
-      (name.includes('license') || name.includes('safety') || name.includes('cpr'))
-    ) {
-      return ['Driver / Transportation Staff'];
-    }
-    if (name.includes('licensed practical nurse') || (name.includes('lpn') && name.includes('board'))) {
-      return ['Licensed Practical Nurse (LPN) - Childcare'];
-    }
-    if (name.includes('registered nurse') && name.includes('board')) {
-      return ['Registered Nurse (RN) - Childcare'];
-    }
-  }
-
-  if (facilityType === 'nursing_home') {
-    if (name.includes('medical director')) {
-      return ['Medical Director'];
-    }
-    if (name.includes('pharmacist') || name.includes('pharmacy')) {
-      return ['Consulting Pharmacist'];
-    }
-    if (name.includes('dietitian') && !name.includes('consultation')) {
-      return ['Consulting Dietitian'];
-    }
-    if (name.includes('administrator license') || name.includes('administrator licensure')) {
-      return ['Nursing Home Administrator'];
-    }
-    if (name.includes('director of nursing') && name.includes('agreement')) {
-      return ['Director of Nursing (DON)'];
-    }
-    if (name.includes('licensed practical nurse') || (name.includes('lpn') && name.includes('board'))) {
-      return ['Licensed Practical Nurse (LPN)'];
-    }
-    if (name.includes('registered nurse') && name.includes('board')) {
-      return ['Registered Nurse (RN)', 'Director of Nursing (DON)'];
-    }
-    if (name.includes('cna')) {
-      return ['Certified Nursing Assistant (CNA)'];
-    }
-    if (name.includes('rehabilitation therapist')) {
-      return ['Rehabilitation Therapist (OT/PT/SLP)'];
-    }
-  }
-
-  return null;
-}
 
 // =============================================================================
 // AUTH HELPERS
@@ -898,6 +806,9 @@ export async function getAvailableRoles(facilityId: string) {
         return true;
       }
       const subKey = role.sub_classification as string;
+      // Baseline tags (e.g. 'all_staff', 'education') are not facility toggle
+      // columns — they always apply, mirroring ruleAppliesToFacility.
+      if (UNIVERSAL_BASELINE_TAGS.has(subKey)) return true;
       return facilityRow[subKey] === true;
     });
 
@@ -945,39 +856,20 @@ export async function getRequirementsForRole(facilityId: string, roleName: strin
     const { data: rules } = await supabase.from('compliance_criteria').select('*');
 
     const applicable = (rules ?? []).filter((rule: Record<string, unknown>) => {
-      if (rule.facility_type !== facilityType) return false;
+      // Facility-scope gate: same toggle/sub_classification logic the twin-score uses.
+      // This closes a prior leak where a non-empty applicable_roles list bypassed the
+      // facility toggle gate (e.g. surfacing memory-care training at a non-ASCU home).
+      if (!ruleAppliesToFacility(rule as unknown as ComplianceRule, facilityRow as unknown as Facility)) {
+        return false;
+      }
 
       const scoreCategory =
         rule.score_category ??
         (rule.is_personnel_requirement === true ? 'personnel' : 'facility');
       if (scoreCategory !== 'personnel') return false;
 
-      const requirementName = String(rule.requirement_name ?? '');
-      const exclusiveRoles = exclusiveRolesForRequirement(requirementName, facilityType);
-      if (exclusiveRoles !== null) {
-        return exclusiveRoles.some(
-          (r) => r.toLowerCase() === normalizedRoleName.toLowerCase()
-        );
-      }
-
-      // Role-specific override: non-empty applicable_roles determines inclusion outright.
-      const applicableRoles = normalizeApplicableRoles(rule.applicable_roles);
-      if (applicableRoles !== null) {
-        return applicableRoles.some((r) => r.toLowerCase() === normalizedRoleName.toLowerCase());
-      }
-
-      const subClass = rule.sub_classification;
-      const subKey =
-        subClass === null || subClass === undefined || String(subClass) === 'null'
-          ? null
-          : String(subClass);
-      if (subKey !== null && !UNIVERSAL_BASELINE_TAGS.has(subKey)) {
-        if (facilityRow[subKey] !== true) return false;
-      }
-
-      const ruleRole = (rule.applies_to_role as string | null | undefined) ?? null;
-      if (ruleRole === null) return true;
-      return ruleRole.toLowerCase() === normalizedRoleName.toLowerCase();
+      // Role gate: shared resolver — keeps the Vault and the score perfectly in sync.
+      return personnelRuleMatchesRole(rule, normalizedRoleName, facilityType);
     });
 
     return {
@@ -1363,7 +1255,11 @@ export async function getAllFacilitiesOverview() {
             facilityReadinessScore: compliance.facilityReadinessScore,
             personnelReadinessScore: compliance.personnelReadinessScore,
             totalPersonnel: activeStaffCount,
-            gapsCount: compliance.identifiedGaps.length,
+            // "Open Gaps" = items still needing attention (not satisfied), not the
+            // total tracked-requirement count.
+            gapsCount: compliance.identifiedGaps.filter(
+              (g) => !g.completed && g.compliance_status !== 'satisfied'
+            ).length,
             active_staff_count: activeStaffCount,
             capacity_utilization,
             gross_ratio,

@@ -59,6 +59,7 @@ export default function FacilitySettingsView({ facilityId }: Props) {
             clinical: fac.clinical,
             private_water: fac.private_water,
             memory_care: fac.memory_care,
+            rehabilitation: fac.rehabilitation,
           });
         } else {
           setFacility(null);

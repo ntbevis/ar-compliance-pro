@@ -83,6 +83,135 @@ export function ruleAppliesToFacility(
   return activated.has(rule.sub_classification as string);
 }
 
+// =============================================================================
+// PERSONNEL ROLE MATCHING (shared by the Personnel Vault and the twin-score)
+// =============================================================================
+
+/** Normalize applicable_roles from Supabase (text[] or legacy string forms). */
+export function normalizeApplicableRoles(raw: unknown): string[] | null {
+  if (raw == null) return null;
+  if (Array.isArray(raw)) {
+    const roles = raw.filter((r): r is string => typeof r === 'string' && r.trim().length > 0);
+    return roles.length > 0 ? roles : null;
+  }
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === '{}' || trimmed === '[]') return null;
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) {
+        const roles = parsed.filter((r): r is string => typeof r === 'string' && r.trim().length > 0);
+        return roles.length > 0 ? roles : null;
+      }
+    } catch {
+      // PostgreSQL text[] literal: {Role A,Role B}
+      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        const inner = trimmed.slice(1, -1);
+        if (!inner) return null;
+        const roles = inner.split(',').map((s) => s.trim().replace(/^"|"$/g, '')).filter(Boolean);
+        return roles.length > 0 ? roles : null;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Title-based role exclusivity (backstop when applicable_roles in DB is too broad).
+ * Returns allowed role_name values, or null if the title is not exclusive.
+ */
+export function exclusiveRolesForRequirement(
+  requirementName: string,
+  facilityType: ComplianceRule['facility_type']
+): string[] | null {
+  const name = requirementName.toLowerCase();
+
+  if (facilityType === 'childcare_center') {
+    if (name.includes('new director orientation') || name.includes('director educational')) {
+      return ['Center Director'];
+    }
+    if (name.includes('sick care director') && name.includes('training')) {
+      return ['Sick Care Director'];
+    }
+    if (name.includes('lifeguard')) {
+      return ['Lifeguard / Water Safety'];
+    }
+    if (
+      name.includes('driver') &&
+      (name.includes('license') || name.includes('safety') || name.includes('cpr'))
+    ) {
+      return ['Driver / Transportation Staff'];
+    }
+    if (name.includes('licensed practical nurse') || (name.includes('lpn') && name.includes('board'))) {
+      return ['Licensed Practical Nurse (LPN) - Childcare'];
+    }
+    if (name.includes('registered nurse') && name.includes('board')) {
+      return ['Registered Nurse (RN) - Childcare'];
+    }
+  }
+
+  if (facilityType === 'nursing_home') {
+    if (name.includes('medical director')) {
+      return ['Medical Director'];
+    }
+    if (name.includes('pharmacist') || name.includes('pharmacy')) {
+      return ['Consulting Pharmacist'];
+    }
+    if (name.includes('dietitian') && !name.includes('consultation')) {
+      return ['Consulting Dietitian'];
+    }
+    if (name.includes('administrator license') || name.includes('administrator licensure')) {
+      return ['Nursing Home Administrator'];
+    }
+    if (name.includes('director of nursing') && name.includes('agreement')) {
+      return ['Director of Nursing (DON)'];
+    }
+    if (name.includes('licensed practical nurse') || (name.includes('lpn') && name.includes('board'))) {
+      return ['Licensed Practical Nurse (LPN)'];
+    }
+    if (name.includes('registered nurse') && name.includes('board')) {
+      return ['Registered Nurse (RN)', 'Director of Nursing (DON)'];
+    }
+    if (name.includes('cna')) {
+      return ['Certified Nursing Assistant (CNA)'];
+    }
+    if (name.includes('rehabilitation therapist')) {
+      return ['Rehabilitation Therapist (OT/PT/SLP)'];
+    }
+  }
+
+  return null;
+}
+
+/**
+ * The ROLE dimension of personnel applicability. Does a personnel rule apply to a
+ * specific role title? (Facility toggle/scope gating is handled separately by
+ * ruleAppliesToFacility — callers must combine both for full correctness.)
+ */
+export function personnelRuleMatchesRole(
+  rule: { requirement_name?: unknown; applicable_roles?: unknown; applies_to_role?: unknown },
+  roleName: string,
+  facilityType: ComplianceRule['facility_type']
+): boolean {
+  const normalizedRoleName = roleName.trim().toLowerCase();
+  if (!normalizedRoleName) return false;
+
+  const requirementName = String(rule.requirement_name ?? '');
+  const exclusiveRoles = exclusiveRolesForRequirement(requirementName, facilityType);
+  if (exclusiveRoles !== null) {
+    return exclusiveRoles.some((r) => r.toLowerCase() === normalizedRoleName);
+  }
+
+  const applicableRoles = normalizeApplicableRoles(rule.applicable_roles);
+  if (applicableRoles !== null) {
+    return applicableRoles.some((r) => r.toLowerCase() === normalizedRoleName);
+  }
+
+  const ruleRole = (rule.applies_to_role as string | null | undefined) ?? null;
+  if (ruleRole === null) return true;
+  return ruleRole.toLowerCase() === normalizedRoleName;
+}
+
 /**
  * Resolve the score category for a rule, gracefully handling legacy `is_personnel_requirement`
  * rows that have not yet been backfilled with `score_category`.
@@ -302,45 +431,127 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
   // A rule is "satisfied enough" for score purposes if the doc exists (even if expired/expiring)
   const satisfiedRuleIds = new Set(satisfiedRuleMap.keys());
 
-  // 5. THE TWIN-SCORE MATH: separate buckets for facility vs. personnel rules.
+  // 5. THE FACILITY SCORE: facility-category scored rules, satisfied by any facility doc.
   //    Daily-frequency rules are operational expectations, not verifiable upload events —
-  //    they are intentionally excluded from both score buckets.
+  //    they are intentionally excluded from the score buckets.
   const facilityScoredRules = applicableRules.filter(
     (r) => r.is_scored && r.score_category === 'facility' && r.frequency !== 'daily'
   );
-  const personnelScoredRules = applicableRules.filter(
-    (r) => r.is_scored && r.score_category === 'personnel' && r.frequency !== 'daily'
-  );
-
-  // Pending-review docs do not grant compliance points — they are awaiting human approval.
   const facilityVerified = facilityScoredRules.filter(
     (r) => satisfiedRuleIds.has(r.id) && satisfiedRuleMap.get(r.id)?.status !== 'pending_review'
   ).length;
-  const personnelVerified = personnelScoredRules.filter(
-    (r) => satisfiedRuleIds.has(r.id) && satisfiedRuleMap.get(r.id)?.status !== 'pending_review'
-  ).length;
-
   const facilityReadinessScore =
     facilityScoredRules.length > 0
       ? Math.round((facilityVerified / facilityScoredRules.length) * 100)
       : 100;
 
+  // 6. THE PERSONNEL SCORE — roster-aware.
+  //    Load the active roster. A personnel rule is only "in scope" if at least one
+  //    active employee holds a role it applies to (so a facility is never dinged for
+  //    a pharmacist/dietitian it does not employ). The rule is satisfied only when
+  //    EVERY applicable employee has a current document for it, matched by personnel_id.
+  const { data: rosterRows } = await supabase
+    .from('personnel')
+    .select('id, role')
+    .eq('facility_id', facilityId)
+    .eq('status', 'active');
+  const activeStaff = (rosterRows ?? []) as Array<{ id: string; role: string }>;
+  const personnelCount = activeStaff.length;
+
+  // Personnel candidate rules straight from the raw rows (so applicable_roles is available),
+  // gated by facility scope + scored + non-daily.
+  const personnelCandidateRules = (allRules || []).filter((rule: Record<string, unknown>) => {
+    if (!ruleAppliesToFacility(rule as unknown as ComplianceRule, facilityProfile)) return false;
+    if (resolveScoreCategory(rule) !== 'personnel') return false;
+    if (!resolveIsScored(rule)) return false;
+    return String(rule.frequency ?? '') !== 'daily';
+  });
+
+  /** Resolve a single employee's document status for a personnel rule (null === missing). */
+  const personnelDocStatus = (
+    requiredDocType: string,
+    frequency: ComplianceFrequency,
+    employeeId: string
+  ): DocumentComplianceStatus | null => {
+    const doc = docs.find((d) => {
+      const meta = d.metadata as Record<string, unknown> | null;
+      return (
+        meta &&
+        meta.personnel_id === employeeId &&
+        d.document_type &&
+        tokensMatch(requiredDocType, d.document_type)
+      );
+    });
+    if (!doc) return null;
+    if (doc.status === 'pending') return 'pending_review';
+    return calcComplianceStatus(doc.created_at, frequency, doc.metadata);
+  };
+
+  const STATUS_PRIORITY: Record<DocumentComplianceStatus, number> = {
+    missing: 4,
+    expired: 3,
+    expiring_soon: 2,
+    pending_review: 1,
+    satisfied: 0,
+  };
+
+  const personnelGaps: IdentifiedGap[] = [];
+  let personnelInScope = 0;
+  let personnelSatisfied = 0;
+
+  for (const rule of personnelCandidateRules) {
+    const facilityType = facilityProfile.facility_type;
+    const requirementName = (rule.requirement_name as string) ?? '';
+    const requiredDocType = (rule.required_document_type as string) ?? '';
+    const frequency = (rule.frequency as ComplianceFrequency) ?? 'annual';
+
+    const applicableStaff = activeStaff.filter((emp) =>
+      personnelRuleMatchesRole(rule, emp.role, facilityType)
+    );
+    // Roster-aware: a rule with no employee in a matching role is simply not in scope.
+    if (applicableStaff.length === 0) continue;
+
+    personnelInScope += 1;
+
+    let coveredCount = 0;
+    let worst: DocumentComplianceStatus = 'satisfied';
+    for (const emp of applicableStaff) {
+      const status = personnelDocStatus(requiredDocType, frequency, emp.id) ?? 'missing';
+      // Counts toward satisfaction if a non-pending document exists (expired still counts,
+      // mirroring the facility-score convention so an expired doc never silently zeroes out).
+      if (status !== 'missing' && status !== 'pending_review') coveredCount += 1;
+      if (STATUS_PRIORITY[status] > STATUS_PRIORITY[worst]) worst = status;
+    }
+
+    const fullyCovered = coveredCount === applicableStaff.length;
+    if (fullyCovered) personnelSatisfied += 1;
+
+    personnelGaps.push({
+      id: rule.id as string,
+      name: requirementName,
+      typeKey: requiredDocType,
+      severity: ((rule.severity as IdentifiedGap['severity']) ?? 'standard'),
+      frequency,
+      is_scored: true,
+      score_category: 'personnel',
+      compliance_status: worst,
+      coverage: { covered: coveredCount, total: applicableStaff.length },
+    });
+  }
+
   const personnelReadinessScore =
-    personnelScoredRules.length > 0
-      ? Math.round((personnelVerified / personnelScoredRules.length) * 100)
-      : 100;
+    personnelInScope > 0 ? Math.round((personnelSatisfied / personnelInScope) * 100) : 100;
 
   console.log(
-    `📊 Twin-Score → Facility: ${facilityVerified}/${facilityScoredRules.length} = ${facilityReadinessScore}% | Personnel: ${personnelVerified}/${personnelScoredRules.length} = ${personnelReadinessScore}%`
+    `📊 Twin-Score → Facility: ${facilityVerified}/${facilityScoredRules.length} = ${facilityReadinessScore}% | Personnel: ${personnelSatisfied}/${personnelInScope} (roster of ${personnelCount}) = ${personnelReadinessScore}%`
   );
 
-  // 6. Build the gap list for the UI.
-  //    Daily-frequency rules are surfaced only in the Operational Blueprints reference manual,
-  //    never as compliance gaps — so they are excluded here.
-  //    Rules with an existing (possibly expired) document are still included so the user
-  //    can see their expiration status and replace the document if needed.
-  const identifiedGaps: IdentifiedGap[] = applicableRules
-    .filter((rule) => rule.frequency !== 'daily')
+  // 7. Build the gap list for the UI.
+  //    Facility + informational gaps keep the existing facility-document matching.
+  //    Personnel gaps are the roster-aware entries computed above.
+  //    Daily-frequency rules are surfaced only in the Operational Blueprints manual.
+  const facilityAndInfoGaps: IdentifiedGap[] = applicableRules
+    .filter((rule) => rule.frequency !== 'daily' && rule.score_category !== 'personnel')
     .map((rule) => {
       const satisfaction = satisfiedRuleMap.get(rule.id);
       return {
@@ -357,17 +568,12 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
       };
     });
 
-  // 7. Active staff count for the personnel headcount widget.
-  const { count: personnelCount } = await supabase
-    .from('personnel')
-    .select('*', { count: 'exact', head: true })
-    .eq('facility_id', facilityId)
-    .eq('status', 'active');
+  const identifiedGaps: IdentifiedGap[] = [...facilityAndInfoGaps, ...personnelGaps];
 
   const staffing = computeStaffingAdequacy({
     facilityType: facilityProfile.facility_type,
     enrollment: facilityProfile.active_enrollment ?? null,
-    actualStaff: personnelCount ?? 0,
+    actualStaff: personnelCount,
     toggles: facilityProfile,
   });
 
@@ -375,7 +581,7 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
     facilityReadinessScore,
     personnelReadinessScore,
     identifiedGaps,
-    staffCount: personnelCount ?? 0,
+    staffCount: personnelCount,
     capacity: facilityProfile.capacity ?? null,
     activeEnrollment: facilityProfile.active_enrollment ?? null,
     enrollmentUpdatedAt: facilityProfile.enrollment_updated_at ?? null,

@@ -27,6 +27,7 @@ export interface FacilityScopeToggles {
   // --- Nursing Home toggles ---
   private_water: boolean;
   memory_care: boolean;
+  rehabilitation: boolean;
 }
 
 export const FACILITY_TOGGLE_KEYS: ReadonlyArray<keyof FacilityScopeToggles> = [
@@ -42,6 +43,7 @@ export const FACILITY_TOGGLE_KEYS: ReadonlyArray<keyof FacilityScopeToggles> = [
   'clinical',
   'private_water',
   'memory_care',
+  'rehabilitation',
 ] as const;
 
 export type FacilityToggleKey = keyof FacilityScopeToggles;
@@ -62,6 +64,7 @@ export const FACILITY_TOGGLE_LABELS: Record<FacilityToggleKey, string> = {
   clinical: 'EIDT / Clinical Services',
   private_water: 'Private Water Source',
   memory_care: "Alzheimer's / Memory Care Unit",
+  rehabilitation: 'Rehabilitation / Therapy Services',
 };
 
 /**
@@ -80,7 +83,7 @@ export const TOGGLES_BY_FACILITY_TYPE: Record<FacilityType, ReadonlyArray<Facili
     'night_care',
     'clinical',
   ],
-  nursing_home: ['private_water', 'memory_care'],
+  nursing_home: ['private_water', 'memory_care', 'rehabilitation'],
 };
 
 /**
@@ -176,6 +179,11 @@ export interface IdentifiedGap {
   document_created_at?: string;
   completed?: boolean;
   completionType?: 'document' | 'attestation' | 'n/a';
+  /**
+   * For roster-aware personnel rules: how many of the active employees the rule
+   * applies to currently hold a satisfying document. Absent for facility rules.
+   */
+  coverage?: { covered: number; total: number };
 }
 
 /**
