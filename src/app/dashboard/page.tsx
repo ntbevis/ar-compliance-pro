@@ -19,11 +19,13 @@ import ComplianceDashboardClient from 'src/components/ComplianceDashboardClient'
 import StaffingAdequacyPanel from 'src/components/StaffingAdequacyPanel';
 import PersonnelVaultView from 'src/components/PersonnelVaultView';
 import DocumentCenterView from 'src/components/DocumentCenterView';
+import RenewalsView from 'src/components/RenewalsView';
+import CorrectiveActionsView from 'src/components/CorrectiveActionsView';
 import OperationalBlueprintsView from 'src/components/OperationalBlueprintsView';
 import FacilitySettingsView from 'src/components/FacilitySettingsView';
 import TeamSettingsView from 'src/components/TeamSettingsView';
 import type { IdentifiedGap } from '@/lib/types';
-import { generateAuditReport } from '@/lib/pdf-generator';
+import { generateAuditReport, generateInspectionReadinessReport } from '@/lib/pdf-generator';
 
 interface FacilitySummary {
   id: string;
@@ -1019,6 +1021,8 @@ export default function DashboardPage() {
           {currentView === 'overview' && 'Executive Overview'}
           {currentView === 'personnel' && 'Personnel Vault'}
           {currentView === 'documents' && 'Document Center'}
+          {currentView === 'renewals' && 'Renewals & Alerts'}
+          {currentView === 'corrective_actions' && 'Action Plans'}
           {currentView === 'blueprints' && 'Operational Blueprints'}
           {currentView === 'settings' && 'Facility Settings'}
         </h1>
@@ -1026,6 +1030,38 @@ export default function DashboardPage() {
 
       {currentView === 'overview' && (
         <>
+          {/* Inspection readiness action bar */}
+          <div className="max-w-6xl mx-auto w-full flex justify-end -mt-4">
+            <button
+              onClick={async () => {
+                setGeneratingReport(true);
+                try {
+                  await generateInspectionReadinessReport(selectedFacilityId);
+                } catch (err) {
+                  console.error('Inspection readiness PDF failed:', err);
+                  toast.error('Failed to generate inspection readiness report. Please try again.');
+                } finally {
+                  setGeneratingReport(false);
+                }
+              }}
+              disabled={generatingReport}
+              className={`flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-sm border-2 transition-all shrink-0 ${
+                generatingReport
+                  ? 'border-slate-300 bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'border-emerald-300 bg-white text-emerald-700 hover:bg-emerald-50 hover:border-emerald-400 shadow-sm'
+              }`}
+            >
+              {generatingReport ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+                  Generating PDF…
+                </>
+              ) : (
+                <>🛡️ Inspection Readiness Report</>
+              )}
+            </button>
+          </div>
+
           {/* Enrollment widget */}
           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm max-w-6xl mx-auto">
             <label htmlFor="enrollment-input" className="block text-sm font-bold text-slate-800 mb-2">
@@ -1118,6 +1154,8 @@ export default function DashboardPage() {
 
       {currentView === 'personnel' && <PersonnelVaultView facilityId={selectedFacilityId} />}
       {currentView === 'documents' && <DocumentCenterView facilityId={selectedFacilityId} />}
+      {currentView === 'renewals' && <RenewalsView facilityId={selectedFacilityId} />}
+      {currentView === 'corrective_actions' && <CorrectiveActionsView facilityId={selectedFacilityId} />}
       {currentView === 'blueprints' && <OperationalBlueprintsView facilityId={selectedFacilityId} />}
       {currentView === 'settings' && <FacilitySettingsView facilityId={selectedFacilityId} />}
     </div>

@@ -6,6 +6,8 @@ export type ViewType =
   | 'overview'
   | 'personnel'
   | 'documents'
+  | 'renewals'
+  | 'corrective_actions'
   | 'blueprints'
   | 'settings'
   | 'audit_logs';

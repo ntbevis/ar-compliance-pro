@@ -29,7 +29,7 @@ function normalizeDocumentKey(input: string | null | undefined): string {
  * Fuzzy token matching helper. Returns true if a rule's slug overlaps with an uploaded
  * document's classified document_type.
  */
-function tokensMatch(ruleKey: string, docKey: string): boolean {
+export function tokensMatch(ruleKey: string, docKey: string): boolean {
   const normalizedRule = normalizeDocumentKey(ruleKey);
   const normalizedDoc = normalizeDocumentKey(docKey);
 
@@ -252,7 +252,7 @@ function safeParseDate(value: string | null | undefined): Date | null {
  *
  * Returns null for frequencies with no defined expiration (e.g. 'ongoing', 'one-time').
  */
-function calcExpirationDate(
+export function calcExpirationDate(
   createdAt: string,
   frequency: ComplianceFrequency,
   aiExpirationDate?: string | null

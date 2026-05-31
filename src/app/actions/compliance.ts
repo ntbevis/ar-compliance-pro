@@ -15,6 +15,7 @@ import { headers } from 'next/headers';
 import { revalidatePath, unstable_noStore as noStore } from 'next/cache';
 import type { ComplianceRule, Facility, FacilityScopeToggles, FacilityType, IdentifiedGap } from '@/lib/types';
 import { FACILITY_TOGGLE_KEYS } from '@/lib/types';
+import { computeRenewals, type RenewalItem } from '@/lib/renewals';
 
 // =============================================================================
 // AUTH HELPERS
@@ -71,7 +72,9 @@ type AuditActionType =
   | 'facility_profile_update'
   | 'facility_archived'
   | 'license_verified'
-  | 'license_self_reported';
+  | 'license_self_reported'
+  | 'corrective_action_created'
+  | 'corrective_action_updated';
 
 async function createAuditLog(params: {
   facilityId: string;
@@ -1078,6 +1081,72 @@ export async function getDocumentsData(facilityId: string) {
  *
  * Authorization: owner, admin, or the director specifically assigned to this facility.
  */
+/**
+ * Returns documents that are expired or expiring within `windowDays` for a
+ * facility, resolved through the same expiration logic as the scoring engine.
+ * Powers the in-app Renewals view and (later) the scheduled email-alert job.
+ */
+export async function getUpcomingRenewals(
+  facilityId: string,
+  windowDays = 60
+): Promise<RenewalItem[]> {
+  noStore();
+  try {
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    const { data: facility } = await supabase
+      .from('facilities')
+      .select(['id', 'org_id', 'facility_type', ...FACILITY_TOGGLE_KEYS].join(', '))
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    if (!facility) return [];
+
+    const facilityProfile = facility as unknown as Facility;
+
+    const [{ data: rawRules }, { data: rawDocs }, { data: roster }] = await Promise.all([
+      supabase.from('compliance_criteria').select('*'),
+      supabase
+        .from('facility_documents')
+        .select('id, name, document_type, created_at, metadata, status')
+        .eq('facility_id', facilityId)
+        .in('status', ['approved', 'pending']),
+      supabase.from('personnel').select('id, name').eq('facility_id', facilityId),
+    ]);
+
+    const rules: ComplianceRule[] = (rawRules ?? []).map((r: Record<string, unknown>) => ({
+      id: r.id as string,
+      facility_type: r.facility_type as ComplianceRule['facility_type'],
+      sub_classification: (r.sub_classification ?? null) as ComplianceRule['sub_classification'],
+      requirement_name: (r.requirement_name as string) ?? '',
+      required_document_type: (r.required_document_type as string) ?? '',
+      severity: (r.severity as ComplianceRule['severity']) ?? 'standard',
+      frequency: (r.frequency as ComplianceRule['frequency']) ?? 'annual',
+      is_scored: r.is_scored !== false,
+      score_category:
+        r.score_category === 'facility' || r.score_category === 'personnel'
+          ? (r.score_category as ComplianceRule['score_category'])
+          : null,
+    }));
+
+    const personnelNameById = new Map<string, string>(
+      (roster ?? []).map((p: { id: string; name: string | null }) => [p.id, p.name ?? 'Unknown'])
+    );
+
+    return computeRenewals({
+      facility: facilityProfile,
+      rules,
+      docs: (rawDocs ?? []) as Parameters<typeof computeRenewals>[0]['docs'],
+      personnelNameById,
+      windowDays,
+    });
+  } catch (error) {
+    console.error('❌ Error in getUpcomingRenewals:', error);
+    return [];
+  }
+}
+
 export async function getSecureDocumentUrl(
   documentId: string,
   facilityId: string
@@ -1990,6 +2059,176 @@ export async function recordSelfReportedLicense(
     return { success: true, expirationDate: normalizedExpiration, status: 'Self-Reported' };
   } catch (error) {
     console.error('❌ recordSelfReportedLicense error:', error);
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
+  }
+}
+
+// =============================================================================
+// CORRECTIVE ACTION PLANS (Plan of Correction workflow)
+// =============================================================================
+
+export type CorrectiveActionStatus = 'open' | 'in_progress' | 'resolved';
+
+export interface CorrectiveAction {
+  id: string;
+  facility_id: string;
+  title: string;
+  description: string | null;
+  related_requirement: string | null;
+  severity: 'critical' | 'standard';
+  status: CorrectiveActionStatus;
+  assigned_to: string | null;
+  due_date: string | null;
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+  resolution_note: string | null;
+}
+
+/** List corrective action plans for a facility (org-verified), newest first. */
+export async function getCorrectiveActions(facilityId: string): Promise<CorrectiveAction[]> {
+  noStore();
+  try {
+    const { orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    const { data: facility } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    if (!facility) return [];
+
+    const { data, error } = await supabase
+      .from('corrective_actions')
+      .select('*')
+      .eq('facility_id', facilityId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('❌ Error fetching corrective actions:', error);
+      return [];
+    }
+    return (data ?? []) as CorrectiveAction[];
+  } catch (error) {
+    console.error('❌ Exception in getCorrectiveActions:', error);
+    return [];
+  }
+}
+
+export async function createCorrectiveAction(params: {
+  facilityId: string;
+  title: string;
+  description?: string | null;
+  relatedRequirement?: string | null;
+  severity?: 'critical' | 'standard';
+  assignedTo?: string | null;
+  dueDate?: string | null;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  try {
+    const { userId, orgId } = await getAuthenticatedUserContext();
+
+    if (!params.title.trim()) {
+      return { success: false, error: 'A title is required for the action plan.' };
+    }
+
+    const supabase = createAdminClient();
+
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .eq('id', params.facilityId)
+      .eq('org_id', orgId)
+      .single();
+    if (facilityError || !facility) {
+      return { success: false, error: 'Unauthorized: Facility not found or does not belong to your organization' };
+    }
+
+    const { data: inserted, error: insertError } = await supabase
+      .from('corrective_actions')
+      .insert({
+        facility_id: params.facilityId,
+        title: params.title.trim(),
+        description: params.description?.trim() || null,
+        related_requirement: params.relatedRequirement?.trim() || null,
+        severity: params.severity === 'critical' ? 'critical' : 'standard',
+        status: 'open',
+        assigned_to: params.assignedTo?.trim() || null,
+        due_date: params.dueDate || null,
+        created_by: userId,
+      })
+      .select('id')
+      .single();
+
+    if (insertError || !inserted) throw insertError ?? new Error('Insert failed');
+
+    await createAuditLog({
+      facilityId: params.facilityId,
+      userId,
+      actionType: 'corrective_action_created',
+      metadata: {
+        corrective_action_id: inserted.id,
+        title: params.title.trim(),
+        severity: params.severity ?? 'standard',
+        related_requirement: params.relatedRequirement ?? null,
+      },
+    });
+
+    revalidatePath('/dashboard');
+    return { success: true, id: inserted.id as string };
+  } catch (error) {
+    console.error('❌ createCorrectiveAction error:', error);
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
+  }
+}
+
+export async function updateCorrectiveActionStatus(
+  id: string,
+  status: CorrectiveActionStatus,
+  resolutionNote?: string | null
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const { userId, orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    // Verify the action belongs to a facility in the caller's org.
+    const { data: row, error: rowError } = await supabase
+      .from('corrective_actions')
+      .select('id, facility_id, facilities!inner(org_id)')
+      .eq('id', id)
+      .single();
+
+    const facilityOrg = (row as unknown as { facilities?: { org_id?: string } } | null)?.facilities?.org_id;
+    if (rowError || !row || facilityOrg !== orgId) {
+      return { success: false, error: 'Unauthorized: Action plan not found or outside your organization' };
+    }
+
+    const { error: updateError } = await supabase
+      .from('corrective_actions')
+      .update({
+        status,
+        resolution_note: resolutionNote?.trim() || null,
+        resolved_at: status === 'resolved' ? new Date().toISOString() : null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id);
+
+    if (updateError) throw updateError;
+
+    await createAuditLog({
+      facilityId: (row as unknown as { facility_id: string }).facility_id,
+      userId,
+      actionType: 'corrective_action_updated',
+      metadata: { corrective_action_id: id, new_status: status },
+    });
+
+    revalidatePath('/dashboard');
+    return { success: true };
+  } catch (error) {
+    console.error('❌ updateCorrectiveActionStatus error:', error);
     const message = error instanceof Error ? error.message : 'Unknown error';
     return { success: false, error: message };
   }

@@ -8,7 +8,7 @@ import {
   getPersonnelData,
   getLatestOperationalAcknowledgment,
 } from 'src/app/actions/compliance';
-import type { IdentifiedGap } from './types';
+import type { IdentifiedGap, StaffingAdequacy } from './types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,11 +46,23 @@ function fmtLong(isoString: string | null | undefined): string {
 
 function statusLabel(status: IdentifiedGap['compliance_status']): string {
   switch (status) {
-    case 'satisfied':     return 'Satisfied';
-    case 'expiring_soon': return 'Expiring Soon';
-    case 'expired':       return 'Expired';
-    case 'missing':       return 'Missing';
-    default:              return 'Unknown';
+    case 'satisfied':      return 'Satisfied';
+    case 'expiring_soon':  return 'Expiring Soon';
+    case 'expired':        return 'Expired';
+    case 'missing':        return 'Missing';
+    case 'pending_review': return 'Pending Review';
+    default:               return 'Unknown';
+  }
+}
+
+/** The corrective action an inspector-prep checklist should drive for a given gap status. */
+function actionNeededLabel(status: IdentifiedGap['compliance_status']): string {
+  switch (status) {
+    case 'missing':        return 'Upload required document';
+    case 'expired':        return 'Renew — document expired';
+    case 'expiring_soon':  return 'Renew before expiration';
+    case 'pending_review': return 'Awaiting reviewer approval';
+    default:               return 'Verify on file';
   }
 }
 
@@ -461,4 +473,332 @@ export async function generateAuditReport(facilityId: string): Promise<void> {
 
   const safeName = facilityName.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_');
   doc.save(`${safeName}_Audit_Report_${fileDate}.pdf`);
+}
+
+// ===========================================================================
+// INSPECTION READINESS REPORT
+// ===========================================================================
+// A forward-looking, regulator-ready packet. Unlike the Audit Report (a full
+// record of everything on file), this answers one question a director cares
+// about before a surveyor walks in: "What do I need to fix RIGHT NOW, and are
+// we ready?" It surfaces a readiness verdict and a prioritized action checklist.
+// ===========================================================================
+
+type ReadinessVerdict = {
+  label: string;
+  detail: string;
+  bg: RGB;
+  bd: RGB;
+  txt: RGB;
+};
+
+/** Order gaps so the most inspection-critical items rise to the top. */
+const STATUS_RANK: Record<string, number> = {
+  expired: 0,
+  missing: 1,
+  expiring_soon: 2,
+  pending_review: 3,
+  satisfied: 4,
+};
+
+function computeVerdict(actionItems: IdentifiedGap[]): ReadinessVerdict {
+  const criticalBlocking = actionItems.some(
+    (g) =>
+      g.severity === 'critical' &&
+      (g.compliance_status === 'missing' || g.compliance_status === 'expired')
+  );
+  const anyBlocking = actionItems.some(
+    (g) => g.compliance_status === 'missing' || g.compliance_status === 'expired'
+  );
+
+  if (criticalBlocking) {
+    return {
+      label: 'NOT INSPECTION READY',
+      detail: 'Critical requirements are missing or expired. Resolve before any survey.',
+      bg: C.redBg,
+      bd: C.redBd,
+      txt: C.red,
+    };
+  }
+  if (anyBlocking || actionItems.length > 0) {
+    return {
+      label: 'ACTION NEEDED',
+      detail: 'Outstanding items should be resolved to be fully inspection ready.',
+      bg: C.amberBg,
+      bd: [253, 230, 138] as RGB,
+      txt: C.amber,
+    };
+  }
+  return {
+    label: 'INSPECTION READY',
+    detail: 'No outstanding document gaps detected across scored requirements.',
+    bg: C.greenBg,
+    bd: C.greenBd,
+    txt: C.green,
+  };
+}
+
+function staffingLine(staffing: StaffingAdequacy): { label: string; tone: RGB } {
+  switch (staffing.status) {
+    case 'adequate':
+      return { label: 'Staffing appears adequate for baseline enrollment.', tone: C.green };
+    case 'tight':
+      return { label: 'Staffing is tight relative to baseline enrollment.', tone: C.amber };
+    case 'understaffed':
+      return {
+        label: `Potential staffing shortfall of ${staffing.shortfall} ${staffing.unitLabel === 'children' ? 'staff' : 'staff'} vs. ratio.`,
+        tone: C.red,
+      };
+    default:
+      return { label: 'Staffing adequacy unknown — set baseline enrollment to assess.', tone: C.slate500 };
+  }
+}
+
+export async function generateInspectionReadinessReport(facilityId: string): Promise<void> {
+  const { jsPDF } = await import('jspdf');
+  const { default: autoTable } = await import('jspdf-autotable');
+
+  const [settingsResult, complianceData] = await Promise.all([
+    getFacilitySettings(facilityId),
+    getFacilityComplianceData(facilityId),
+  ]);
+
+  const fac = settingsResult.facility as Record<string, unknown> | null;
+  const facilityName = typeof fac?.name === 'string' ? fac.name : 'Unknown Facility';
+  const licenseNumber = typeof fac?.license_number === 'string' ? fac.license_number : 'N/A';
+  const facilityType = typeof fac?.facility_type === 'string' ? fac.facility_type : '';
+  const facilityTypeLabel = facilityType === 'childcare_center' ? 'Childcare Center' : 'Nursing Home';
+  const capacity = typeof fac?.capacity === 'number' ? String(fac.capacity) : 'N/A';
+  const enrollment =
+    complianceData.activeEnrollment != null ? String(complianceData.activeEnrollment) : 'Not Set';
+
+  const today = new Date();
+  const todayLong = today.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const fileDate = today.toISOString().split('T')[0];
+
+  // Action items = anything that is not currently satisfied, prioritized.
+  const actionItems = complianceData.gaps
+    .filter((g) => g.compliance_status !== 'satisfied')
+    .sort((a, b) => {
+      // critical first, then by status severity, then by name
+      if (a.severity !== b.severity) return a.severity === 'critical' ? -1 : 1;
+      const rank = (STATUS_RANK[a.compliance_status] ?? 9) - (STATUS_RANK[b.compliance_status] ?? 9);
+      if (rank !== 0) return rank;
+      return a.name.localeCompare(b.name);
+    });
+
+  const totalScored = complianceData.gaps.filter((g) => g.is_scored).length;
+  const satisfiedScored = complianceData.gaps.filter(
+    (g) => g.is_scored && g.compliance_status === 'satisfied'
+  ).length;
+  const verdict = computeVerdict(actionItems);
+
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const MARGIN = 18;
+  const COL_W = pageW - MARGIN * 2;
+
+  const fill = (c: RGB) => doc.setFillColor(c[0], c[1], c[2]);
+  const draw = (c: RGB) => doc.setDrawColor(c[0], c[1], c[2]);
+  const tint = (c: RGB) => doc.setTextColor(c[0], c[1], c[2]);
+
+  let y = 0;
+
+  // HEADER BANNER
+  fill(C.navy);
+  doc.rect(0, 0, pageW, 40, 'F');
+  tint(C.white);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(18);
+  doc.text('INSPECTION READINESS', MARGIN, 15);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  tint([148, 163, 184]);
+  doc.text('PRE-SURVEY READINESS REPORT  —  CONFIDENTIAL', MARGIN, 22);
+  doc.setFontSize(7.5);
+  doc.text(`Generated: ${todayLong}`, pageW - MARGIN, 15, { align: 'right' });
+  doc.text('Compliance Guard Pro', pageW - MARGIN, 22, { align: 'right' });
+
+  y = 50;
+
+  // FACILITY DETAILS
+  tint(C.slate500);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.text('FACILITY DETAILS', MARGIN, y);
+  y += 3;
+  draw(C.slate100);
+  doc.setLineWidth(0.25);
+  doc.line(MARGIN, y, pageW - MARGIN, y);
+  y += 5;
+
+  const halfW = COL_W / 2;
+  const detailPair = (lLabel: string, lVal: string, rLabel: string, rVal: string, rowY: number) => {
+    tint(C.slate500);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.text(lLabel, MARGIN, rowY);
+    doc.text(rLabel, MARGIN + halfW + 4, rowY);
+    tint(C.slate800);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text(lVal, MARGIN, rowY + 5);
+    doc.text(rVal, MARGIN + halfW + 4, rowY + 5);
+  };
+
+  detailPair('FACILITY NAME', facilityName, 'FACILITY TYPE', facilityTypeLabel, y);
+  y += 14;
+  detailPair('LICENSE NUMBER', licenseNumber, 'LICENSED CAPACITY', capacity, y);
+  y += 14;
+  detailPair('ACTIVE ENROLLMENT', enrollment, 'ACTIVE STAFF COUNT', String(complianceData.totalPersonnel), y);
+  y += 18;
+
+  // READINESS VERDICT BANNER
+  fill(verdict.bg);
+  draw(verdict.bd);
+  doc.setLineWidth(0.4);
+  doc.roundedRect(MARGIN, y, COL_W, 20, 2, 2, 'FD');
+  tint(verdict.txt);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.text(verdict.label, MARGIN + 5, y + 9);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  tint(C.slate700);
+  doc.text(verdict.detail, MARGIN + 5, y + 15);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(20);
+  tint(verdict.txt);
+  doc.text(`${actionItems.length}`, pageW - MARGIN - 5, y + 11, { align: 'right' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6.5);
+  tint(C.slate500);
+  doc.text('ACTION ITEMS', pageW - MARGIN - 5, y + 16, { align: 'right' });
+  y += 28;
+
+  // SCORES
+  const scoreBox = (label: string, score: number, x: number, bY: number) => {
+    const boxW = halfW - 2;
+    const color: RGB = score >= 80 ? C.green : score >= 50 ? C.amber : C.red;
+    fill(C.slate50);
+    draw(C.slate100);
+    doc.setLineWidth(0.25);
+    doc.roundedRect(x, bY, boxW, 20, 2, 2, 'FD');
+    tint(C.slate500);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.text(label, x + 4, bY + 7);
+    tint(color);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.text(`${score}%`, x + 4, bY + 17);
+  };
+  scoreBox('Facility Readiness Score', complianceData.facilityReadinessScore, MARGIN, y);
+  scoreBox('Personnel Readiness Score', complianceData.personnelReadinessScore, MARGIN + halfW + 4, y);
+  y += 26;
+
+  // STAFFING LINE
+  const sl = staffingLine(complianceData.staffing);
+  tint(sl.tone);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.text(sl.label, MARGIN, y);
+  y += 4;
+  tint(C.slate500);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.text(
+    `${satisfiedScored} of ${totalScored} scored requirements satisfied.`,
+    MARGIN,
+    y
+  );
+  y += 8;
+
+  // PRIORITY ACTION ITEMS TABLE
+  const sectionHeader = (title: string, curY: number): number => {
+    tint(C.slate500);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.5);
+    doc.text(title, MARGIN, curY);
+    curY += 2.5;
+    draw(C.slate100);
+    doc.setLineWidth(0.25);
+    doc.line(MARGIN, curY, pageW - MARGIN, curY);
+    return curY + 2;
+  };
+
+  y = sectionHeader(`PRIORITY ACTION ITEMS  (${actionItems.length})`, y);
+
+  const categoryLabel = (g: IdentifiedGap) =>
+    g.score_category === 'personnel' ? 'Personnel' : g.score_category === 'facility' ? 'Facility' : 'Operational';
+
+  const actionBody = actionItems.map((g) => [
+    g.name,
+    categoryLabel(g),
+    g.severity.toUpperCase(),
+    statusLabel(g.compliance_status),
+    actionNeededLabel(g.compliance_status),
+  ]);
+
+  autoTable(doc, {
+    startY: y,
+    head: [['Requirement', 'Category', 'Severity', 'Status', 'Action Needed']],
+    body:
+      actionBody.length > 0
+        ? actionBody
+        : [['All applicable requirements are satisfied.', '', '', '', '']],
+    margin: { left: MARGIN, right: MARGIN },
+    styles: { fontSize: 8, cellPadding: 2.8, textColor: C.slate800, lineColor: C.slate100, lineWidth: 0.2 },
+    headStyles: { fillColor: C.navy, textColor: C.white, fontStyle: 'bold', fontSize: 7.5 },
+    alternateRowStyles: { fillColor: C.slate50 },
+    columnStyles: {
+      0: { cellWidth: COL_W * 0.34 },
+      1: { cellWidth: COL_W * 0.14, halign: 'center' },
+      2: { cellWidth: COL_W * 0.13, halign: 'center' },
+      3: { cellWidth: COL_W * 0.16, halign: 'center' },
+      4: { cellWidth: COL_W * 0.23 },
+    },
+    didParseCell: (data) => {
+      if (data.section !== 'body') return;
+      if (data.column.index === 2 && String(data.cell.raw) === 'CRITICAL') {
+        data.cell.styles.textColor = C.red;
+        data.cell.styles.fontStyle = 'bold';
+      }
+      if (data.column.index === 3) {
+        const v = String(data.cell.raw);
+        if (v === 'Satisfied') data.cell.styles.textColor = C.green;
+        else if (v === 'Expiring Soon') data.cell.styles.textColor = C.amber;
+        else if (v === 'Expired' || v === 'Missing') data.cell.styles.textColor = C.red;
+        else if (v === 'Pending Review') data.cell.styles.textColor = C.amber;
+      }
+    },
+  });
+
+  // FOOTER
+  const totalPages = doc.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+    draw(C.slate300);
+    doc.setLineWidth(0.2);
+    doc.line(MARGIN, pageH - 12, pageW - MARGIN, pageH - 12);
+    tint(C.slate500);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.5);
+    doc.text(
+      `Compliance Guard Pro  •  ${facilityName}  •  Inspection Readiness  •  Page ${i} of ${totalPages}`,
+      pageW / 2,
+      pageH - 7.5,
+      { align: 'center' }
+    );
+    doc.text(
+      'Generated for internal inspection preparation — verify against current regulations.',
+      pageW / 2,
+      pageH - 4,
+      { align: 'center' }
+    );
+  }
+
+  const safeName = facilityName.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_');
+  doc.save(`${safeName}_Inspection_Readiness_${fileDate}.pdf`);
 }

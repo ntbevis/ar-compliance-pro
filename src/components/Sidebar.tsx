@@ -106,6 +106,8 @@ export default function Sidebar({ onNavigate }: SidebarProps = {}) {
         {navItem('Executive Overview', 'overview')}
         {navItem('Personnel Vault', 'personnel', isMasterView)}
         {navItem('Document Center', 'documents', isMasterView)}
+        {navItem('Renewals & Alerts', 'renewals', isMasterView)}
+        {navItem('Action Plans', 'corrective_actions', isMasterView)}
         {navItem('Operational Blueprints', 'blueprints', isMasterView)}
         {navItem(isMasterView ? '👥 Team Settings' : '⚙️ Facility Settings', 'settings')}
         {navItem('Audit Trail', 'audit_logs')}
