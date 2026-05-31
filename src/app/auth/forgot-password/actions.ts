@@ -59,7 +59,7 @@ export async function forgotPasswordAction(
     }
 
     return { error: null, success: true, email };
-  } catch (err) {
+  } catch {
     return {
       error: 'An unexpected server error occurred. Please try again.',
       success: false,

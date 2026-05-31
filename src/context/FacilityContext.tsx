@@ -69,6 +69,8 @@ export function FacilityProvider({ children }: { children: React.ReactNode }) {
 
   // Initial load
   useEffect(() => {
+    // Mount-time data fetch (external system); refreshFacilities owns its state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshFacilities();
   }, [refreshFacilities]);
 

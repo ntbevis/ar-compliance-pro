@@ -52,6 +52,8 @@ function ReviewModal({
   const [isRejecting, setIsRejecting] = useState(false);
 
   useEffect(() => {
+    // Fetches a short-lived signed URL for the document (external system).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsLoadingDoc(true);
     getAdminDocumentUrl(doc.id, doc.facility_id)
       .then((result) => {
@@ -311,6 +313,8 @@ export default function DocumentReviewQueuePage() {
   }, []);
 
   useEffect(() => {
+    // Mount-time data fetch (external system); loadDocuments owns its own state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadDocuments();
   }, [loadDocuments]);
 

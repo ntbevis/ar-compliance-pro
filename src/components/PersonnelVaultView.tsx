@@ -18,7 +18,7 @@ import {
   hashFileBuffer,
   deleteDocument,
   getSecureDocumentUrl,
-  verifyNursingLicense,
+  recordSelfReportedLicense,
 } from 'src/app/actions/compliance';
 import { verifyDocumentWithAI } from 'src/app/actions/ai-verify';
 import type { DocumentComplianceStatus } from '@/lib/types';
@@ -205,6 +205,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   } | null>(null);
   const [licenseNumber, setLicenseNumber] = useState('');
   const [licenseState, setLicenseState] = useState('AR');
+  const [licenseExpiration, setLicenseExpiration] = useState('');
   const [isVerifyingLicense, setIsVerifyingLicense] = useState(false);
 
   // AI rejection modal
@@ -271,7 +272,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   // Fetch a signed URL whenever a document viewer modal opens
   useEffect(() => {
     const docId = docManagementItem?.doc.id;
+    // Syncs a short-lived signed URL to the open document viewer (external system).
     if (!docId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDocViewerUrl(null);
       return;
     }
@@ -620,25 +623,31 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       toast.error('Please enter a license number.');
       return;
     }
+    if (!licenseExpiration) {
+      toast.error('Please enter the license expiration date.');
+      return;
+    }
 
     setIsVerifyingLicense(true);
     try {
-      const result = await verifyNursingLicense(
+      const result = await recordSelfReportedLicense(
         licenseNumber,
         licenseState,
         personnelId,
         req.id,
         facilityId,
-        req.typeKey
+        req.typeKey,
+        licenseExpiration
       );
 
       if (result.success) {
         toast.success(
-          `License verified! Expires ${result.expirationDate ? new Date(result.expirationDate).toLocaleDateString() : 'in 2 years'}.`
+          `License recorded (self-reported). Expires ${result.expirationDate ? new Date(result.expirationDate).toLocaleDateString() : 'on the date provided'}.`
         );
         setLicenseModal(null);
         setLicenseNumber('');
         setLicenseState('AR');
+        setLicenseExpiration('');
         const refreshedDocs = (await getPersonnelDocuments(facilityId)) as PersonnelDocument[];
         setPersonnelDocuments(refreshedDocs);
         // Refresh worst-case status for the person
@@ -959,7 +968,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                 <p className="text-indigo-200 text-xs mt-0.5 truncate">{licenseModal.req.name}</p>
               </div>
               <button
-                onClick={() => { setLicenseModal(null); setLicenseNumber(''); setLicenseState('AR'); }}
+                onClick={() => { setLicenseModal(null); setLicenseNumber(''); setLicenseState('AR'); setLicenseExpiration(''); }}
                 className="ml-4 shrink-0 text-white/70 hover:text-white text-2xl leading-none"
                 aria-label="Close"
               >
@@ -987,7 +996,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                     : 'bg-slate-50 text-slate-500 hover:bg-slate-100'
                 }`}
               >
-                🔍 Verify by License #
+                ✍️ Self-Report License #
               </button>
             </div>
 
@@ -1028,7 +1037,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
               ) : (
                 <div className="space-y-4">
                   <p className="text-sm text-slate-600">
-                    Enter the nurse&apos;s license number and issuing state. We will verify it against the state board registry.
+                    Manually record the nurse&apos;s license number, issuing state, and expiration date. This
+                    creates a <span className="font-semibold">self-reported</span> record that the facility
+                    attests is accurate.
                   </p>
                   <div>
                     <label className="block text-xs font-medium text-slate-700 mb-1">
@@ -1060,11 +1071,23 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                       ))}
                     </select>
                   </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                      License Expiration Date <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={licenseExpiration}
+                      onChange={(e) => setLicenseExpiration(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      disabled={isVerifyingLicense}
+                    />
+                  </div>
                   <button
                     onClick={handleVerifyLicense}
-                    disabled={isVerifyingLicense || !licenseNumber.trim()}
+                    disabled={isVerifyingLicense || !licenseNumber.trim() || !licenseExpiration}
                     className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-bold transition-colors ${
-                      !isVerifyingLicense && licenseNumber.trim()
+                      !isVerifyingLicense && licenseNumber.trim() && licenseExpiration
                         ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                         : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                     }`}
@@ -1072,14 +1095,14 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                     {isVerifyingLicense ? (
                       <>
                         <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                        Verifying with State Board…
+                        Recording…
                       </>
                     ) : (
-                      '✔ Verify License'
+                      '✔ Record License (Self-Reported)'
                     )}
                   </button>
                   <p className="text-[10px] text-slate-400 italic text-center">
-                    Registry lookup is currently in simulation mode. A verified record will be created with a 2-year expiration.
+                    Self-reported entry, not a state-board lookup. Automated primary-source verification via Nursys is coming soon.
                   </p>
                 </div>
               )}

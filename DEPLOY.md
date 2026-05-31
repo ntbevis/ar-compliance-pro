@@ -1,6 +1,6 @@
 # Production deployment checklist
 
-Use this before/after deploying **AR Compliance Guard** (`ar-compliance-pro`).
+Use this before/after deploying **Compliance Guard Pro** (`ar-compliance-pro`).
 
 ## 1. Database (Supabase)
 
@@ -8,6 +8,8 @@ Use this before/after deploying **AR Compliance Guard** (`ar-compliance-pro`).
 - [ ] Run orphan-role verification (0 rows)
 - [ ] Run [supabase/scripts/audit_role_criteria_mapping.sql](./supabase/scripts/audit_role_criteria_mapping.sql) (0 rows per check)
 - [ ] Confirm `compliance_criteria.applicable_roles` column type is **`text[]`** (not `jsonb`)
+- [ ] Confirm FK covering indexes exist (`idx_facilities_org_id`, `idx_facility_documents_facility_id`, `idx_personnel_facility_id`, `idx_profiles_org_id`)
+- [ ] Re-run Supabase **security** + **performance** advisors; resolve any new findings
 
 ## 2. Environment variables (hosting provider)
 

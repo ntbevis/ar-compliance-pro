@@ -47,6 +47,8 @@ export default function TeamSettingsView() {
   };
 
   useEffect(() => {
+    // Mount-time data fetch (external system); loadDirectors owns its own state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadDirectors();
   }, []);
 

@@ -114,11 +114,16 @@ const ACTIVE_STROKE = 26;
 const GAP = 5;
 
 function useReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
+  // Lazy initializer reads the current preference once, so we never need to
+  // setState synchronously inside the effect (avoids a cascading render).
+  const [reduced, setReduced] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia
+      ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      : false
+  );
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return;
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-    setReduced(mq.matches);
     const handler = (e: MediaQueryListEvent) => setReduced(e.matches);
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
@@ -178,7 +183,11 @@ export default function ComplianceScoreWheel({
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
+    // Animation driver: this effect intentionally drives render state from a
+    // requestAnimationFrame loop (an external system), which is exactly the
+    // sanctioned use of setState-in-effect.
     if (reducedMotion) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setProgress(1);
       setDisplayScore(score);
       return;
@@ -231,11 +240,13 @@ export default function ComplianceScoreWheel({
   );
 
   // Pre-compute the cumulative start offset (in path units) for each segment.
-  let cumulative = 0;
-  const placed = segments.map((seg) => {
-    const startOffset = cumulative * CIRC;
-    cumulative += seg.fraction;
-    return { seg, startOffset, fullLen: seg.fraction * CIRC };
+  // Functional prefix-sum (segment count is tiny) avoids mutating a variable
+  // after render, which React's immutability rule flags.
+  const placed = segments.map((seg, i) => {
+    const startFraction = segments
+      .slice(0, i)
+      .reduce((sum, prev) => sum + prev.fraction, 0);
+    return { seg, startOffset: startFraction * CIRC, fullLen: seg.fraction * CIRC };
   });
 
   const clearPinned = () => setPinnedKey(null);

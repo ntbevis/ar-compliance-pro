@@ -244,6 +244,13 @@ function LandingPageInner() {
           <p className="text-center text-blue-300 text-sm">
             © 2026 Compliance Guard Pro. Strictly-typed regulatory intelligence.
           </p>
+          <div className="mt-3 flex items-center justify-center gap-4 text-xs text-blue-300">
+            <Link href="/terms" className="hover:text-white">Terms</Link>
+            <span aria-hidden="true">·</span>
+            <Link href="/privacy" className="hover:text-white">Privacy</Link>
+            <span aria-hidden="true">·</span>
+            <Link href="/disclaimer" className="hover:text-white">Disclaimer</Link>
+          </div>
         </div>
       </footer>
     </div>

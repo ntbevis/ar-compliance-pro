@@ -113,6 +113,8 @@ function DocManagementModal({
   // Fetch a temporary signed URL as soon as the modal opens
   useEffect(() => {
     if (!gap.document_id) return;
+    // Fetches a short-lived signed URL for the document (external system).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsLoadingDoc(true);
     getSecureDocumentUrl(gap.document_id, facilityId)
       .then((result) => {

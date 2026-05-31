@@ -3,6 +3,44 @@
 import { generateObject } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { z } from 'zod';
+import { createClient } from 'src/app/utils/supabase/server';
+
+// --- Abuse controls for the (paid) vision model endpoint ---------------------
+// This is a public server action, so without these guards anyone could invoke it
+// and run up OpenAI spend. We require an authenticated session, cap file size /
+// type, and apply a best-effort per-user rate limit.
+//
+// NOTE: the rate limiter is in-memory and therefore per-server-instance. It is a
+// pragmatic first line of defense; for horizontally-scaled production traffic,
+// move this to a shared store (e.g. Upstash Redis / Vercel KV).
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+const RATE_LIMIT_MAX = 20; // requests
+const RATE_LIMIT_WINDOW_MS = 60_000; // per minute, per user
+
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(userId: string): boolean {
+  const now = Date.now();
+  const bucket = rateBuckets.get(userId);
+  if (!bucket || now > bucket.resetAt) {
+    // Opportunistically prune stale buckets to bound memory growth.
+    if (rateBuckets.size > 5000) {
+      for (const [key, value] of rateBuckets) {
+        if (now > value.resetAt) rateBuckets.delete(key);
+      }
+    }
+    rateBuckets.set(userId, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return true;
+  }
+  if (bucket.count >= RATE_LIMIT_MAX) return false;
+  bucket.count += 1;
+  return true;
+}
+
+function isAllowedDocumentFile(file: File): boolean {
+  const type = (file.type || '').toLowerCase();
+  return type.startsWith('image/') || type === 'application/pdf';
+}
 
 const VerificationSchema = z.object({
   is_valid_match: z
@@ -39,11 +77,38 @@ export async function verifyDocumentWithAI(
   | { success: false; error: string }
 > {
   try {
+    // 1. Require an authenticated session. This endpoint calls a paid model, so
+    //    it must never run for anonymous callers.
+    const supabase = await createClient();
+    const {
+      data: { session },
+      error: sessionError,
+    } = await supabase.auth.getSession();
+    if (sessionError || !session) {
+      return { success: false, error: 'Unauthorized: please sign in to verify documents.' };
+    }
+
+    // 2. Best-effort per-user rate limit.
+    if (!checkRateLimit(session.user.id)) {
+      return {
+        success: false,
+        error: 'Too many verification requests. Please wait a moment and try again.',
+      };
+    }
+
     const file = formData.get('file') as File | null;
     const requirementName = (formData.get('requirementName') as string | null) ?? 'Unknown requirement';
 
     if (!file) {
       return { success: false, error: 'No file provided for verification.' };
+    }
+
+    // 3. Validate file type and size before paying for a model call.
+    if (!isAllowedDocumentFile(file)) {
+      return { success: false, error: 'Unsupported file type. Please upload an image or PDF.' };
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      return { success: false, error: 'File is too large. Please upload a file under 10 MB.' };
     }
 
     // Convert the uploaded file to a raw buffer for the VLM

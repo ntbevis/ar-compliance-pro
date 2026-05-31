@@ -46,6 +46,8 @@ export default function AdminRequestsPage() {
   };
 
   useEffect(() => {
+    // Mount-time data fetch (external system); loadRequests owns its own state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadRequests();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

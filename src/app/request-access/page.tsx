@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { submitRegistrationRequest } from 'src/app/actions/registration';
+import { LEGAL_CONTACT_EMAIL } from '@/lib/legal';
 import Link from 'next/link';
 
 export default function RequestAccessPage() {
@@ -249,7 +250,11 @@ export default function RequestAccessPage() {
             </button>
 
             <p className="text-xs text-slate-500 text-center">
-              By submitting this form you agree to be contacted by our team regarding platform access.
+              By submitting this form you agree to be contacted by our team regarding platform
+              access, and to our{' '}
+              <Link href="/terms" className="underline hover:text-slate-700">Terms of Service</Link>{' '}
+              and{' '}
+              <Link href="/privacy" className="underline hover:text-slate-700">Privacy Policy</Link>.
             </p>
           </form>
         </div>
@@ -258,10 +263,17 @@ export default function RequestAccessPage() {
         <div className="text-center mt-8">
           <p className="text-blue-200 text-sm">
             Questions? Contact us at{' '}
-            <a href="mailto:support@arcomplianceguard.com" className="text-blue-400 hover:text-blue-300 font-medium">
-              support@arcomplianceguard.com
+            <a href={`mailto:${LEGAL_CONTACT_EMAIL}`} className="text-blue-400 hover:text-blue-300 font-medium">
+              {LEGAL_CONTACT_EMAIL}
             </a>
           </p>
+          <div className="mt-3 flex items-center justify-center gap-4 text-xs text-blue-300">
+            <Link href="/terms" className="hover:text-white">Terms</Link>
+            <span aria-hidden="true">·</span>
+            <Link href="/privacy" className="hover:text-white">Privacy</Link>
+            <span aria-hidden="true">·</span>
+            <Link href="/disclaimer" className="hover:text-white">Disclaimer</Link>
+          </div>
         </div>
       </div>
     </div>

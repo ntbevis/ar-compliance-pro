@@ -70,7 +70,8 @@ type AuditActionType =
   | 'facility_settings_update'
   | 'facility_profile_update'
   | 'facility_archived'
-  | 'license_verified';
+  | 'license_verified'
+  | 'license_self_reported';
 
 async function createAuditLog(params: {
   facilityId: string;
@@ -1903,31 +1904,50 @@ export async function getAuditLogs(facilityId?: string) {
 // =============================================================================
 
 /**
- * Mocks a state nursing board lookup for RN / LPN / Director of Nursing licenses.
- * On success, inserts an approved facility_documents record with
- * file_url = 'verified_via_registry' and a 2-year expiration date.
+ * Records a SELF-REPORTED professional license (RN / LPN / Director of Nursing).
+ *
+ * IMPORTANT: This is NOT an automated state-board registry verification — no such
+ * integration exists yet. The facility attests to the license number and its real
+ * expiration date, and we store an approved record marked as self-reported. The
+ * record's expiration is taken from the user-supplied date so the readiness score
+ * reflects reality rather than a fabricated window.
  */
-export async function verifyNursingLicense(
+export async function recordSelfReportedLicense(
   licenseNumber: string,
   state: string,
   employeeId: string,
   requirementId: string,
   facilityId: string,
-  typeKey: string
+  typeKey: string,
+  expirationDate: string
 ): Promise<{ success: boolean; expirationDate?: string; status?: string; error?: string }> {
   try {
-    const { userId } = await getAuthenticatedUserContext();
+    const { userId, orgId } = await getAuthenticatedUserContext();
 
     if (!licenseNumber.trim()) {
       return { success: false, error: 'License number is required.' };
     }
 
-    // Mock state board lookup — simulate a successful registry verification
-    const expiry = new Date();
-    expiry.setFullYear(expiry.getFullYear() + 2);
-    const expirationDate = expiry.toISOString().split('T')[0];
+    // Validate the user-supplied expiration date (must be a real, future-ish date).
+    const parsedExpiration = new Date(expirationDate);
+    if (!expirationDate || Number.isNaN(parsedExpiration.getTime())) {
+      return { success: false, error: 'A valid license expiration date is required.' };
+    }
+    const normalizedExpiration = parsedExpiration.toISOString().split('T')[0];
 
     const supabase = createAdminClient();
+
+    // Org-ownership gate: never let a caller attach a license to another org's facility.
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    if (facilityError || !facility) {
+      return { success: false, error: 'Unauthorized: Facility not found or does not belong to your organization' };
+    }
+
     const documentId = crypto.randomUUID();
 
     const { error: insertError } = await supabase.from('facility_documents').insert({
@@ -1935,15 +1955,16 @@ export async function verifyNursingLicense(
       facility_id: facilityId,
       document_type: typeKey,
       status: 'approved',
-      file_url: 'verified_via_registry',
-      name: `${state} Nursing License – ${licenseNumber.toUpperCase()} (Registry Verified)`,
+      file_url: 'self_reported_license',
+      name: `${state} Nursing License – ${licenseNumber.toUpperCase()} (Self-Reported)`,
+      expires_at: normalizedExpiration,
       metadata: {
-        upload_source: 'license_registry',
+        upload_source: 'license_self_reported',
         personnel_id: employeeId,
         license_number: licenseNumber.trim().toUpperCase(),
         license_state: state,
-        verified_status: 'Verified',
-        ai_extracted_expiration: expirationDate,
+        verified_status: 'Self-Reported',
+        ai_extracted_expiration: normalizedExpiration,
       },
     });
 
@@ -1952,23 +1973,23 @@ export async function verifyNursingLicense(
     await createAuditLog({
       facilityId,
       userId,
-      actionType: 'license_verified',
+      actionType: 'license_self_reported',
       metadata: {
         personnel_id: employeeId,
         requirement_id: requirementId,
         document_id: documentId,
         license_number: licenseNumber.trim().toUpperCase(),
         license_state: state,
-        expiration_date: expirationDate,
-        upload_source: 'license_registry',
+        expiration_date: normalizedExpiration,
+        upload_source: 'license_self_reported',
       },
     });
 
     revalidatePath('/dashboard');
 
-    return { success: true, expirationDate, status: 'Verified' };
+    return { success: true, expirationDate: normalizedExpiration, status: 'Self-Reported' };
   } catch (error) {
-    console.error('❌ verifyNursingLicense error:', error);
+    console.error('❌ recordSelfReportedLicense error:', error);
     const message = error instanceof Error ? error.message : 'Unknown error';
     return { success: false, error: message };
   }
