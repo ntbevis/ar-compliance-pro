@@ -8,36 +8,40 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   return (
-    <div className="flex min-h-screen bg-black text-white">
-      {/* Desktop sidebar — hidden on mobile */}
-      <div className="hidden md:flex">
+    <div className="flex min-h-screen bg-black text-white overflow-x-hidden">
+      {/* Desktop sidebar */}
+      <div className="hidden md:flex md:shrink-0 md:sticky md:top-0 md:h-screen md:overflow-y-auto">
         <Sidebar />
       </div>
 
       {/* Mobile slide-over overlay */}
       {mobileMenuOpen && (
         <div className="fixed inset-0 z-50 md:hidden">
-          {/* Backdrop */}
           <div
             className="absolute inset-0 bg-black/70"
             onClick={() => setMobileMenuOpen(false)}
             aria-hidden="true"
           />
-          {/* Drawer */}
-          <div className="absolute left-0 top-0 bottom-0 w-72 flex flex-col shadow-2xl">
+          <div className="absolute left-0 top-0 bottom-0 w-[min(100vw,18rem)] flex flex-col shadow-2xl">
             <Sidebar onNavigate={() => setMobileMenuOpen(false)} />
           </div>
         </div>
       )}
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto min-w-0">
+      <main className="flex-1 min-w-0 w-full overflow-x-hidden overflow-y-auto">
         {/* Mobile top bar */}
-        <div className="sticky top-0 z-40 md:hidden bg-black border-b border-gray-800 px-4 py-3 flex items-center justify-between shrink-0">
-          <BrandLogo size="xs" showWordmark wordmarkClassName="text-white text-sm" />
+        <div className="sticky top-0 z-40 md:hidden bg-black border-b border-gray-800 px-3 py-3 flex items-center justify-between gap-2 shrink-0">
+          <BrandLogo
+            size="xs"
+            showWordmark
+            wordmarkLayout="split"
+            wordmarkClassName="text-white text-[11px] leading-none"
+            className="min-w-0 flex-1"
+          />
           <button
             onClick={() => setMobileMenuOpen(true)}
-            className="text-gray-400 hover:text-white p-2 rounded-lg transition-colors"
+            className="text-gray-400 hover:text-white p-2 rounded-lg transition-colors shrink-0"
             aria-label="Open navigation"
           >
             <svg
@@ -57,7 +61,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
           </button>
         </div>
 
-        {children}
+        <div className="min-w-0 max-w-full">{children}</div>
       </main>
     </div>
   );

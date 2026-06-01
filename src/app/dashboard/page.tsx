@@ -281,16 +281,16 @@ export default function DashboardPage() {
   // ---- AUDIT LOGS VIEW (available from any selection) ----
   if (currentView === 'audit_logs') {
     return (
-      <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700">
-        <header className="mb-6 flex items-start justify-between flex-wrap gap-4">
-          <div>
-            <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
+      <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 max-w-full min-w-0 overflow-x-hidden">
+        <header className="mb-6 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 min-w-0">
+          <div className="min-w-0">
+            <p className="text-blue-500 font-black text-[10px] sm:text-xs uppercase tracking-wide sm:tracking-widest mb-2 break-words leading-snug">
               {PRODUCT_TAGLINE}
             </p>
-            <h1 className="text-2xl md:text-4xl font-bold tracking-tight text-slate-900 mb-2">
+            <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight text-slate-900 mb-2 break-words">
               Audit Trail &amp; Compliance Logs
             </h1>
-            <p className="text-slate-600 text-sm">
+            <p className="text-slate-600 text-sm break-words">
               Immutable log of every compliance action across the organization.
             </p>
           </div>
@@ -433,12 +433,12 @@ export default function DashboardPage() {
   // ---- TEAM SETTINGS (org-level, master view) ----
   if ((selectedFacilityId === 'all' || !selectedFacilityId) && currentView === 'settings') {
     return (
-      <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
-        <header className="mb-2">
-          <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
+      <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8 max-w-full min-w-0 overflow-x-hidden">
+        <header className="mb-2 min-w-0">
+          <p className="text-blue-500 font-black text-[10px] sm:text-xs uppercase tracking-wide sm:tracking-widest mb-2 break-words leading-snug">
             {PRODUCT_TAGLINE}
           </p>
-          <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900">
+          <h1 className="text-2xl sm:text-3xl lg:text-5xl font-bold tracking-tight text-slate-900 break-words">
             Team Settings
           </h1>
         </header>
@@ -452,13 +452,13 @@ export default function DashboardPage() {
     const canManageFacilities = userRole === 'owner' || userRole === 'admin';
 
     return (
-      <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700">
-        <header className="mb-8">
-          <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
+      <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 max-w-full min-w-0 overflow-x-hidden">
+        <header className="mb-8 min-w-0">
+          <p className="text-blue-500 font-black text-[10px] sm:text-xs uppercase tracking-wide sm:tracking-widest mb-2 break-words leading-snug">
             {PRODUCT_TAGLINE}
           </p>
-          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-2">
-            <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-2 min-w-0">
+            <h1 className="text-2xl sm:text-3xl lg:text-5xl font-bold tracking-tight text-slate-900 break-words min-w-0">
               Executive Fleet Overview
             </h1>
             {canManageFacilities && (
@@ -470,7 +470,7 @@ export default function DashboardPage() {
               </button>
             )}
           </div>
-          <p className="text-slate-600 text-base md:text-lg">
+          <p className="text-slate-600 text-base md:text-lg break-words">
             Twin-score compliance monitoring across all facilities.
           </p>
         </header>
@@ -911,7 +911,7 @@ export default function DashboardPage() {
                 className="bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden"
               >
                 <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4">
-                  <h3 className="text-white font-bold text-lg mb-1">{facility.name}</h3>
+                  <h3 className="text-white font-bold text-lg mb-1 break-words">{facility.name}</h3>
                   <span className="text-xs bg-white/20 text-white px-2 py-0.5 rounded-full font-medium">
                     {facility.facility_type === 'childcare_center' ? 'Childcare Center' : 'Nursing Home'}
                   </span>
@@ -1013,12 +1013,12 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8">
-      <header className="mb-2">
-        <p className="text-blue-500 font-black text-xs uppercase tracking-widest mb-2">
+    <div className="p-4 md:p-8 lg:p-12 min-h-screen bg-slate-50 animate-in fade-in duration-700 space-y-8 max-w-full min-w-0 overflow-x-hidden">
+      <header className="mb-2 min-w-0">
+        <p className="text-blue-500 font-black text-[10px] sm:text-xs uppercase tracking-wide sm:tracking-widest mb-2 break-words leading-snug">
           {PRODUCT_TAGLINE}
         </p>
-        <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900">
+        <h1 className="text-2xl sm:text-3xl lg:text-5xl font-bold tracking-tight text-slate-900 break-words min-w-0">
           {currentView === 'overview' && 'Executive Overview'}
           {currentView === 'personnel' && 'Personnel Vault'}
           {currentView === 'documents' && 'Document Center'}

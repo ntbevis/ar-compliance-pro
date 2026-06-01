@@ -84,9 +84,9 @@ export default function Sidebar({ onNavigate }: SidebarProps = {}) {
     : 'User';
 
   return (
-    <aside className="w-64 border-r border-gray-800 flex flex-col bg-black">
-      <div className="p-6 border-b border-gray-800/60">
-        <BrandLogo size="sm" showWordmark />
+    <aside className="w-64 shrink-0 border-r border-gray-800 flex flex-col bg-black h-full">
+      <div className="p-4 border-b border-gray-800/60">
+        <BrandLogo size="sm" showWordmark wordmarkLayout="split" wordmarkClassName="text-white text-sm" />
       </div>
 
       {/* facilityList comes from FacilityContext — always up-to-date after add/archive */}
@@ -100,7 +100,7 @@ export default function Sidebar({ onNavigate }: SidebarProps = {}) {
         }}
       />
 
-      <nav className="flex-1 p-4 space-y-2 mt-4">
+      <nav className="flex-1 p-4 space-y-2 mt-4 overflow-y-auto min-h-0">
         <div className="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-4 px-2">
           Navigation
         </div>
