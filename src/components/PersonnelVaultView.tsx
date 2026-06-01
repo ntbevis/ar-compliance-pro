@@ -321,13 +321,17 @@ export default function PersonnelVaultView({ facilityId }: Props) {
       .finally(() => setIsLoadingDocViewer(false));
   }, [docManagementItem?.doc.id, facilityId]);
 
-  const computeWorstStatus = (personId: string, reqs: RoleRequirement[]): DocumentComplianceStatus | null => {
+  const computeWorstStatus = (
+    personId: string,
+    reqs: RoleRequirement[],
+    docs: PersonnelDocument[] = personnelDocuments
+  ): DocumentComplianceStatus | null => {
     const statusPriority: Record<DocumentComplianceStatus, number> = {
       expired: 4, expiring_soon: 3, pending_review: 2, missing: 1, satisfied: 0,
     };
     let worst: DocumentComplianceStatus | null = null;
     for (const req of reqs) {
-      const doc = personnelDocuments.find((d) => {
+      const doc = docs.find((d) => {
         const meta = d.metadata as Record<string, unknown> | null;
         return meta && meta.personnel_id === personId && d.document_type === req.typeKey && (d.status === 'approved' || d.status === 'pending');
       });
@@ -752,9 +756,20 @@ export default function PersonnelVaultView({ facilityId }: Props) {
         );
         const refreshedDocs = (await getPersonnelDocuments(facilityId)) as PersonnelDocument[];
         setPersonnelDocuments(refreshedDocs);
-        const reqs = requirementsByPerson[personnelId];
+        // Re-fetch this person's requirements and recompute against the FRESH docs.
+        // (Recomputing off `personnelDocuments` state here would use the stale
+        // pre-refresh array and leave the status chip on its old value.)
+        const person = [...active, ...separated].find((p) => p.id === personnelId);
+        let reqs = requirementsByPerson[personnelId];
+        if (person) {
+          const reqResult = await getRequirementsForRole(facilityId, person.role);
+          if (reqResult.success) {
+            reqs = reqResult.requirements;
+            setRequirementsByPerson((prev) => ({ ...prev, [personnelId]: reqResult.requirements }));
+          }
+        }
         if (reqs) {
-          const worst = computeWorstStatus(personnelId, reqs);
+          const worst = computeWorstStatus(personnelId, reqs, refreshedDocs);
           setPersonWorstStatus((prev) => ({ ...prev, [personnelId]: worst }));
         }
         router.refresh();
@@ -1207,7 +1222,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                       type="text"
                       value={licenseForm.licenseNumber}
                       onChange={(e) => setLicenseForm((p) => ({ ...p, licenseNumber: e.target.value }))}
-                      placeholder="Match the board's format (e.g. R012345)"
+                      placeholder="Numbers only — no 'RN'/'LPN' prefix (e.g. 219097)"
                       className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       disabled={isVerifyingLicense}
                     />
