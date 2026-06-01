@@ -18,10 +18,33 @@ import {
   hashFileBuffer,
   deleteDocument,
   getSecureDocumentUrl,
-  recordSelfReportedLicense,
 } from 'src/app/actions/compliance';
 import { verifyDocumentWithAI } from 'src/app/actions/ai-verify';
+import {
+  enrollAndVerifyNurse,
+  advanceNurseVerification,
+  type NurseVerificationStatus,
+} from 'src/app/actions/nursys';
 import type { DocumentComplianceStatus } from '@/lib/types';
+
+/** Nursys license-type codes we support (Appendix A.2): RN, LPN/LVN, and APRN roles. */
+const NURSE_LICENSE_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'RN', label: 'RN — Registered Nurse' },
+  { value: 'PN', label: 'LPN / LVN — Practical/Vocational Nurse' },
+  { value: 'CNP', label: 'APRN — Nurse Practitioner' },
+  { value: 'CNS', label: 'APRN — Clinical Nurse Specialist' },
+  { value: 'CNM', label: 'APRN — Nurse Midwife' },
+  { value: 'CRNA', label: 'APRN — Nurse Anesthetist' },
+];
+
+interface NurseVerificationView {
+  id: string;
+  status: NurseVerificationStatus;
+  licenseStatus?: string | null;
+  licenseExpiration?: string | null;
+  ncsbnId?: string | null;
+  errorMessage?: string | null;
+}
 
 interface Props {
   facilityId: string;
@@ -203,10 +226,22 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     req: RoleRequirement;
     tab: 'upload' | 'verify';
   } | null>(null);
-  const [licenseNumber, setLicenseNumber] = useState('');
-  const [licenseState, setLicenseState] = useState('AR');
-  const [licenseExpiration, setLicenseExpiration] = useState('');
+  const [licenseForm, setLicenseForm] = useState({
+    licenseType: 'RN',
+    licenseNumber: '',
+    jurisdiction: 'AR',
+    address1: '',
+    address2: '',
+    city: '',
+    state: 'AR',
+    zip: '',
+    lastFourSSN: '',
+    birthYear: '',
+    email: '',
+  });
   const [isVerifyingLicense, setIsVerifyingLicense] = useState(false);
+  const [isCheckingStatus, setIsCheckingStatus] = useState(false);
+  const [nurseVerification, setNurseVerification] = useState<NurseVerificationView | null>(null);
 
   // AI rejection modal
   const [personnelRejectionModal, setPersonnelRejectionModal] = useState<{
@@ -615,55 +650,139 @@ export default function PersonnelVaultView({ facilityId }: Props) {
     }
   };
 
-  const handleVerifyLicense = async () => {
+  const resetLicenseForm = () => {
+    setLicenseForm({
+      licenseType: 'RN',
+      licenseNumber: '',
+      jurisdiction: 'AR',
+      address1: '',
+      address2: '',
+      city: '',
+      state: 'AR',
+      zip: '',
+      lastFourSSN: '',
+      birthYear: '',
+      email: '',
+    });
+    setNurseVerification(null);
+    setIsVerifyingLicense(false);
+    setIsCheckingStatus(false);
+  };
+
+  const closeLicenseModal = () => {
+    setLicenseModal(null);
+    resetLicenseForm();
+  };
+
+  // Step 1: enroll the nurse on Nursys (kicks off the async primary-source check).
+  const handleEnrollLicense = async () => {
     if (!licenseModal) return;
     const { personnelId, req } = licenseModal;
+    const f = licenseForm;
 
-    if (!licenseNumber.trim()) {
-      toast.error('Please enter a license number.');
+    if (!f.licenseNumber.trim()) {
+      toast.error('Please enter the license number.');
       return;
     }
-    if (!licenseExpiration) {
-      toast.error('Please enter the license expiration date.');
+    if (!/^\d{4}$/.test(f.lastFourSSN)) {
+      toast.error('Last 4 digits of SSN must be exactly 4 digits.');
+      return;
+    }
+    if (!/^\d{4}$/.test(f.birthYear)) {
+      toast.error('Birth year must be a 4-digit year.');
+      return;
+    }
+    if (!f.address1.trim() || !f.city.trim() || !f.zip.trim()) {
+      toast.error('Employment street address, city, and ZIP are required by Nursys.');
       return;
     }
 
     setIsVerifyingLicense(true);
     try {
-      const result = await recordSelfReportedLicense(
-        licenseNumber,
-        licenseState,
-        personnelId,
-        req.id,
+      const result = await enrollAndVerifyNurse({
         facilityId,
-        req.typeKey,
-        licenseExpiration
-      );
+        personnelId,
+        requirementId: req.id,
+        typeKey: req.typeKey,
+        licenseType: f.licenseType,
+        jurisdiction: f.jurisdiction,
+        licenseNumber: f.licenseNumber,
+        address1: f.address1,
+        address2: f.address2,
+        city: f.city,
+        state: f.state,
+        zip: f.zip,
+        lastFourSSN: f.lastFourSSN,
+        birthYear: f.birthYear,
+        email: f.email || undefined,
+      });
 
       if (result.success) {
+        setNurseVerification(result.verification);
+        toast.success('Submitted to Nursys. Primary-source verification is processing (usually a few minutes).');
+      } else {
+        toast.error(result.error);
+      }
+    } finally {
+      setIsVerifyingLicense(false);
+    }
+  };
+
+  // Step 2+: advance the async state machine (enroll -> lookup -> result).
+  const handleCheckVerification = async () => {
+    if (!licenseModal || !nurseVerification) return;
+    const { personnelId, req } = licenseModal;
+    setIsCheckingStatus(true);
+    try {
+      const result = await advanceNurseVerification(nurseVerification.id, req.typeKey);
+      if (!result.success) {
+        toast.error(result.error);
+        return;
+      }
+      setNurseVerification(result.verification);
+      const s = result.verification.status;
+
+      if (s === 'verified') {
         toast.success(
-          `License recorded (self-reported). Expires ${result.expirationDate ? new Date(result.expirationDate).toLocaleDateString() : 'on the date provided'}.`
+          `Nursys verified — expires ${
+            result.verification.licenseExpiration
+              ? new Date(result.verification.licenseExpiration).toLocaleDateString()
+              : 'on file'
+          }.`
         );
-        setLicenseModal(null);
-        setLicenseNumber('');
-        setLicenseState('AR');
-        setLicenseExpiration('');
         const refreshedDocs = (await getPersonnelDocuments(facilityId)) as PersonnelDocument[];
         setPersonnelDocuments(refreshedDocs);
-        // Refresh worst-case status for the person
         const reqs = requirementsByPerson[personnelId];
         if (reqs) {
           const worst = computeWorstStatus(personnelId, reqs);
           setPersonWorstStatus((prev) => ({ ...prev, [personnelId]: worst }));
         }
         router.refresh();
+        closeLicenseModal();
+      } else if (s === 'expired' || s === 'action_required' || s === 'not_found' || s === 'failed') {
+        toast.error(result.verification.errorMessage ?? 'Verification could not be completed.');
       } else {
-        toast.error(result.error ?? 'Verification failed. Please try again.');
+        toast('Still processing at Nursys — we\u2019ll keep checking.', { icon: '\u23F3' });
       }
     } finally {
-      setIsVerifyingLicense(false);
+      setIsCheckingStatus(false);
     }
   };
+
+  // Auto-poll while a verification is in flight (Nursys recommends ~5 min; we
+  // re-check every 30s while the modal is open). Phase 2 replaces this with a
+  // server-side cron sweep so results land even with the tab closed.
+  useEffect(() => {
+    if (!nurseVerification) return;
+    const pending =
+      nurseVerification.status === 'enroll_submitted' || nurseVerification.status === 'lookup_submitted';
+    if (!pending) return;
+    const timer = setTimeout(() => {
+      handleCheckVerification();
+    }, 30_000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nurseVerification]);
 
   const roster = showArchive ? separated : active;
 
@@ -968,7 +1087,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                 <p className="text-indigo-200 text-xs mt-0.5 truncate">{licenseModal.req.name}</p>
               </div>
               <button
-                onClick={() => { setLicenseModal(null); setLicenseNumber(''); setLicenseState('AR'); setLicenseExpiration(''); }}
+                onClick={closeLicenseModal}
                 className="ml-4 shrink-0 text-white/70 hover:text-white text-2xl leading-none"
                 aria-label="Close"
               >
@@ -996,7 +1115,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                     : 'bg-slate-50 text-slate-500 hover:bg-slate-100'
                 }`}
               >
-                ✍️ Self-Report License #
+                🛡️ Verify via Nursys
               </button>
             </div>
 
@@ -1034,60 +1153,160 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                     />
                   </label>
                 </div>
-              ) : (
-                <div className="space-y-4">
+              ) : !nurseVerification ? (
+                <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
                   <p className="text-sm text-slate-600">
-                    Manually record the nurse&apos;s license number, issuing state, and expiration date. This
-                    creates a <span className="font-semibold">self-reported</span> record that the facility
-                    attests is accurate.
+                    Real primary-source verification against the state board of nursing via{' '}
+                    <span className="font-semibold">Nursys</span>. The identifying details below must match the
+                    board&apos;s record. SSN digits and birth year are sent securely to Nursys for matching and are{' '}
+                    <span className="font-semibold">never stored</span> by us.
                   </p>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                        License Type <span className="text-red-500">*</span>
+                      </label>
+                      <select
+                        value={licenseForm.licenseType}
+                        onChange={(e) => setLicenseForm((p) => ({ ...p, licenseType: e.target.value }))}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        disabled={isVerifyingLicense}
+                      >
+                        {NURSE_LICENSE_TYPE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                        Issuing State <span className="text-red-500">*</span>
+                      </label>
+                      <select
+                        value={licenseForm.jurisdiction}
+                        onChange={(e) => setLicenseForm((p) => ({ ...p, jurisdiction: e.target.value }))}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        disabled={isVerifyingLicense}
+                      >
+                        {US_STATES.map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
                   <div>
                     <label className="block text-xs font-medium text-slate-700 mb-1">
                       License Number <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="text"
-                      value={licenseNumber}
-                      onChange={(e) => setLicenseNumber(e.target.value)}
-                      placeholder="e.g. RN123456"
+                      value={licenseForm.licenseNumber}
+                      onChange={(e) => setLicenseForm((p) => ({ ...p, licenseNumber: e.target.value }))}
+                      placeholder="Match the board's format (e.g. R012345)"
                       className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       disabled={isVerifyingLicense}
                     />
                   </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      Issuing State
-                    </label>
-                    <select
-                      value={licenseState}
-                      onChange={(e) => setLicenseState(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      disabled={isVerifyingLicense}
-                    >
-                      {US_STATES.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
-                    </select>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                        Last 4 of SSN <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={4}
+                        value={licenseForm.lastFourSSN}
+                        onChange={(e) =>
+                          setLicenseForm((p) => ({ ...p, lastFourSSN: e.target.value.replace(/\D/g, '').slice(0, 4) }))
+                        }
+                        placeholder="0000"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        disabled={isVerifyingLicense}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                        Birth Year <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={4}
+                        value={licenseForm.birthYear}
+                        onChange={(e) =>
+                          setLicenseForm((p) => ({ ...p, birthYear: e.target.value.replace(/\D/g, '').slice(0, 4) }))
+                        }
+                        placeholder="e.g. 1985"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        disabled={isVerifyingLicense}
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      License Expiration Date <span className="text-red-500">*</span>
-                    </label>
+
+                  <div className="pt-1 border-t border-slate-100">
+                    <p className="text-[11px] font-semibold text-slate-500 mt-2 mb-1">
+                      Employment address (required by Nursys)
+                    </p>
                     <input
-                      type="date"
-                      value={licenseExpiration}
-                      onChange={(e) => setLicenseExpiration(e.target.value)}
+                      type="text"
+                      value={licenseForm.address1}
+                      onChange={(e) => setLicenseForm((p) => ({ ...p, address1: e.target.value }))}
+                      placeholder="Street address"
                       className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       disabled={isVerifyingLicense}
                     />
+                    <input
+                      type="text"
+                      value={licenseForm.address2}
+                      onChange={(e) => setLicenseForm((p) => ({ ...p, address2: e.target.value }))}
+                      placeholder="Apt / Suite (optional)"
+                      className="w-full mt-2 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      disabled={isVerifyingLicense}
+                    />
+                    <div className="grid grid-cols-6 gap-2 mt-2">
+                      <input
+                        type="text"
+                        value={licenseForm.city}
+                        onChange={(e) => setLicenseForm((p) => ({ ...p, city: e.target.value }))}
+                        placeholder="City"
+                        className="col-span-3 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        disabled={isVerifyingLicense}
+                      />
+                      <select
+                        value={licenseForm.state}
+                        onChange={(e) => setLicenseForm((p) => ({ ...p, state: e.target.value }))}
+                        className="col-span-1 px-1 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        disabled={isVerifyingLicense}
+                      >
+                        {US_STATES.map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        value={licenseForm.zip}
+                        onChange={(e) => setLicenseForm((p) => ({ ...p, zip: e.target.value }))}
+                        placeholder="ZIP"
+                        className="col-span-2 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        disabled={isVerifyingLicense}
+                      />
+                    </div>
                   </div>
+
                   <button
-                    onClick={handleVerifyLicense}
-                    disabled={isVerifyingLicense || !licenseNumber.trim() || !licenseExpiration}
+                    onClick={handleEnrollLicense}
+                    disabled={isVerifyingLicense || !licenseForm.licenseNumber.trim()}
                     className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-bold transition-colors ${
-                      !isVerifyingLicense && licenseNumber.trim() && licenseExpiration
+                      !isVerifyingLicense && licenseForm.licenseNumber.trim()
                         ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                         : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                     }`}
@@ -1095,15 +1314,91 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                     {isVerifyingLicense ? (
                       <>
                         <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                        Recording…
+                        Submitting…
                       </>
                     ) : (
-                      '✔ Record License (Self-Reported)'
+                      '🛡 Verify with Nursys'
                     )}
                   </button>
                   <p className="text-[10px] text-slate-400 italic text-center">
-                    Self-reported entry, not a state-board lookup. Automated primary-source verification via Nursys is coming soon.
+                    Primary-source verification with the state board of nursing. Results post automatically once the
+                    board responds (usually a few minutes).
                   </p>
+                </div>
+              ) : nurseVerification.status === 'enroll_submitted' ||
+                nurseVerification.status === 'lookup_submitted' ? (
+                <div className="space-y-4 text-center py-2">
+                  <div className="flex justify-center">
+                    <span className="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-slate-800">Verification in progress</p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      We&apos;ve submitted this license to Nursys and are waiting on the state board. This usually
+                      takes a few minutes — we&apos;ll check automatically, or you can check now.
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleCheckVerification}
+                    disabled={isCheckingStatus}
+                    className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-bold transition-colors ${
+                      !isCheckingStatus
+                        ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                        : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                    }`}
+                  >
+                    {isCheckingStatus ? (
+                      <>
+                        <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        Checking…
+                      </>
+                    ) : (
+                      '↻ Check status now'
+                    )}
+                  </button>
+                  <button
+                    onClick={closeLicenseModal}
+                    className="w-full px-4 py-2 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100"
+                  >
+                    Close — it&apos;ll keep processing
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4 text-center py-2">
+                  <div className="text-4xl">
+                    {nurseVerification.status === 'verified' ? '✅' : '⚠️'}
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-slate-800">
+                      {nurseVerification.status === 'verified' && 'License verified by Nursys'}
+                      {nurseVerification.status === 'expired' && 'License is expired'}
+                      {nurseVerification.status === 'action_required' && 'Needs review'}
+                      {nurseVerification.status === 'not_found' && 'No matching license found'}
+                      {nurseVerification.status === 'failed' && 'Verification failed'}
+                    </p>
+                    {nurseVerification.licenseStatus && (
+                      <p className="text-xs text-slate-500 mt-1">
+                        Board status: <span className="font-semibold">{nurseVerification.licenseStatus}</span>
+                      </p>
+                    )}
+                    {nurseVerification.errorMessage && (
+                      <p className="text-xs text-rose-600 mt-1">{nurseVerification.errorMessage}</p>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={resetLicenseForm}
+                      className="flex-1 px-4 py-2.5 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white"
+                    >
+                      Try again
+                    </button>
+                    <button
+                      onClick={() => setLicenseModal({ ...licenseModal, tab: 'upload' })}
+                      className="flex-1 px-4 py-2.5 rounded-lg text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700"
+                    >
+                      Upload document instead
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
