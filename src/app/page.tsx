@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from 'src/app/utils/supabase/client';
 import Link from 'next/link';
+import BrandLogo from '@/components/BrandLogo';
 
 function LandingPageInner() {
   const router = useRouter();
@@ -77,15 +78,7 @@ function LandingPageInner() {
       <header className="absolute top-0 left-0 right-0 z-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 sm:w-10 sm:h-10 bg-blue-500 rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-lg sm:text-xl">🛡️</span>
-              </div>
-              <div>
-                <h1 className="text-white font-bold text-base sm:text-xl truncate">Compliance Guard Pro</h1>
-                <p className="hidden sm:block text-blue-300 text-xs">Arkansas Regulatory Compliance Engine</p>
-              </div>
-            </div>
+            <BrandLogo size="md" showWordmark showTagline wordmarkClassName="text-white text-base sm:text-xl" />
             <Link
               href="/request-access"
               className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-3 sm:px-6 py-2 sm:py-2.5 rounded-lg transition-colors shadow-lg text-sm sm:text-base min-h-[44px] flex items-center justify-center whitespace-nowrap text-center shrink-0"
@@ -102,11 +95,11 @@ function LandingPageInner() {
           {/* Left Side - Marketing Content */}
           <div className="text-white space-y-6">
             <div className="inline-block bg-blue-500/20 border border-blue-400/30 rounded-full px-4 py-2 mb-4">
-              <span className="text-blue-300 text-sm font-medium">Trusted by Arkansas Facilities</span>
+              <span className="text-blue-300 text-sm font-medium">Built for Regulated Care Facilities</span>
             </div>
             
             <h2 className="text-3xl md:text-5xl font-bold leading-tight">
-              Automated Compliance Management for Arkansas Facilities
+              Automated Compliance Management for Childcare &amp; Nursing Homes
             </h2>
             
             <p className="text-lg md:text-xl text-blue-200 leading-relaxed">
@@ -123,7 +116,7 @@ function LandingPageInner() {
                 </div>
                 <div>
                   <h3 className="font-semibold text-lg">Real-Time Compliance Scoring</h3>
-                  <p className="text-blue-200 text-sm">Instant facility readiness calculations against Arkansas regulatory requirements</p>
+                  <p className="text-blue-200 text-sm">Instant facility readiness calculations against applicable regulatory requirements</p>
                 </div>
               </div>
 

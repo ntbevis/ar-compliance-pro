@@ -116,7 +116,7 @@ export async function verifyDocumentWithAI(
     const imageBuffer = Buffer.from(arrayBuffer);
     const mediaType = file.type || 'image/jpeg';
 
-    const systemPrompt = `You are an expert but practical Arkansas Regulatory Compliance Auditor. Analyze the provided image/document. The user claims this document satisfies the requirement: '${requirementName}'. Verify if this is true and extract the requested data.
+    const systemPrompt = `You are an expert but practical Regulatory Compliance Auditor. Analyze the provided image/document. The user claims this document satisfies the requirement: '${requirementName}'. Verify if this is true and extract the requested data.
 
 CRITICAL INSTRUCTION: You must be highly tolerant of real-world upload conditions. Accept photos with glare, angled shots, mobile screenshots, and handwritten forms as long as the core identifying information is reasonably legible. Do not reject a document for poor aesthetic quality. Only return is_valid_match: false if the document is completely unreadable, is missing critical identifying data due to cropping, or is clearly the wrong document type entirely (e.g., an animal photo instead of a CPR card).`;
 

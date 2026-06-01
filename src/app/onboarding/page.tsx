@@ -171,7 +171,7 @@ export default function OnboardingPage() {
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-700">
             <h1 className="text-3xl md:text-5xl font-bold mb-6 tracking-tight">Your Company.</h1>
             <p className="text-gray-400 mb-10 text-lg md:text-xl leading-relaxed">
-              Establish your corporate management hub to coordinate Arkansas properties from a unified command center.
+              Establish your corporate management hub to coordinate your properties from a unified command center.
             </p>
             <input
               type="text"
@@ -373,7 +373,7 @@ export default function OnboardingPage() {
           <div className="animate-in fade-in zoom-in-95 duration-700">
             <h1 className="text-3xl md:text-5xl font-bold mb-4 tracking-tight">Audit Checklist.</h1>
             <p className="text-gray-400 mb-10 text-base md:text-lg leading-relaxed">
-              We&apos;ve cross-referenced Arkansas rulesets and structured your compliance pipeline.
+              We&apos;ve cross-referenced applicable rulesets and structured your compliance pipeline.
             </p>
 
             <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar divide-y divide-gray-900">
@@ -421,7 +421,7 @@ export default function OnboardingPage() {
           <div className="fixed inset-0 bg-black/90 backdrop-blur-md flex flex-col items-center justify-center z-50">
             <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-6"></div>
             <div className="text-blue-500 font-black tracking-[0.25em] uppercase text-[11px] animate-pulse text-center leading-loose">
-              Mapping Arkansas Code Frameworks <br /> & Instantiating Corporate Hub...
+              Mapping Regulatory Frameworks <br /> & Instantiating Corporate Hub...
             </div>
           </div>
         )}

@@ -976,7 +976,7 @@ export default function ComplianceDashboardClient({
               </span>
             </div>
             <p className="text-sm text-amber-900 leading-relaxed">
-              I certify that this information is authentic, unaltered, and satisfies Arkansas regulatory
+              I certify that this information is authentic, unaltered, and satisfies applicable regulatory
               requirements. I understand that providing false information may result in penalties under
               state and federal law.
             </p>

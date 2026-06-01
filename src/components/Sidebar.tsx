@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import { createClient } from 'src/app/utils/supabase/client';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import BrandLogo from '@/components/BrandLogo';
 
 interface UserProfile {
   full_name: string | null;
@@ -84,8 +85,8 @@ export default function Sidebar({ onNavigate }: SidebarProps = {}) {
 
   return (
     <aside className="w-64 border-r border-gray-800 flex flex-col bg-black">
-      <div className="p-6">
-        <h2 className="text-blue-500 font-black tracking-tighter text-xl italic">AR_GUARD</h2>
+      <div className="p-6 border-b border-gray-800/60">
+        <BrandLogo size="sm" showWordmark />
       </div>
 
       {/* facilityList comes from FacilityContext — always up-to-date after add/archive */}
@@ -122,7 +123,7 @@ export default function Sidebar({ onNavigate }: SidebarProps = {}) {
               onClick={() => onNavigate?.()}
               className="w-full text-left p-3 rounded-xl font-bold transition-all border flex items-center gap-2 text-indigo-400 border-indigo-500/20 bg-indigo-600/10 hover:bg-indigo-600/20 hover:border-indigo-500/40 min-h-[44px]"
             >
-              🛡️ Admin Control Center
+              Admin Control Center
             </Link>
           </div>
         )}

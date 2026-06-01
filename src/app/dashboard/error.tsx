@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import BrandLogo from '@/components/BrandLogo';
 
 export default function DashboardError({
   error,
@@ -16,7 +17,9 @@ export default function DashboardError({
   return (
     <div className="p-12 min-h-screen bg-slate-50 flex items-center justify-center">
       <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-lg w-full p-10 text-center space-y-5">
-        <div className="text-5xl">🛡️</div>
+        <div className="flex justify-center">
+          <BrandLogo size="xl" showWordmark wordmarkClassName="text-slate-900 text-lg" />
+        </div>
         <h2 className="text-xl font-bold text-slate-900">Dashboard Error</h2>
         <p className="text-slate-500 text-sm leading-relaxed">
           An error occurred while loading the compliance dashboard. Your data is safe — try

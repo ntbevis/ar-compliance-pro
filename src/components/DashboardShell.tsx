@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Sidebar from './Sidebar';
+import BrandLogo from '@/components/BrandLogo';
 
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -33,7 +34,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       <main className="flex-1 overflow-y-auto min-w-0">
         {/* Mobile top bar */}
         <div className="sticky top-0 z-40 md:hidden bg-black border-b border-gray-800 px-4 py-3 flex items-center justify-between shrink-0">
-          <h2 className="text-blue-500 font-black tracking-tighter text-lg italic">AR_GUARD</h2>
+          <BrandLogo size="xs" showWordmark wordmarkClassName="text-white text-sm" />
           <button
             onClick={() => setMobileMenuOpen(true)}
             className="text-gray-400 hover:text-white p-2 rounded-lg transition-colors"

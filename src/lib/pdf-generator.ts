@@ -9,6 +9,7 @@ import {
   getLatestOperationalAcknowledgment,
 } from 'src/app/actions/compliance';
 import type { IdentifiedGap, StaffingAdequacy } from './types';
+import { PRODUCT_NAME } from '@/lib/legal';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -147,7 +148,7 @@ export async function generateAuditReport(facilityId: string): Promise<void> {
   tint(C.white);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(18);
-  doc.text('AR COMPLIANCE GUARD', MARGIN, 15);
+  doc.text(PRODUCT_NAME.toUpperCase(), MARGIN, 15);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);

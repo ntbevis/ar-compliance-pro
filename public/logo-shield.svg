@@ -1,0 +1,176 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none" role="img" aria-label="Compliance Guard Pro shield mark">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="50%" stop-color="#0c1a3a"/>
+      <stop offset="100%" stop-color="#0a1628"/>
+    </linearGradient>
+    <linearGradient id="shieldOuter" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="45%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+    <linearGradient id="shieldInner" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b"/>
+      <stop offset="100%" stop-color="#022c22"/>
+    </linearGradient>
+    <linearGradient id="shieldFace" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#134e4a"/>
+      <stop offset="100%" stop-color="#042f2e"/>
+    </linearGradient>
+    <linearGradient id="accentGold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6ee7b7"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+    <linearGradient id="checkGrad" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#d1fae5"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="42%" r="45%">
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#10b981" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="innerShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feOffset dy="2"/>
+      <feGaussianBlur stdDeviation="3" result="offset-blur"/>
+      <feComposite operator="out" in="SourceGraphic" in2="offset-blur" result="inverse"/>
+      <feFlood flood-color="#000000" flood-opacity="0.45" result="color"/>
+      <feComposite operator="in" in="color" in2="inverse" result="shadow"/>
+      <feComposite operator="over" in="SourceGraphic" in2="shadow"/>
+    </filter>
+    <clipPath id="shieldClip">
+      <path d="M256 72 C196 72 148 88 112 104 L112 228 C112 318 168 388 256 432 C344 388 400 318 400 228 L400 104 C364 88 316 72 256 72 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" fill="url(#bgGrad)"/>
+
+  <!-- Subtle radar rings -->
+  <circle cx="256" cy="256" r="200" stroke="#1e293b" stroke-width="0.75" fill="none" opacity="0.5"/>
+  <circle cx="256" cy="256" r="160" stroke="#1e293b" stroke-width="0.75" fill="none" opacity="0.4"/>
+  <circle cx="256" cy="256" r="120" stroke="#1e293b" stroke-width="0.75" fill="none" opacity="0.3"/>
+  <circle cx="256" cy="256" r="80" stroke="#1e293b" stroke-width="0.75" fill="none" opacity="0.2"/>
+
+  <!-- Ambient glow behind shield -->
+  <ellipse cx="256" cy="250" rx="130" ry="150" fill="url(#glow)"/>
+
+  <!-- Outer shield frame (double border) -->
+  <path
+    d="M256 68 C190 68 136 86 96 104 L96 232 C96 328 156 404 256 452 C356 404 416 328 416 232 L416 104 C376 86 322 68 256 68 Z"
+    stroke="url(#shieldOuter)"
+    stroke-width="5"
+    fill="none"
+    filter="url(#softGlow)"
+  />
+  <path
+    d="M256 82 C198 82 150 96 118 110 L118 228 C118 312 172 378 256 418 C340 378 394 312 394 228 L394 110 C362 96 314 82 256 82 Z"
+    stroke="#059669"
+    stroke-width="1.5"
+    fill="url(#shieldInner)"
+    opacity="0.9"
+  />
+
+  <!-- Inner shield face -->
+  <path
+    d="M256 96 C204 96 162 108 134 120 L134 224 C134 298 180 356 256 394 C332 356 378 298 378 224 L378 120 C350 108 308 96 256 96 Z"
+    fill="url(#shieldFace)"
+    filter="url(#innerShadow)"
+  />
+
+  <!-- Ornamental top crest bar -->
+  <rect x="196" y="108" width="120" height="8" rx="2" fill="url(#accentGold)" opacity="0.85"/>
+  <rect x="216" y="120" width="80" height="3" rx="1" fill="#6ee7b7" opacity="0.5"/>
+
+  <!-- Decorative corner brackets (compliance frame motif) -->
+  <g stroke="#34d399" stroke-width="2" fill="none" opacity="0.7">
+    <path d="M158 148 L158 178 L188 178"/>
+    <path d="M354 148 L354 178 L324 178"/>
+    <path d="M158 330 L158 360 L188 360"/>
+    <path d="M354 330 L354 360 L324 360"/>
+  </g>
+
+  <!-- Inner filigree grid (regulatory precision pattern) -->
+  <g clip-path="url(#shieldClip)" opacity="0.18" stroke="#6ee7b7" stroke-width="0.75">
+    <line x1="256" y1="130" x2="256" y2="380"/>
+    <line x1="180" y1="200" x2="332" y2="200"/>
+    <line x1="170" y1="260" x2="342" y2="260"/>
+    <line x1="190" y1="320" x2="322" y2="320"/>
+    <line x1="210" y1="160" x2="302" y2="360"/>
+    <line x1="302" y1="160" x2="210" y2="360"/>
+  </g>
+
+  <!-- Hexagonal guard nodes (tech/compliance nodes) -->
+  <g fill="#10b981" opacity="0.55">
+    <circle cx="256" cy="148" r="4"/>
+    <circle cx="196" cy="200" r="3.5"/>
+    <circle cx="316" cy="200" r="3.5"/>
+    <circle cx="176" cy="280" r="3"/>
+    <circle cx="336" cy="280" r="3"/>
+    <circle cx="256" cy="340" r="4"/>
+  </g>
+
+  <!-- Inner ornamental ring -->
+  <ellipse cx="256" cy="248" rx="72" ry="78" stroke="url(#accentGold)" stroke-width="1.25" fill="none" opacity="0.45"/>
+
+  <!-- Dashed compliance track ring -->
+  <ellipse cx="256" cy="248" rx="58" ry="64" stroke="#34d399" stroke-width="1" stroke-dasharray="4 6" fill="none" opacity="0.35"/>
+
+  <!-- Checkmark with depth -->
+  <g filter="url(#softGlow)">
+    <!-- Check shadow -->
+    <path
+      d="M196 248 L232 286 L320 196"
+      stroke="#064e3b"
+      stroke-width="22"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      fill="none"
+      transform="translate(3, 4)"
+      opacity="0.6"
+    />
+    <!-- Check main -->
+    <path
+      d="M196 248 L232 286 L320 196"
+      stroke="url(#checkGrad)"
+      stroke-width="18"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      fill="none"
+    />
+    <!-- Check highlight -->
+    <path
+      d="M196 248 L232 286 L320 196"
+      stroke="#ffffff"
+      stroke-width="6"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      fill="none"
+      opacity="0.35"
+      transform="translate(-1, -1)"
+    />
+  </g>
+
+  <!-- Bottom shield point reinforcement -->
+  <path
+    d="M246 388 L256 408 L266 388"
+    stroke="url(#shieldOuter)"
+    stroke-width="2.5"
+    fill="none"
+    stroke-linejoin="round"
+    opacity="0.8"
+  />
+
+  <!-- Side accent chevrons -->
+  <g fill="#10b981" opacity="0.4">
+    <path d="M128 240 L138 248 L128 256 Z"/>
+    <path d="M384 240 L374 248 L384 256 Z"/>
+  </g>
+</svg>

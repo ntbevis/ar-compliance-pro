@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { submitRegistrationRequest } from 'src/app/actions/registration';
 import { LEGAL_CONTACT_EMAIL } from '@/lib/legal';
 import Link from 'next/link';
+import BrandLogo from '@/components/BrandLogo';
 
 export default function RequestAccessPage() {
   const [submitting, setSubmitting] = useState(false);
@@ -86,12 +87,15 @@ export default function RequestAccessPage() {
       <div className="max-w-2xl w-full">
         {/* Header */}
         <div className="text-center mb-8">
+          <div className="flex justify-center mb-6">
+            <BrandLogo size="lg" showWordmark showTagline wordmarkClassName="text-white text-xl" />
+          </div>
           <Link href="/" className="inline-block mb-6 text-blue-400 hover:text-blue-300 transition-colors text-sm font-medium">
             ← Back to Home
           </Link>
           <h1 className="text-4xl font-bold text-white mb-3">Request Platform Access</h1>
           <p className="text-blue-200 text-lg">
-            Join Arkansas&apos;s premier compliance management system
+            Join the compliance platform built for regulated care facilities
           </p>
         </div>
 

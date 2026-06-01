@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import BrandLogo from '@/components/BrandLogo';
 
 interface AdminCard {
   href: string;
@@ -41,9 +42,7 @@ export default function AdminDashboardPage() {
         {/* Header */}
         <div className="mb-14">
           <div className="flex items-center gap-4 mb-4">
-            <div className="w-14 h-14 bg-indigo-600/20 rounded-2xl flex items-center justify-center border border-indigo-500/30 text-2xl shrink-0">
-              🛡️
-            </div>
+            <BrandLogo size="lg" />
             <div>
               <h1 className="text-2xl md:text-4xl font-black tracking-tight">Admin Control Center</h1>
               <p className="text-slate-400 text-sm mt-1">

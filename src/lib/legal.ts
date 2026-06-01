@@ -15,6 +15,13 @@ export const LEGAL_ENTITY = 'Compliance Guard Pro, LLC';
 /** Public product/brand name. */
 export const PRODUCT_NAME = 'Compliance Guard Pro';
 
+/** Short tagline shown under the logo in headers. */
+export const PRODUCT_TAGLINE = 'Smart Regulatory Compliance Engine';
+
+/** Default meta / SEO description for the application. */
+export const PRODUCT_DESCRIPTION =
+  'Regulatory compliance management for childcare centers and nursing homes.';
+
 /** Primary support / legal contact address. */
 export const LEGAL_CONTACT_EMAIL = 'nolan@complianceguardpro.io';
 

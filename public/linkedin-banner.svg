@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1128 191" fill="none" role="img" aria-label="Compliance Guard Pro LinkedIn banner">
+  <defs>
+    <linearGradient id="bannerBg" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="55%" stop-color="#0c1a3a"/>
+      <stop offset="100%" stop-color="#0a1628"/>
+    </linearGradient>
+    <linearGradient id="bannerAccent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#10b981" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#34d399" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="proGreen" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <radialGradient id="leftGlow" cx="18%" cy="80%" r="35%">
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#10b981" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="rightGlow" cx="88%" cy="45%" r="40%">
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#10b981" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="bannerClip">
+      <rect width="1128" height="191"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#bannerClip)">
+    <!-- Background -->
+    <rect width="1128" height="191" fill="url(#bannerBg)"/>
+    <rect width="1128" height="191" fill="url(#leftGlow)"/>
+    <rect width="1128" height="191" fill="url(#rightGlow)"/>
+
+    <!-- Profile-picture safe zone (bottom-left): subtle pattern only -->
+    <g opacity="0.12" stroke="#1e3a5f" stroke-width="0.75" fill="none">
+      <circle cx="110" cy="145" r="70"/>
+      <circle cx="110" cy="145" r="48"/>
+      <circle cx="110" cy="145" r="26"/>
+    </g>
+
+    <!-- Decorative grid (right) -->
+    <g opacity="0.07" stroke="#34d399" stroke-width="0.5">
+      <line x1="780" y1="0" x2="1128" y2="191"/>
+      <line x1="850" y1="0" x2="1128" y2="130"/>
+      <line x1="920" y1="0" x2="1128" y2="70"/>
+    </g>
+
+    <!-- Radar rings (right) -->
+    <g opacity="0.2" stroke="#1e3a5f" stroke-width="0.75" fill="none">
+      <circle cx="960" cy="96" r="105"/>
+      <circle cx="960" cy="96" r="75"/>
+      <circle cx="960" cy="96" r="45"/>
+    </g>
+
+    <!-- Vertical accent bar (separates content from profile zone) -->
+    <rect x="228" y="28" width="2" height="135" rx="1" fill="#10b981" opacity="0.25"/>
+
+    <!-- Bottom accent line -->
+    <rect x="0" y="188" width="1128" height="3" fill="url(#bannerAccent)"/>
+
+    <!-- Corner brackets -->
+    <g stroke="#10b981" stroke-width="1.25" fill="none" opacity="0.3">
+      <path d="M1048 36 L1048 52 L1064 52"/>
+      <path d="M1096 36 L1096 52 L1080 52"/>
+      <path d="M1048 155 L1048 139 L1064 139"/>
+      <path d="M1096 155 L1096 139 L1080 139"/>
+    </g>
+
+    <!-- Wordmark (starts right of LinkedIn profile overlap zone) -->
+    <text x="252" y="72" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="36" font-weight="800" fill="#ffffff" letter-spacing="-0.5">
+      Compliance Guard<tspan fill="url(#proGreen)"> Pro</tspan>
+    </text>
+
+    <!-- Badge -->
+    <rect x="252" y="84" width="252" height="22" rx="11" fill="#10b981" fill-opacity="0.12" stroke="#10b981" stroke-opacity="0.35" stroke-width="1"/>
+    <text x="378" y="99" text-anchor="middle" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10.5" font-weight="700" fill="#6ee7b7" letter-spacing="1.2">
+      FAMILY-OWNED &#183; ARKANSAS
+    </text>
+
+    <!-- Tagline -->
+    <text x="252" y="132" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15.5" font-weight="500" fill="#cbd5e1">
+      Smart compliance for Arkansas childcare &amp; nursing homes.
+    </text>
+    <text x="252" y="154" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13.5" font-weight="400" fill="#64748b">
+      Built to evolve with your facility&apos;s needs.
+    </text>
+
+    <!-- Feature pills (right, vertically centered) -->
+    <g font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+      <rect x="848" y="48" width="176" height="28" rx="14" fill="#1e293b" fill-opacity="0.9" stroke="#334155" stroke-width="1"/>
+      <circle cx="866" cy="62" r="4" fill="#10b981"/>
+      <text x="878" y="66" font-size="11.5" font-weight="600" fill="#e2e8f0">Personnel Vault</text>
+
+      <rect x="848" y="82" width="176" height="28" rx="14" fill="#1e293b" fill-opacity="0.9" stroke="#334155" stroke-width="1"/>
+      <circle cx="866" cy="96" r="4" fill="#10b981"/>
+      <text x="878" y="100" font-size="11.5" font-weight="600" fill="#e2e8f0">Renewals &amp; Alerts</text>
+
+      <rect x="848" y="116" width="176" height="28" rx="14" fill="#1e293b" fill-opacity="0.9" stroke="#334155" stroke-width="1"/>
+      <circle cx="866" cy="130" r="4" fill="#10b981"/>
+      <text x="878" y="134" font-size="11.5" font-weight="600" fill="#e2e8f0">Inspection Readiness</text>
+    </g>
+  </g>
+</svg>
