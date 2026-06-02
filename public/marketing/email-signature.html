@@ -1,0 +1,114 @@
+<!--
+  Compliance Guard Pro — HTML Email Signature
+  ───────────────────────────────────────────
+  PREVIEW: Open via your dev server so images load:
+    http://localhost:3000/marketing/email-signature.html
+
+  EMAIL: After deploy, copy the "Production" block below (absolute HTTPS URLs).
+  Images must be live at app.complianceguardpro.io before recipients will see them.
+-->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Compliance Guard Pro — Email Signature</title>
+  </head>
+  <body style="margin: 24px; background-color: #f1f5f9; font-family: Arial, Helvetica, sans-serif;">
+    <p style="font-size: 12px; color: #64748b; margin-bottom: 8px;">
+      <strong>Preview</strong> — open this page at
+      <code>http://localhost:3000/marketing/email-signature.html</code> (not as a local file).
+      Broken images in email mean the headshot is not deployed yet — redeploy after adding
+      <code>public/linkedin-profile-headshot-email.png</code>.
+    </p>
+
+    <p style="font-size: 12px; color: #64748b; margin-bottom: 16px;">
+      Copy the table below into Gmail, Outlook, or Apple Mail signature settings.
+    </p>
+
+    <!-- ═══ SIGNATURE START (local preview — works on localhost) ═══ -->
+    <table
+      cellpadding="0"
+      cellspacing="0"
+      border="0"
+      role="presentation"
+      style="border-collapse: collapse; mso-table-lspace: 0pt; mso-table-rspace: 0pt; font-family: Arial, Helvetica, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.45; color: #1e293b;"
+    >
+      <tr>
+        <td valign="top" style="padding: 0 16px 0 0; width: 88px;">
+          <img
+            src="/linkedin-profile-headshot-email.png"
+            alt="Nolan Bevis"
+            width="80"
+            height="80"
+            style="display: block; width: 80px; height: 80px; border-radius: 50%; border: 2px solid #e2e8f0; object-fit: cover;"
+          />
+        </td>
+        <td valign="top" style="padding: 0; border-left: 3px solid #1d4ed8; padding-left: 16px;">
+          <table cellpadding="0" cellspacing="0" border="0" role="presentation" style="border-collapse: collapse;">
+            <tr>
+              <td style="padding: 0 0 2px 0;">
+                <span style="font-size: 16px; font-weight: 700; color: #0f172a; letter-spacing: -0.02em;">
+                  Nolan Bevis
+                </span>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 0 0 10px 0;">
+                <table cellpadding="0" cellspacing="0" border="0" role="presentation" style="border-collapse: collapse;">
+                  <tr>
+                    <td valign="middle" style="padding: 0 6px 0 0;">
+                      <img
+                        src="/logo-shield-linkedin.png"
+                        alt=""
+                        width="18"
+                        height="18"
+                        style="display: block; width: 18px; height: 18px;"
+                      />
+                    </td>
+                    <td valign="middle" style="font-size: 13px; font-weight: 600; color: #1d4ed8;">
+                      Founder, Compliance Guard Pro
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 0 0 3px 0; font-size: 13px; color: #475569;">
+                <a href="mailto:nolan@complianceguardpro.io" style="color: #475569; text-decoration: none;">
+                  nolan@complianceguardpro.io
+                </a>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 0 0 3px 0; font-size: 13px;">
+                <a href="https://app.complianceguardpro.io" style="color: #1d4ed8; text-decoration: none; font-weight: 600;">
+                  app.complianceguardpro.io
+                </a>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 0; font-size: 13px;">
+                <a href="https://linkedin.com/compliance-guard-pro" style="color: #475569; text-decoration: none;">
+                  linkedin.com/compliance-guard-pro
+                </a>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+    <!-- ═══ SIGNATURE END ═══ -->
+
+    <details style="margin-top: 24px; font-size: 12px; color: #475569;">
+      <summary style="cursor: pointer; font-weight: 600;">Production image URLs (use after deploy)</summary>
+      <p style="margin-top: 8px;">
+        Replace image <code>src</code> values with these before pasting into email if you copied from localhost:
+      </p>
+      <ul>
+        <li><code>https://app.complianceguardpro.io/linkedin-profile-headshot-email.png</code></li>
+        <li><code>https://app.complianceguardpro.io/logo-shield-linkedin.png</code></li>
+      </ul>
+    </details>
+  </body>
+</html>
