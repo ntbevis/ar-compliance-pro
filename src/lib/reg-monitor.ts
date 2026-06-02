@@ -388,6 +388,7 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
       is_scored: resolveIsScored(rule),
       score_category: resolveScoreCategory(rule),
       task_kind: rule.task_kind === 'recurring_log' ? 'recurring_log' : 'document',
+      attestation_allowed: rule.attestation_allowed === true,
     }));
 
   console.log(
@@ -569,6 +570,7 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
       score_category: 'personnel',
       compliance_status: worst,
       coverage: { covered: coveredCount, total: applicableStaff.length },
+      attestation_allowed: (rule.attestation_allowed as boolean) === true,
     });
   }
 
@@ -612,6 +614,7 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
         compliance_status: satisfaction ? satisfaction.status : 'missing',
         document_id: satisfaction?.docId,
         document_created_at: satisfaction?.createdAt,
+        attestation_allowed: rule.attestation_allowed === true,
       };
     });
 

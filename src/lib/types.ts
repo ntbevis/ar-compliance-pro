@@ -136,6 +136,13 @@ export interface ComplianceRule {
    *  - 'recurring_log' → a per-period completion in operational_task_completions
    */
   task_kind?: 'document' | 'recurring_log';
+  /**
+   * When true, this requirement may be satisfied by a file-less digital
+   * attestation (reserved for items with no uploadable artifact). Defaults to
+   * false — everything else must be satisfied by Upload (with human-review
+   * fallback) or Mark N/A.
+   */
+  attestation_allowed?: boolean;
   /** Role-specific override. When non-empty, only staff whose role is listed here are subject to this rule. */
   applicable_roles?: string[] | null;
 }
@@ -185,6 +192,8 @@ export interface IdentifiedGap {
   document_created_at?: string;
   completed?: boolean;
   completionType?: 'document' | 'attestation' | 'n/a';
+  /** When true, a file-less digital attestation is permitted for this requirement. */
+  attestation_allowed?: boolean;
   /**
    * For roster-aware personnel rules: how many of the active employees the rule
    * applies to currently hold a satisfying document. Absent for facility rules.

@@ -760,7 +760,7 @@ export default function ComplianceDashboardClient({
                   }}
                 />
               </label>
-              {gap.severity !== 'critical' && (
+              {gap.severity !== 'critical' && gap.attestation_allowed && (
                 <button
                   onClick={() => handleSignAttestation(gap)}
                   disabled={!userAttestation || isUploading}

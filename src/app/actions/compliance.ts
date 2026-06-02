@@ -65,8 +65,6 @@ type AuditActionType =
   | 'digital_attestation'
   | 'document_deletion'
   | 'enrollment_update'
-  | 'bulk_attestation'
-  | 'blueprints_attestation'
   | 'operational_acknowledgment'
   | 'facility_settings_update'
   | 'facility_profile_update'
@@ -295,11 +293,22 @@ export async function signAttestation(
 
     const { data: requirement, error: reqError } = await supabase
       .from('compliance_criteria')
-      .select('requirement_name, required_document_type, frequency')
+      .select('requirement_name, required_document_type, frequency, attestation_allowed')
       .eq('id', requirementId)
       .single();
     if (reqError || !requirement) {
       throw new Error('Requirement not found');
+    }
+
+    // Integrity guard: a file-less attestation is only permitted for requirements
+    // explicitly whitelisted as having no uploadable artifact. Everything else
+    // must be satisfied by Upload (with human-review fallback) or Mark N/A.
+    if (requirement.attestation_allowed !== true) {
+      return {
+        success: false,
+        error:
+          'This requirement must be satisfied with an uploaded document. If the upload cannot be auto-verified, it will be routed to human review.',
+      };
     }
 
     const attestationDate = new Date().toISOString();
@@ -451,46 +460,6 @@ export async function markNotApplicable(
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     console.error('❌ markNotApplicable failure:', message);
-    return { success: false, error: message };
-  }
-}
-
-/**
- * Owner/Director clicks the "Attest Daily Guidelines Met" button on the Operational
- * Blueprints page. Logs a timestamped entry in `audit_logs`.
- */
-export async function attestDailyBlueprints(facilityId: string, comment: string | null = null) {
-  try {
-    const { userId, orgId } = await getAuthenticatedUserContext();
-    const supabase = createAdminClient();
-
-    const { data: facility, error: facilityError } = await supabase
-      .from('facilities')
-      .select('id, org_id, name')
-      .eq('id', facilityId)
-      .eq('org_id', orgId)
-      .single();
-    if (facilityError || !facility) {
-      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
-    }
-
-    await createAuditLog({
-      facilityId,
-      userId,
-      actionType: 'blueprints_attestation',
-      metadata: {
-        attested_at: new Date().toISOString(),
-        comment: comment ?? null,
-        attestation_text:
-          'I certify that the operational blueprints and daily guidelines have been physically verified today.',
-      },
-    });
-
-    revalidatePath('/dashboard');
-    return { success: true, message: "Today's operational attestation logged." };
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    console.error('❌ attestDailyBlueprints failure:', message);
     return { success: false, error: message };
   }
 }
@@ -839,7 +808,7 @@ export async function getRequirementsForRole(facilityId: string, roleName: strin
     const supabase = createAdminClient();
     const normalizedRoleName = roleName.trim();
     if (!normalizedRoleName) {
-      return { success: true, requirements: [] as Array<{ id: string; name: string; typeKey: string; severity: string; frequency: string }> };
+      return { success: true, requirements: [] as Array<{ id: string; name: string; typeKey: string; severity: string; frequency: string; attestationAllowed: boolean }> };
     }
 
     const { data: facility, error: facilityError } = await supabase
@@ -884,6 +853,7 @@ export async function getRequirementsForRole(facilityId: string, roleName: strin
         typeKey: r.required_document_type,
         severity: r.severity,
         frequency: r.frequency,
+        attestationAllowed: r.attestation_allowed === true,
       })),
     };
   } catch (error: unknown) {

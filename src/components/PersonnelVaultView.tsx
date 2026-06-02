@@ -66,6 +66,7 @@ interface RoleRequirement {
   typeKey: string;
   severity: string;
   frequency: string;
+  attestationAllowed?: boolean;
 }
 
 interface PersonnelDocument {
@@ -1751,7 +1752,7 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                         />
                                       </label>
                                     )}
-                                    {req.severity !== 'critical' && (
+                                    {req.severity !== 'critical' && req.attestationAllowed && (
                                       <button
                                         onClick={() => handlePersonnelSignAttestation(person.id, req)}
                                         disabled={isUploading}

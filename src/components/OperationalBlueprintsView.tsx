@@ -303,6 +303,12 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
   const overdueCount = tasks.filter((t) => t.status === 'overdue').length;
   const openTodayCount = tasks.filter((t) => t.status !== 'done').length;
 
+  // Acknowledgment is an ANNUAL liability sign-off. It greys out once signed and
+  // re-opens only when the next annual one is due.
+  const ackDate = lastAck ? new Date(lastAck.created_at) : null;
+  const ackNextDue = ackDate ? new Date(ackDate.getTime() + 365 * 24 * 60 * 60 * 1000) : null;
+  const ackCurrent = !!(ackNextDue && Date.now() < ackNextDue.getTime());
+
   return (
     <div className="space-y-8 max-w-6xl mx-auto">
       {/* ── Liability & Operations Acknowledgment ─────────────────────────── */}
@@ -312,13 +318,14 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
           <h2 className="text-2xl font-bold text-white">Liability &amp; Operations Acknowledgment</h2>
           <p className="text-indigo-300 text-sm mt-1">
             A formal, timestamped record that the director accepts responsibility for upholding these operational
-            standards.
+            standards. Renews <span className="font-semibold text-white">annually</span>.
           </p>
         </div>
 
         <div className="p-5 md:p-8">
-          {lastAck ? (
-            <div className="space-y-5">
+          {ackCurrent && lastAck ? (
+            // Completed for the current annual period — greyed out until the next is due.
+            <div className="space-y-4">
               <div className="flex items-start gap-4 bg-emerald-50 border border-emerald-200 rounded-xl p-5">
                 <span className="text-2xl mt-0.5">✅</span>
                 <div>
@@ -331,41 +338,32 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
                 </div>
               </div>
 
-              <div className="border-t border-slate-100 pt-5">
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Update Acknowledgment</p>
-                <label className="flex items-start gap-3 cursor-pointer group">
-                  <input
-                    type="checkbox"
-                    checked={acknowledged}
-                    onChange={(e) => setAcknowledged(e.target.checked)}
-                    className="mt-0.5 w-4 h-4 accent-indigo-600 cursor-pointer"
-                  />
-                  <span className="text-sm text-slate-700 group-hover:text-slate-900">
-                    I acknowledge that maintaining these operational standards is my responsibility as the facility
-                    director.
-                  </span>
+              {/* Greyed-out, disabled control until the next annual acknowledgment is due. */}
+              <div className="flex items-center justify-between gap-4 bg-slate-50 border border-slate-200 rounded-xl p-4 opacity-70">
+                <label className="flex items-start gap-3 cursor-not-allowed">
+                  <input type="checkbox" checked disabled className="mt-0.5 w-4 h-4 accent-slate-400" />
+                  <span className="text-sm text-slate-500">Annual acknowledgment complete</span>
                 </label>
-                {acknowledged && (
-                  <button
-                    onClick={handleSign}
-                    disabled={submitting}
-                    className={`mt-4 px-5 py-2 rounded-lg font-bold text-sm transition-all ${
-                      submitting
-                        ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                        : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm'
-                    }`}
-                  >
-                    {submitting ? 'Signing…' : 'Update Acknowledgment'}
-                  </button>
+                {ackNextDue && (
+                  <span className="text-xs font-medium text-slate-400 shrink-0">
+                    Next due {ackNextDue.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </span>
                 )}
               </div>
             </div>
           ) : (
             <div className="space-y-5">
-              <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5">
-                <p className="text-sm text-indigo-900 leading-relaxed">
-                  Review the operational standards below, then sign this acknowledgment. Your name and timestamp will be
-                  recorded in the facility&apos;s compliance audit trail.
+              <div
+                className={`border rounded-xl p-5 ${
+                  lastAck ? 'bg-amber-50 border-amber-200' : 'bg-indigo-50 border-indigo-200'
+                }`}
+              >
+                <p className={`text-sm leading-relaxed ${lastAck ? 'text-amber-900' : 'text-indigo-900'}`}>
+                  {lastAck
+                    ? `This year's acknowledgment is due (last signed by ${lastAck.user_name} on ${formatAckDate(
+                        lastAck.created_at
+                      )}). Please re-sign to keep the facility's record current.`
+                    : 'Review the operational standards below, then sign this acknowledgment. Your name and timestamp will be recorded in the facility\u2019s compliance audit trail.'}
                 </p>
               </div>
 
@@ -391,7 +389,7 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
                     : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md'
                 }`}
               >
-                {submitting ? 'Signing…' : 'Sign Operational Acknowledgment'}
+                {submitting ? 'Signing…' : lastAck ? 'Re-sign Acknowledgment' : 'Sign Operational Acknowledgment'}
               </button>
             </div>
           )}
@@ -405,8 +403,8 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
             <p className="text-emerald-200 text-xs font-bold uppercase tracking-widest mb-1">Recurring Tasks</p>
             <h2 className="text-2xl font-bold text-white">🗓️ Operational Log</h2>
             <p className="text-emerald-100 text-sm mt-1">
-              Log the recurring tasks inspectors expect — temperature checks, drills, sanitation, inspections — and keep
-              a defensible, timestamped record.
+              Track the day-to-day logs that are impractical to upload — temperature checks, attendance, sanitation,
+              postings — and keep a defensible, timestamped record for inspectors.
             </p>
           </div>
           <button
@@ -478,15 +476,6 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
                               <p className="text-sm font-semibold text-slate-800">{task.name}</p>
-                              {task.isScored ? (
-                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
-                                  SCORED
-                                </span>
-                              ) : (
-                                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">
-                                  LOG ONLY
-                                </span>
-                              )}
                               {task.severity === 'critical' && (
                                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700">
                                   CRITICAL
@@ -585,9 +574,9 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
 
         <div className="px-4 py-3 md:px-8 bg-slate-50 border-t border-slate-200">
           <p className="text-[11px] text-slate-400 leading-relaxed">
-            Scoring is forgiving by design: a task only counts against your score after a full period lapses
-            (the current period is always grace), and a single missed log nudges — never craters — your score. Daily
-            logs are tracked for your records but don&apos;t affect the score.
+            These logs are for operational tracking and inspector-ready records — they don&apos;t affect your compliance
+            score. Anything that produces an artifact (drills, inspections, receipts, policies) is handled by document
+            upload in the Executive Overview so the score always reflects real, verifiable evidence.
           </p>
         </div>
       </div>
