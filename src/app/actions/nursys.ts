@@ -431,6 +431,45 @@ export async function rotateNursysPassword(
     return { rotated: false, error: 'Nursys is not configured (missing base URL/username).' };
   }
 
+  const force = opts?.force ?? false;
+
+  // First-time seeding: move the source of truth into Vault from the env value
+  // WITHOUT changing the live password. This is safer than an untested live
+  // rotation on day one; real rotations begin once the password ages out (or
+  // when forced). After this, the app reads the password from Vault.
+  const { data: vaultPw } = await admin.rpc('get_nursys_password');
+  const vaultSeeded = typeof vaultPw === 'string' && vaultPw.length > 0;
+  if (!vaultSeeded && !force) {
+    const envPw = process.env.NURSYS_API_PASSWORD ?? '';
+    if (!envPw) {
+      await recordIntegrationAlert(admin, {
+        severity: 'error',
+        message: 'Cannot seed Nursys Vault password: NURSYS_API_PASSWORD is not set.',
+        context: {},
+      });
+      return { rotated: false, error: 'No password available to seed into Vault.' };
+    }
+    const { error: seedErr } = await admin.rpc('set_nursys_password', { new_secret: envPw });
+    if (seedErr) {
+      await recordIntegrationAlert(admin, {
+        severity: 'critical',
+        message: `Failed to seed Nursys password into Vault: ${seedErr.message}`,
+        context: {},
+      });
+      return { rotated: false, error: seedErr.message };
+    }
+    await admin
+      .from('nursys_integration_state')
+      .update({
+        password_rotated_at: new Date().toISOString(),
+        last_rotation_status: 'seeded',
+        last_rotation_error: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', true);
+    return { rotated: false, reason: 'Seeded Vault from env (no live password change).' };
+  }
+
   const { data: state } = await admin
     .from('nursys_integration_state')
     .select('password_rotated_at')
@@ -439,7 +478,7 @@ export async function rotateNursysPassword(
 
   const rotatedAt = state?.password_rotated_at ? new Date(state.password_rotated_at).getTime() : 0;
   const ageDays = rotatedAt ? (Date.now() - rotatedAt) / 86_400_000 : Infinity;
-  if (!opts?.force && ageDays < ROTATE_EVERY_DAYS) {
+  if (!force && ageDays < ROTATE_EVERY_DAYS) {
     return { rotated: false, reason: `not due (password age ${Math.floor(ageDays)}d)` };
   }
 
