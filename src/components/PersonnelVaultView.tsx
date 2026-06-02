@@ -224,7 +224,6 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   const [licenseModal, setLicenseModal] = useState<{
     personnelId: string;
     req: RoleRequirement;
-    tab: 'upload' | 'verify';
   } | null>(null);
   const [licenseForm, setLicenseForm] = useState({
     licenseType: 'RN',
@@ -1110,65 +1109,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
               </button>
             </div>
 
-            {/* Tab bar */}
-            <div className="flex border-b border-slate-200">
-              <button
-                onClick={() => setLicenseModal({ ...licenseModal, tab: 'upload' })}
-                className={`flex-1 px-4 py-3 text-xs font-bold transition-colors ${
-                  licenseModal.tab === 'upload'
-                    ? 'bg-white text-indigo-700 border-b-2 border-indigo-600'
-                    : 'bg-slate-50 text-slate-500 hover:bg-slate-100'
-                }`}
-              >
-                📄 Upload Document
-              </button>
-              <button
-                onClick={() => setLicenseModal({ ...licenseModal, tab: 'verify' })}
-                className={`flex-1 px-4 py-3 text-xs font-bold transition-colors ${
-                  licenseModal.tab === 'verify'
-                    ? 'bg-white text-indigo-700 border-b-2 border-indigo-600'
-                    : 'bg-slate-50 text-slate-500 hover:bg-slate-100'
-                }`}
-              >
-                🛡️ Verify via Nursys
-              </button>
-            </div>
-
-            {/* Tab content */}
+            {/* Content */}
             <div className="p-6">
-              {licenseModal.tab === 'upload' ? (
-                <div className="space-y-4">
-                  <p className="text-sm text-slate-600">
-                    Upload a PDF or image of the license document. It will be AI-verified before being saved.
-                  </p>
-                  <p className="text-xs text-slate-400">Accepted: PDF, JPEG, PNG · Max 10 MB</p>
-                  <label
-                    className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium cursor-pointer transition-colors ${
-                      !isUploading
-                        ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
-                        : 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                    }`}
-                  >
-                    {uploadingReqId === licenseModal.req.id || verifyingReqId === licenseModal.req.id
-                      ? 'Uploading…'
-                      : '⬆ Choose File to Upload'}
-                    <input
-                      type="file"
-                      accept=".pdf,.jpg,.jpeg,.png"
-                      className="hidden"
-                      disabled={isUploading}
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          setLicenseModal(null);
-                          handlePersonnelUpload(licenseModal.personnelId, licenseModal.req, file);
-                        }
-                        e.target.value = '';
-                      }}
-                    />
-                  </label>
-                </div>
-              ) : !nurseVerification ? (
+              {!nurseVerification ? (
                 <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
                   <p className="text-sm text-slate-600">
                     Real primary-source verification against the state board of nursing via{' '}
@@ -1406,12 +1349,6 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                       className="flex-1 px-4 py-2.5 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white"
                     >
                       Try again
-                    </button>
-                    <button
-                      onClick={() => setLicenseModal({ ...licenseModal, tab: 'upload' })}
-                      className="flex-1 px-4 py-2.5 rounded-lg text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700"
-                    >
-                      Upload document instead
                     </button>
                   </div>
                 </div>
@@ -1779,7 +1716,6 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                           setLicenseModal({
                                             personnelId: person.id,
                                             req,
-                                            tab: 'upload',
                                           })
                                         }
                                         disabled={isUploading}
@@ -1788,9 +1724,9 @@ export default function PersonnelVaultView({ facilityId }: Props) {
                                             ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
                                             : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                                         }`}
-                                        title="Upload document or verify by license number"
+                                        title="Primary-source verify this license via Nursys"
                                       >
-                                        🪪 Upload / Verify
+                                        🛡️ Verify via Nursys
                                       </button>
                                     ) : (
                                       <label
