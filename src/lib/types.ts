@@ -130,6 +130,12 @@ export interface ComplianceRule {
   frequency: ComplianceFrequency;
   is_scored: boolean;
   score_category: ScoreCategory;
+  /**
+   * How the requirement is satisfied:
+   *  - 'document'      → an uploaded/attested facility_documents row (default)
+   *  - 'recurring_log' → a per-period completion in operational_task_completions
+   */
+  task_kind?: 'document' | 'recurring_log';
   /** Role-specific override. When non-empty, only staff whose role is listed here are subject to this rule. */
   applicable_roles?: string[] | null;
 }

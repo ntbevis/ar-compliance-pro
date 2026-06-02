@@ -12,6 +12,9 @@ import type {
 } from './types';
 import { FACILITY_TOGGLE_KEYS } from './types';
 import { computeStaffingAdequacy } from './staffing';
+import { recurringStatus } from './recurrence';
+
+const EMPTY_KEYS: Set<string> = new Set();
 
 /**
  * String normalization helper for resilient fuzzy matching against uploaded documents.
@@ -384,6 +387,7 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
       frequency: (rule.frequency as ComplianceRule['frequency']) ?? 'annual',
       is_scored: resolveIsScored(rule),
       score_category: resolveScoreCategory(rule),
+      task_kind: rule.task_kind === 'recurring_log' ? 'recurring_log' : 'document',
     }));
 
   console.log(
@@ -431,14 +435,43 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
   // A rule is "satisfied enough" for score purposes if the doc exists (even if expired/expiring)
   const satisfiedRuleIds = new Set(satisfiedRuleMap.keys());
 
+  // 4b. Recurring operational tasks are satisfied by a per-period completion, not a
+  //     document. Pull recent completions for the applicable recurring rules so the
+  //     score/gap engine can evaluate their done/due/overdue status. 130 days covers
+  //     the current + last-closed period even for quarterly cadences.
+  const recurringRuleIds = applicableRules
+    .filter((r) => r.task_kind === 'recurring_log')
+    .map((r) => r.id);
+  const completionsByRule = new Map<string, Set<string>>();
+  if (recurringRuleIds.length > 0) {
+    const since = new Date(Date.now() - 130 * 24 * 60 * 60 * 1000).toISOString();
+    const { data: completions } = await supabase
+      .from('operational_task_completions')
+      .select('criteria_id, period_key')
+      .eq('facility_id', facilityId)
+      .in('criteria_id', recurringRuleIds)
+      .gte('completed_at', since);
+    for (const c of (completions ?? []) as Array<{ criteria_id: string; period_key: string }>) {
+      const set = completionsByRule.get(c.criteria_id) ?? new Set<string>();
+      set.add(c.period_key);
+      completionsByRule.set(c.criteria_id, set);
+    }
+  }
+
+  /** Recurring task satisfied for scoring when it isn't overdue (done or in-grace due). */
+  const recurringSatisfied = (rule: ComplianceRule): boolean =>
+    recurringStatus(rule.frequency, completionsByRule.get(rule.id) ?? EMPTY_KEYS) !== 'overdue';
+
   // 5. THE FACILITY SCORE: facility-category scored rules, satisfied by any facility doc.
   //    Daily-frequency rules are operational expectations, not verifiable upload events —
   //    they are intentionally excluded from the score buckets.
   const facilityScoredRules = applicableRules.filter(
     (r) => r.is_scored && r.score_category === 'facility' && r.frequency !== 'daily'
   );
-  const facilityVerified = facilityScoredRules.filter(
-    (r) => satisfiedRuleIds.has(r.id) && satisfiedRuleMap.get(r.id)?.status !== 'pending_review'
+  const facilityVerified = facilityScoredRules.filter((r) =>
+    r.task_kind === 'recurring_log'
+      ? recurringSatisfied(r)
+      : satisfiedRuleIds.has(r.id) && satisfiedRuleMap.get(r.id)?.status !== 'pending_review'
   ).length;
   const facilityReadinessScore =
     facilityScoredRules.length > 0
@@ -553,6 +586,20 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
   const facilityAndInfoGaps: IdentifiedGap[] = applicableRules
     .filter((rule) => rule.frequency !== 'daily' && rule.score_category !== 'personnel')
     .map((rule) => {
+      // Recurring tasks are satisfied by per-period completion, not a document.
+      if (rule.task_kind === 'recurring_log') {
+        const status = recurringStatus(rule.frequency, completionsByRule.get(rule.id) ?? EMPTY_KEYS);
+        return {
+          id: rule.id,
+          name: rule.requirement_name,
+          typeKey: rule.required_document_type,
+          severity: rule.severity,
+          frequency: rule.frequency,
+          is_scored: rule.is_scored,
+          score_category: rule.score_category,
+          compliance_status: status === 'overdue' ? 'expired' : 'satisfied',
+        };
+      }
       const satisfaction = satisfiedRuleMap.get(rule.id);
       return {
         id: rule.id,
