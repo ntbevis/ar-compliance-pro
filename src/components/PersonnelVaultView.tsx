@@ -735,10 +735,10 @@ export default function PersonnelVaultView({ facilityId }: Props) {
   // Step 2+: advance the async state machine (enroll -> lookup -> result).
   const handleCheckVerification = async () => {
     if (!licenseModal || !nurseVerification) return;
-    const { personnelId, req } = licenseModal;
+    const { personnelId } = licenseModal;
     setIsCheckingStatus(true);
     try {
-      const result = await advanceNurseVerification(nurseVerification.id, req.typeKey);
+      const result = await advanceNurseVerification(nurseVerification.id);
       if (!result.success) {
         toast.error(result.error);
         return;

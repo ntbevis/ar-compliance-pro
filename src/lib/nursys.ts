@@ -1,23 +1,47 @@
 /**
  * Nursys e-Notify JSON API client (spec v3.1.5).
  *
- * Auth: `username` + `password` HTTP headers over HTTPS (read from env only —
- * the password never lives in code or git). The API is asynchronous: you POST a
- * batch and receive a TransactionId, then GET with that id to retrieve results
- * (recommended ~5 min wait; processing must complete within 20 min).
+ * Auth: `username` + `password` HTTP headers over HTTPS. The base URL and
+ * username come from env; the PASSWORD is resolved at call time from Supabase
+ * Vault (so the rotation job can change it without a redeploy), falling back to
+ * NURSYS_API_PASSWORD when Vault hasn't been seeded yet (local dev / pre-Phase-2).
  *
- * Phase 1 reads the password from NURSYS_API_PASSWORD. Phase 2 will move the
- * (rotating) password into Supabase Vault and swap the source here.
+ * The API is asynchronous: POST a batch -> receive a TransactionId -> GET with
+ * that id to retrieve results (recommend ~5 min wait; must complete within 20).
  */
+
+import { createAdminClient } from 'src/app/utils/supabase/admin';
 
 const RAW_BASE_URL = process.env.NURSYS_API_BASE_URL ?? '';
 const API_USERNAME = process.env.NURSYS_API_USERNAME ?? '';
-const API_PASSWORD = process.env.NURSYS_API_PASSWORD ?? '';
 
 /** Normalized base URL guaranteed to end with a single slash. */
 const BASE_URL = RAW_BASE_URL.replace(/\/+$/, '') + '/';
 
 const REQUEST_TIMEOUT_MS = 30_000;
+
+// Short-lived in-memory cache of the Vault password to avoid a DB round-trip on
+// every Nursys call. Kept brief so a rotation propagates quickly; auth failures
+// also bust it (see nursysCall) for instant recovery right after a rotation.
+let pwCache: { value: string; at: number } | null = null;
+const PW_TTL_MS = 60_000;
+
+async function resolveNursysPassword(force = false): Promise<string> {
+  if (!force && pwCache && Date.now() - pwCache.at < PW_TTL_MS) return pwCache.value;
+  try {
+    const admin = createAdminClient();
+    const { data, error } = await admin.rpc('get_nursys_password');
+    if (!error && typeof data === 'string' && data.length > 0) {
+      pwCache = { value: data, at: Date.now() };
+      return data;
+    }
+  } catch {
+    // ignore and fall back to env
+  }
+  const envPw = process.env.NURSYS_API_PASSWORD ?? '';
+  pwCache = { value: envPw, at: Date.now() };
+  return envPw;
+}
 
 /** Valid Nursys license-type codes (Appendix A.2). */
 export const NURSYS_LICENSE_TYPES = {
@@ -32,7 +56,9 @@ export const NURSYS_LICENSE_TYPES = {
 export type NursysLicenseType = keyof typeof NURSYS_LICENSE_TYPES;
 
 export function isNursysConfigured(): boolean {
-  return Boolean(BASE_URL.length > 1 && API_USERNAME && API_PASSWORD);
+  // The password is resolved at call time (Vault or env), so configuration only
+  // requires the base URL + username to be present here.
+  return Boolean(BASE_URL.length > 1 && API_USERNAME);
 }
 
 // --- Wire types (subset of the spec we consume) ------------------------------
@@ -100,22 +126,40 @@ type LookupPollResult =
   | { ok: true; processingComplete: true; found: boolean; licenses: NursysLicense[]; ncsbnId?: string; messages: string[] }
   | { ok: false; error: string };
 
-function authHeaders(): Record<string, string> {
-  return {
-    'Content-Type': 'application/json',
-    username: API_USERNAME,
-    password: API_PASSWORD,
-  };
+function isAuthErrorJson(json: unknown): boolean {
+  const t = (json as { Transaction?: Transaction })?.Transaction;
+  return (t?.TransactionErrors ?? []).some(
+    (e) => e.ErrorId === 100 || /authentication|invalid credentials/i.test(e.ErrorMessage ?? '')
+  );
 }
 
-async function nursysFetch(path: string, init: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    return await fetch(`${BASE_URL}${path}`, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
+/**
+ * Single transport for every Nursys call: resolves the current password,
+ * applies the timeout, parses JSON, and — to make password rotation seamless —
+ * retries exactly once with a freshly-resolved password on an auth error.
+ */
+async function nursysCall(path: string, method: 'GET' | 'POST', body?: unknown): Promise<unknown> {
+  const doFetch = async (password: string): Promise<unknown> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${BASE_URL}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json', username: API_USERNAME, password },
+        body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
+        signal: controller.signal,
+      });
+      return await res.json();
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  let json = await doFetch(await resolveNursysPassword());
+  if (isAuthErrorJson(json)) {
+    json = await doFetch(await resolveNursysPassword(true));
   }
+  return json;
 }
 
 function transactionError(t: Transaction | undefined): string | null {
@@ -152,12 +196,7 @@ export async function submitManageNurseList(nurse: ManageNurseListInput): Promis
         },
       ],
     };
-    const res = await nursysFetch('managenurselist', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify(body),
-    });
-    const json = (await res.json()) as { Transaction?: Transaction };
+    const json = (await nursysCall('managenurselist', 'POST', body)) as { Transaction?: Transaction };
     const err = transactionError(json.Transaction);
     if (err) return { ok: false, error: err };
     return { ok: true, transactionId: json.Transaction!.TransactionId as string };
@@ -168,11 +207,10 @@ export async function submitManageNurseList(nurse: ManageNurseListInput): Promis
 
 export async function getManageNurseList(transactionId: string): Promise<EnrollPollResult> {
   try {
-    const res = await nursysFetch(`managenurselist?transactionId=${encodeURIComponent(transactionId)}`, {
-      method: 'GET',
-      headers: authHeaders(),
-    });
-    const json = (await res.json()) as {
+    const json = (await nursysCall(
+      `managenurselist?transactionId=${encodeURIComponent(transactionId)}`,
+      'GET'
+    )) as {
       ProcessingCompleteFlag?: boolean;
       Transaction?: Transaction;
       ManageNurseListResponses?: Array<{ SuccessFlag?: boolean; Errors?: TransactionError[] }>;
@@ -210,12 +248,7 @@ export async function submitNurseLookup(input: {
         },
       ],
     };
-    const res = await nursysFetch('nurselookup', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify(body),
-    });
-    const json = (await res.json()) as { Transaction?: Transaction };
+    const json = (await nursysCall('nurselookup', 'POST', body)) as { Transaction?: Transaction };
     const err = transactionError(json.Transaction);
     if (err) return { ok: false, error: err };
     return { ok: true, transactionId: json.Transaction!.TransactionId as string };
@@ -226,11 +259,10 @@ export async function submitNurseLookup(input: {
 
 export async function getNurseLookup(transactionId: string): Promise<LookupPollResult> {
   try {
-    const res = await nursysFetch(`nurselookup?transactionId=${encodeURIComponent(transactionId)}`, {
-      method: 'GET',
-      headers: authHeaders(),
-    });
-    const json = (await res.json()) as {
+    const json = (await nursysCall(
+      `nurselookup?transactionId=${encodeURIComponent(transactionId)}`,
+      'GET'
+    )) as {
       ProcessingCompleteFlag?: boolean;
       NurseLookupResponses?: NurseLookupResponse[];
     };
@@ -253,12 +285,9 @@ export async function getNurseLookup(transactionId: string): Promise<LookupPollR
 // --- Change password (used by Phase 2 rotation) ------------------------------
 export async function changeNursysPassword(newPassword: string): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await nursysFetch('changepassword', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ NewPassword: newPassword }),
-    });
-    const json = (await res.json()) as { Transaction?: Transaction };
+    const json = (await nursysCall('changepassword', 'POST', { NewPassword: newPassword })) as {
+      Transaction?: Transaction;
+    };
     const err = transactionError(json.Transaction);
     return err ? { ok: false, error: err } : { ok: true };
   } catch (e) {
