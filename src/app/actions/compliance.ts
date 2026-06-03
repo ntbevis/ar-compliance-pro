@@ -13,7 +13,7 @@ import { computeStaffingAdequacy } from '@/lib/staffing';
 import { createHash } from 'crypto';
 import { headers } from 'next/headers';
 import { revalidatePath, unstable_noStore as noStore } from 'next/cache';
-import type { ComplianceRule, Facility, FacilityScopeToggles, FacilityType, IdentifiedGap } from '@/lib/types';
+import type { ComplianceRule, Facility, FacilityScopeToggles, FacilityType, IdentifiedGap, LicenseType } from '@/lib/types';
 import { FACILITY_TOGGLE_KEYS } from '@/lib/types';
 import { computeRenewals, type RenewalItem } from '@/lib/renewals';
 
@@ -746,6 +746,7 @@ export async function getAvailableRoles(facilityId: string) {
           'id',
           'org_id',
           'facility_type',
+          'license_type',
           ...FACILITY_TOGGLE_KEYS,
         ].join(', ')
       )
@@ -759,10 +760,11 @@ export async function getAvailableRoles(facilityId: string) {
 
     const facilityRow = facility as unknown as Record<string, unknown>;
     const facilityType = facilityRow.facility_type as FacilityType;
+    const licenseType = (facilityRow.license_type as string | null) ?? null;
 
     const { data: roles, error: rolesError } = await supabase
       .from('regulatory_roles')
-      .select('id, role_name, sub_classification, facility_type');
+      .select('id, role_name, sub_classification, facility_type, license_type');
 
     if (rolesError) {
       console.error('❌ Error querying regulatory_roles:', rolesError);
@@ -771,6 +773,10 @@ export async function getAvailableRoles(facilityId: string) {
 
     const filteredRoles = (roles ?? []).filter((role: Record<string, unknown>) => {
       if (role.facility_type !== facilityType) return false;
+      // License-type gate: a role scoped to a specific license only appears for
+      // facilities holding that exact license. Unscoped roles always pass.
+      const roleLicenseType = (role.license_type as string | null) ?? null;
+      if (roleLicenseType && licenseType && roleLicenseType !== licenseType) return false;
       if (
         role.sub_classification === null ||
         role.sub_classification === undefined ||
@@ -814,7 +820,7 @@ export async function getRequirementsForRole(facilityId: string, roleName: strin
     const { data: facility, error: facilityError } = await supabase
       .from('facilities')
       .select(
-        ['id', 'org_id', 'facility_type', ...FACILITY_TOGGLE_KEYS].join(', ')
+        ['id', 'org_id', 'facility_type', 'license_type', ...FACILITY_TOGGLE_KEYS].join(', ')
       )
       .eq('id', facilityId)
       .eq('org_id', orgId)
@@ -859,6 +865,183 @@ export async function getRequirementsForRole(facilityId: string, roleName: strin
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     return { success: false, error: message, requirements: [] as Array<{ id: string; name: string; typeKey: string; severity: string; frequency: string }> };
+  }
+}
+
+/**
+ * Self-compliance management (post-onboarding). Returns the titles the current
+ * user holds at this facility, plus every title that is selectable there. Used
+ * by FacilitySettingsView so an owner/director who also works a regulated role
+ * can maintain their own positions over time.
+ */
+export async function getMySelfRoles(facilityId: string) {
+  noStore();
+  try {
+    const { userId, orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+
+    // Selectable titles for this facility (license + toggle scoped).
+    const available = await getAvailableRoles(facilityId);
+
+    // The user's current self-record titles at this facility.
+    const { data: selfRow } = await supabase
+      .from('personnel')
+      .select('id')
+      .eq('profile_id', userId)
+      .eq('facility_id', facilityId)
+      .eq('is_self_record', true)
+      .maybeSingle();
+
+    let currentRoles: string[] = [];
+    const selfId = (selfRow as { id: number } | null)?.id ?? null;
+    if (selfId) {
+      const { data: roleRows } = await supabase
+        .from('personnel_roles')
+        .select('role_name')
+        .eq('personnel_id', selfId);
+      currentRoles = ((roleRows ?? []) as Array<{ role_name: string }>).map((r) => r.role_name);
+    }
+
+    return {
+      success: true,
+      currentRoles,
+      availableRoles: available.success ? available.roles : ([] as string[]),
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message, currentRoles: [] as string[], availableRoles: [] as string[] };
+  }
+}
+
+/**
+ * Replaces the current user's self-compliance titles at a facility. Maintains
+ * both layers: profile_roles (self-identification) and a self personnel record
+ * + personnel_roles (the rows the twin-score engine evaluates).
+ */
+export async function updateMySelfRoles(facilityId: string, roleNames: string[]) {
+  try {
+    const { userId, orgId } = await getAuthenticatedUserContext();
+    const supabase = createAdminClient();
+
+    const { data: facility, error: facilityError } = await supabase
+      .from('facilities')
+      .select('id, org_id, facility_type')
+      .eq('id', facilityId)
+      .eq('org_id', orgId)
+      .single();
+    if (facilityError || !facility) {
+      throw new Error('Unauthorized: Facility not found or does not belong to your organization');
+    }
+    const facilityType = (facility as { facility_type: string }).facility_type;
+
+    const distinctRoles = Array.from(
+      new Set(roleNames.map((r) => r.trim()).filter((r) => r.length > 0))
+    );
+
+    // Resolve the user's display name for the personnel record.
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', userId)
+      .single();
+    const fullName = (profile?.full_name as string | null) ?? 'Account Owner';
+
+    // Resolve canonical regulatory_role ids (prefer unscoped rows).
+    const roleIdByName = new Map<string, string>();
+    if (distinctRoles.length > 0) {
+      const { data: roleRows } = await supabase
+        .from('regulatory_roles')
+        .select('id, role_name, facility_type, sub_classification')
+        .in('role_name', distinctRoles);
+      for (const row of (roleRows ?? []) as Array<{
+        id: string; role_name: string; facility_type: string; sub_classification: string | null;
+      }>) {
+        if (row.facility_type !== facilityType) continue;
+        const existing = roleIdByName.get(row.role_name);
+        if (!existing || row.sub_classification === null) roleIdByName.set(row.role_name, row.id);
+      }
+    }
+
+    // Locate or create the self personnel record.
+    const { data: selfRow } = await supabase
+      .from('personnel')
+      .select('id')
+      .eq('profile_id', userId)
+      .eq('facility_id', facilityId)
+      .eq('is_self_record', true)
+      .maybeSingle();
+    let personnelId = (selfRow as { id: number } | null)?.id ?? null;
+
+    // No titles selected: clear the self record's roles (and remove the empty
+    // self personnel row so it does not linger as a zero-title employee).
+    if (distinctRoles.length === 0) {
+      await supabase.from('profile_roles').delete().eq('profile_id', userId).eq('facility_id', facilityId);
+      if (personnelId) {
+        await supabase.from('personnel_roles').delete().eq('personnel_id', personnelId);
+        await supabase.from('personnel').delete().eq('id', personnelId).eq('is_self_record', true);
+      }
+      revalidatePath('/dashboard');
+      return { success: true };
+    }
+
+    if (!personnelId) {
+      const { data: newPersonnel, error: insertError } = await supabase
+        .from('personnel')
+        .insert({
+          facility_id: facilityId,
+          profile_id: userId,
+          is_self_record: true,
+          name: fullName,
+          role: distinctRoles[0],
+          status: 'active',
+          clearance_status: 'pending',
+          hire_date: new Date().toISOString(),
+        })
+        .select('id')
+        .single();
+      if (insertError) return { success: false, error: insertError.message };
+      personnelId = (newPersonnel as { id: number }).id;
+    } else {
+      await supabase.from('personnel').update({ role: distinctRoles[0] }).eq('id', personnelId);
+    }
+
+    // Replace profile_roles for this facility.
+    await supabase.from('profile_roles').delete().eq('profile_id', userId).eq('facility_id', facilityId);
+    await supabase.from('profile_roles').insert(
+      distinctRoles.map((roleName) => ({
+        profile_id: userId,
+        regulatory_role_id: roleIdByName.get(roleName) ?? null,
+        facility_id: facilityId,
+        role_name: roleName,
+        facility_type: facilityType,
+      }))
+    );
+
+    // Replace personnel_roles to exactly the selected set.
+    await supabase.from('personnel_roles').delete().eq('personnel_id', personnelId);
+    await supabase.from('personnel_roles').insert(
+      distinctRoles.map((roleName) => ({
+        personnel_id: personnelId,
+        role_name: roleName,
+        regulatory_role_id: roleIdByName.get(roleName) ?? null,
+      }))
+    );
+
+    revalidatePath('/dashboard');
+    return { success: true };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
   }
 }
 
@@ -1067,7 +1250,7 @@ export async function getUpcomingRenewals(
 
     const { data: facility } = await supabase
       .from('facilities')
-      .select(['id', 'org_id', 'facility_type', ...FACILITY_TOGGLE_KEYS].join(', '))
+      .select(['id', 'org_id', 'facility_type', 'license_type', ...FACILITY_TOGGLE_KEYS].join(', '))
       .eq('id', facilityId)
       .eq('org_id', orgId)
       .single();
@@ -1098,6 +1281,9 @@ export async function getUpcomingRenewals(
         r.score_category === 'facility' || r.score_category === 'personnel'
           ? (r.score_category as ComplianceRule['score_category'])
           : null,
+      applicable_license_types: (r.applicable_license_types ?? null) as
+        | string[]
+        | null,
     }));
 
     const personnelNameById = new Map<string, string>(
@@ -1251,6 +1437,7 @@ export async function getAllFacilitiesOverview() {
           'id',
           'name',
           'facility_type',
+          'license_type',
           'capacity',
           'active_enrollment',
           'enrollment_updated_at',
@@ -1342,6 +1529,7 @@ export async function getFacilitySettings(facilityId: string) {
           'org_id',
           'name',
           'facility_type',
+          'license_type',
           'license_number',
           'capacity',
           'active_enrollment',
@@ -1829,6 +2017,7 @@ export async function archiveFacility(facilityId: string) {
 export async function addFacility(payload: {
   name: string;
   facility_type: FacilityType;
+  license_type?: LicenseType | null;
   license_number: string;
   capacity: number;
   toggles: Partial<FacilityScopeToggles>;
@@ -1853,6 +2042,7 @@ export async function addFacility(payload: {
         org_id: orgId,
         name: payload.name,
         facility_type: payload.facility_type,
+        license_type: payload.license_type ?? null,
         license_number: payload.license_number,
         capacity: payload.capacity,
         is_active: true,

@@ -73,11 +73,43 @@ function activeToggleKeys(facility: Pick<Facility, FacilityToggleKey>): Set<stri
 /** Scope tags that apply without a matching facility toggle (see ruleAppliesToFacility). */
 export const UNIVERSAL_BASELINE_TAGS = new Set(['all_staff', 'facility_management', 'education']);
 
+/**
+ * Normalize a rule's applicable_license_types from Supabase (text[] or legacy
+ * string/JSON forms). Returns null when the rule is unrestricted (applies to
+ * every license type within its facility_type).
+ */
+export function normalizeApplicableLicenseTypes(raw: unknown): string[] | null {
+  // Reuse the same resilient parsing the role list uses (text[], JSON, or
+  // Postgres array literal), since the storage shape is identical.
+  return normalizeApplicableRoles(raw);
+}
+
+/**
+ * The LICENSE-TYPE dimension of facility applicability. A rule restricted to
+ * specific license types only applies when the facility's exact license is in
+ * that list. Unrestricted rules (NULL/empty) always pass. When the facility's
+ * license_type is unknown (legacy rows not yet backfilled) we do NOT
+ * over-filter, so the dashboard keeps surfacing the sector-wide ruleset.
+ */
+export function ruleAppliesToLicenseType(
+  rule: Pick<ComplianceRule, 'applicable_license_types'>,
+  facility: Pick<Facility, 'license_type'>
+): boolean {
+  const allowed = normalizeApplicableLicenseTypes(rule.applicable_license_types);
+  if (allowed === null) return true;
+  const licenseType = facility.license_type;
+  if (!licenseType) return true;
+  return allowed.includes(licenseType);
+}
+
 export function ruleAppliesToFacility(
-  rule: Pick<ComplianceRule, 'facility_type' | 'sub_classification'>,
-  facility: Pick<Facility, 'facility_type' | FacilityToggleKey>
+  rule: Pick<ComplianceRule, 'facility_type' | 'sub_classification' | 'applicable_license_types'>,
+  facility: Pick<Facility, 'facility_type' | 'license_type' | FacilityToggleKey>
 ): boolean {
   if (rule.facility_type !== facility.facility_type) return false;
+  // Exact-license gate (Objectives 2 & 3): a rule scoped to specific license
+  // types must match the facility's exact license.
+  if (!ruleAppliesToLicenseType(rule, facility)) return false;
   const sub = rule.sub_classification as string | null | undefined;
   if (sub === null || sub === undefined || sub === 'null' || UNIVERSAL_BASELINE_TAGS.has(sub)) {
     return true;
@@ -216,6 +248,35 @@ export function personnelRuleMatchesRole(
 }
 
 /**
+ * Multi-title applicability. A person who holds several regulatory titles (e.g.
+ * "Nursing Home Administrator" AND "LPN") is subject to a personnel rule if ANY
+ * of their titles matches it. This is the union used by the twin-score engine
+ * once personnel can carry multiple roles (see personnel_roles).
+ */
+export function personnelRuleMatchesAnyRole(
+  rule: { requirement_name?: unknown; applicable_roles?: unknown; applies_to_role?: unknown },
+  roleNames: ReadonlyArray<string>,
+  facilityType: ComplianceRule['facility_type']
+): boolean {
+  const titles = roleNames.filter((r) => typeof r === 'string' && r.trim().length > 0);
+  if (titles.length === 0) return false;
+  return titles.some((roleName) => personnelRuleMatchesRole(rule, roleName, facilityType));
+}
+
+/** De-duplicated, trimmed set of every title a person holds (primary + extra). */
+export function collectPersonnelRoles(
+  primaryRole: string | null | undefined,
+  extraRoles?: ReadonlyArray<string> | null
+): string[] {
+  const set = new Set<string>();
+  if (primaryRole && primaryRole.trim()) set.add(primaryRole.trim());
+  for (const r of extraRoles ?? []) {
+    if (typeof r === 'string' && r.trim()) set.add(r.trim());
+  }
+  return Array.from(set);
+}
+
+/**
  * Resolve the score category for a rule, gracefully handling legacy `is_personnel_requirement`
  * rows that have not yet been backfilled with `score_category`.
  */
@@ -332,6 +393,7 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
       [
         'id',
         'facility_type',
+        'license_type',
         'capacity',
         'active_enrollment',
         'enrollment_updated_at',
@@ -489,8 +551,30 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
     .select('id, role')
     .eq('facility_id', facilityId)
     .eq('status', 'active');
-  const activeStaff = (rosterRows ?? []) as Array<{ id: string; role: string }>;
-  const personnelCount = activeStaff.length;
+  const rosterBase = (rosterRows ?? []) as Array<{ id: string | number; role: string }>;
+  const personnelCount = rosterBase.length;
+
+  // Multi-title support: a single person may hold several regulatory titles
+  // (e.g. Administrator + LPN). Pull their extra titles and union them with the
+  // primary `role` so personnel rules apply if ANY held title matches.
+  const rolesByPersonnel = new Map<string, string[]>();
+  if (rosterBase.length > 0) {
+    const { data: extraRoleRows } = await supabase
+      .from('personnel_roles')
+      .select('personnel_id, role_name')
+      .in('personnel_id', rosterBase.map((p) => p.id));
+    for (const row of (extraRoleRows ?? []) as Array<{ personnel_id: string | number; role_name: string }>) {
+      const key = String(row.personnel_id);
+      const list = rolesByPersonnel.get(key) ?? [];
+      list.push(row.role_name);
+      rolesByPersonnel.set(key, list);
+    }
+  }
+  const activeStaff = rosterBase.map((emp) => ({
+    id: String(emp.id),
+    role: emp.role,
+    roleNames: collectPersonnelRoles(emp.role, rolesByPersonnel.get(String(emp.id))),
+  }));
 
   // Personnel candidate rules straight from the raw rows (so applicable_roles is available),
   // gated by facility scope + scored + non-daily.
@@ -511,7 +595,8 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
       const meta = d.metadata as Record<string, unknown> | null;
       return (
         meta &&
-        meta.personnel_id === employeeId &&
+        meta.personnel_id != null &&
+        String(meta.personnel_id) === String(employeeId) &&
         d.document_type &&
         tokensMatch(requiredDocType, d.document_type)
       );
@@ -540,7 +625,7 @@ export async function getRegulatoryStatus(facilityId: string): Promise<Regulator
     const frequency = (rule.frequency as ComplianceFrequency) ?? 'annual';
 
     const applicableStaff = activeStaff.filter((emp) =>
-      personnelRuleMatchesRole(rule, emp.role, facilityType)
+      personnelRuleMatchesAnyRole(rule, emp.roleNames, facilityType)
     );
     // Roster-aware: a rule with no employee in a matching role is simply not in scope.
     if (applicableStaff.length === 0) continue;

@@ -3,20 +3,34 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
-import { getFacilityRequirements } from '@/app/actions/onboarding';
-import { saveOnboardingData, isOnboardingComplete, type FacilityPayload } from '@/app/actions/onboarding-save';
+import {
+  getFacilityRequirements,
+  getOnboardingRoleOptions,
+  getPersonalRequirementsPreview,
+} from '@/app/actions/onboarding';
+import {
+  saveOnboardingData,
+  isOnboardingComplete,
+  type FacilityPayload,
+  type SelfCompliancePayload,
+} from '@/app/actions/onboarding-save';
 import {
   FACILITY_TOGGLE_LABELS,
   TOGGLES_BY_FACILITY_TYPE,
+  LICENSE_TYPES_BY_FACILITY_TYPE,
+  LICENSE_TYPE_LABELS,
+  LICENSE_TYPE_DESCRIPTIONS,
   type FacilityScopeToggles,
   type FacilityToggleKey,
   type FacilityType,
+  type LicenseType,
 } from '@/lib/types';
 
 interface FacilityQueueItem {
   id: string;
   name: string;
   type: FacilityType;
+  licenseType: LicenseType;
   licenseNumber: string;
   capacity: number;
   toggles: FacilityScopeToggles;
@@ -47,9 +61,23 @@ interface RequirementPreview {
   score_category: 'facility' | 'personnel' | null;
 }
 
+interface PersonalRequirementPreview {
+  id: string;
+  requirement_name: string;
+  required_document_type: string;
+  severity: 'critical' | 'standard';
+  frequency: string;
+  facility_type: FacilityType;
+}
+
+const SECTOR_META: Record<FacilityType, { icon: string; label: string; authority: string }> = {
+  childcare_center: { icon: '🧸', label: 'Childcare', authority: 'ADE Office of Early Childhood' },
+  nursing_home: { icon: '🏥', label: 'Long-Term Care', authority: 'DHS Office of Long Term Care' },
+};
+
 export default function OnboardingPage() {
   const router = useRouter();
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [loading, setLoading] = useState(false);
 
   // Completion guard: if this org already has facilities, redirect straight to dashboard
@@ -64,16 +92,24 @@ export default function OnboardingPage() {
   const [orgName, setOrgName] = useState('');
   const [facilities, setFacilities] = useState<FacilityQueueItem[]>([]);
   const [requirementsSummary, setRequirementsSummary] = useState<RequirementPreview[]>([]);
+  const [personalSummary, setPersonalSummary] = useState<PersonalRequirementPreview[]>([]);
 
   // --- DYNAMIC FORM ENTRY BUFFER ---
   const [facName, setFacName] = useState('');
   const [facType, setFacType] = useState<FacilityType | null>(null);
+  const [facLicenseType, setFacLicenseType] = useState<LicenseType | null>(null);
   const [facLicense, setFacLicense] = useState('');
   const [facCapacity, setFacCapacity] = useState<number | ''>('');
   const [facToggles, setFacToggles] = useState<FacilityScopeToggles>({ ...EMPTY_TOGGLES });
 
+  // --- SELF-COMPLIANCE (the user's own titles) ---
+  const [rolesByFacilityType, setRolesByFacilityType] = useState<Record<string, string[]>>({});
+  const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
+  const [selfFacilityId, setSelfFacilityId] = useState<string | null>(null);
+
   const handleSectorSelect = (type: FacilityType) => {
     setFacType(type);
+    setFacLicenseType(null);
     setFacToggles({ ...EMPTY_TOGGLES });
   };
 
@@ -82,12 +118,13 @@ export default function OnboardingPage() {
   };
 
   const addFacilityToQueue = () => {
-    if (!facName || !facType || !facLicense || facCapacity === '' || facCapacity <= 0) return;
+    if (!facName || !facType || !facLicenseType || !facLicense || facCapacity === '' || facCapacity <= 0) return;
 
     const newLocation: FacilityQueueItem = {
       id: crypto.randomUUID(),
       name: facName,
       type: facType,
+      licenseType: facLicenseType,
       licenseNumber: facLicense.trim().toUpperCase(),
       capacity: Number(facCapacity),
       toggles: { ...facToggles },
@@ -97,6 +134,7 @@ export default function OnboardingPage() {
     // Reset entry buffer
     setFacName('');
     setFacType(null);
+    setFacLicenseType(null);
     setFacLicense('');
     setFacCapacity('');
     setFacToggles({ ...EMPTY_TOGGLES });
@@ -106,13 +144,45 @@ export default function OnboardingPage() {
     setFacilities((prev) => prev.filter((f) => f.id !== id));
   };
 
+  /** Distinct sector + license combinations currently queued. */
+  const selectionsForQuery = () =>
+    Array.from(
+      new Map(
+        facilities.map((f) => [`${f.type}:${f.licenseType}`, { facilityType: f.type, licenseType: f.licenseType }])
+      ).values()
+    );
+
+  // Step 2 → 3: load the regulatory titles the user can claim for themselves.
+  const handleGoToTitles = async () => {
+    setLoading(true);
+    try {
+      // Default the "where do you work" selector to the first facility.
+      if (!selfFacilityId && facilities.length > 0) setSelfFacilityId(facilities[0].id);
+      const res = await getOnboardingRoleOptions(selectionsForQuery());
+      setRolesByFacilityType(res.success ? res.rolesByFacilityType : {});
+    } catch (err) {
+      console.error('Failed to load role options:', err);
+      setRolesByFacilityType({});
+    } finally {
+      setLoading(false);
+      setStep(3);
+    }
+  };
+
+  const toggleRole = (roleName: string) => {
+    setSelectedRoles((prev) =>
+      prev.includes(roleName) ? prev.filter((r) => r !== roleName) : [...prev, roleName]
+    );
+  };
+
+  // Step 3 → 4: compute the facility + personal requirement preview.
   const handleReviewStep = async () => {
     setLoading(true);
     try {
-      const uniqueTypes = Array.from(new Set(facilities.map((f) => f.type)));
+      const selections = selectionsForQuery();
       const allReqs: RequirementPreview[] = [];
-      for (const type of uniqueTypes) {
-        const reqs = (await getFacilityRequirements(type)) as RequirementPreview[];
+      for (const sel of selections) {
+        const reqs = (await getFacilityRequirements(sel.facilityType, sel.licenseType)) as RequirementPreview[];
         allReqs.push(...reqs);
       }
       const seen = new Set<string>();
@@ -122,11 +192,26 @@ export default function OnboardingPage() {
         return true;
       });
       setRequirementsSummary(dedup);
-      setStep(3);
+
+      if (selectedRoles.length > 0) {
+        const personal = await getPersonalRequirementsPreview(selectedRoles, selections);
+        const seenP = new Set<string>();
+        setPersonalSummary(
+          personal.filter((r) => {
+            if (seenP.has(r.requirement_name)) return false;
+            seenP.add(r.requirement_name);
+            return true;
+          })
+        );
+      } else {
+        setPersonalSummary([]);
+      }
+      setStep(4);
     } catch (err) {
       console.error('Failed to load preview requirements:', err);
       setRequirementsSummary([]);
-      setStep(3);
+      setPersonalSummary([]);
+      setStep(4);
     } finally {
       setLoading(false);
     }
@@ -135,14 +220,21 @@ export default function OnboardingPage() {
   const handleFinalize = async () => {
     setLoading(true);
     const payload: FacilityPayload[] = facilities.map((f) => ({
+      queueId: f.id,
       name: f.name,
       type: f.type,
+      licenseType: f.licenseType,
       licenseNumber: f.licenseNumber,
       capacity: f.capacity,
       toggles: f.toggles,
     }));
 
-    const result = await saveOnboardingData(orgName, payload);
+    const selfCompliance: SelfCompliancePayload | undefined =
+      selectedRoles.length > 0
+        ? { roleNames: selectedRoles, facilityRef: selfFacilityId ?? (facilities[0]?.id ?? null) }
+        : undefined;
+
+    const result = await saveOnboardingData(orgName, payload, selfCompliance);
     if (result.success) {
       router.push('/dashboard');
     } else {
@@ -152,13 +244,17 @@ export default function OnboardingPage() {
   };
 
   const visibleToggles = facType ? TOGGLES_BY_FACILITY_TYPE[facType] : [];
+  const availableLicenseTypes = facType ? LICENSE_TYPES_BY_FACILITY_TYPE[facType] : [];
+
+  // Titles available across every sector the user is onboarding.
+  const titleSections = Object.entries(rolesByFacilityType).filter(([, roles]) => roles.length > 0);
 
   return (
     <div className="min-h-screen bg-black text-white p-6 md:p-12 lg:p-24 selection:bg-blue-500">
       <div className="max-w-2xl mx-auto">
         {/* Step Progress Tracker */}
         <div className="flex gap-2 mb-16">
-          {[1, 2, 3].map((i) => (
+          {[1, 2, 3, 4].map((i) => (
             <div
               key={i}
               className={`h-1 flex-1 rounded-full transition-all duration-700 ${step >= i ? 'bg-blue-600' : 'bg-gray-800'}`}
@@ -196,7 +292,7 @@ export default function OnboardingPage() {
           <div className="animate-in fade-in slide-in-from-right-4 duration-700">
             <h1 className="text-3xl md:text-5xl font-bold mb-2 tracking-tight">Add Locations.</h1>
             <p className="text-gray-400 mb-8 text-base">
-              Bind each operations center to its regulatory authority and pick the scope flags that
+              Bind each operations center to its exact license type and pick the scope flags that
               apply. The dashboard will then load the precise rule set you need.
             </p>
 
@@ -219,38 +315,51 @@ export default function OnboardingPage() {
                   Regulatory Authority Domain
                 </label>
                 <div className="grid grid-cols-2 gap-4">
-                  <button
-                    onClick={() => handleSectorSelect('childcare_center')}
-                    className={`flex items-center gap-3 p-4 border rounded-xl transition-all ${
-                      facType === 'childcare_center'
-                        ? 'bg-blue-600/10 border-blue-500 text-white'
-                        : 'bg-black border-gray-800 text-gray-400 hover:border-gray-700'
-                    }`}
-                  >
-                    <span className="text-xl" aria-hidden>🧸</span>
-                    <div className="text-left">
-                      <p className="font-bold text-xs uppercase tracking-wide">Childcare Center</p>
-                      <p className="text-[10px] opacity-60">DCCECE Framework</p>
-                    </div>
-                  </button>
-                  <button
-                    onClick={() => handleSectorSelect('nursing_home')}
-                    className={`flex items-center gap-3 p-4 border rounded-xl transition-all ${
-                      facType === 'nursing_home'
-                        ? 'bg-blue-600/10 border-blue-500 text-white'
-                        : 'bg-black border-gray-800 text-gray-400 hover:border-gray-700'
-                    }`}
-                  >
-                    <span className="text-xl" aria-hidden>🏥</span>
-                    <div className="text-left">
-                      <p className="font-bold text-xs uppercase tracking-wide">Nursing Home</p>
-                      <p className="text-[10px] opacity-60">OLTC Framework</p>
-                    </div>
-                  </button>
+                  {(Object.keys(SECTOR_META) as FacilityType[]).map((sector) => (
+                    <button
+                      key={sector}
+                      onClick={() => handleSectorSelect(sector)}
+                      className={`flex items-center gap-3 p-4 border rounded-xl transition-all ${
+                        facType === sector
+                          ? 'bg-blue-600/10 border-blue-500 text-white'
+                          : 'bg-black border-gray-800 text-gray-400 hover:border-gray-700'
+                      }`}
+                    >
+                      <span className="text-xl" aria-hidden>{SECTOR_META[sector].icon}</span>
+                      <div className="text-left">
+                        <p className="font-bold text-xs uppercase tracking-wide">{SECTOR_META[sector].label}</p>
+                        <p className="text-[10px] opacity-60">{SECTOR_META[sector].authority}</p>
+                      </div>
+                    </button>
+                  ))}
                 </div>
               </div>
 
               {facType && (
+                <div>
+                  <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1.5">
+                    Exact License Type
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {availableLicenseTypes.map((lt) => (
+                      <button
+                        key={lt}
+                        onClick={() => setFacLicenseType(lt)}
+                        className={`text-left p-3 border rounded-xl transition-all ${
+                          facLicenseType === lt
+                            ? 'bg-blue-600/10 border-blue-500 text-white'
+                            : 'bg-black border-gray-800 text-gray-400 hover:border-gray-700'
+                        }`}
+                      >
+                        <p className="font-bold text-xs">{LICENSE_TYPE_LABELS[lt]}</p>
+                        <p className="text-[10px] opacity-60 mt-0.5">{LICENSE_TYPE_DESCRIPTIONS[lt]}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {facType && facLicenseType && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
                   <div>
                     <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1.5">
@@ -331,8 +440,9 @@ export default function OnboardingPage() {
                     >
                       <div>
                         <p className="font-bold text-md text-white">{f.name}</p>
+                        <p className="text-xs text-blue-400 mt-0.5">{LICENSE_TYPE_LABELS[f.licenseType]}</p>
                         <p className="text-xs text-gray-500 font-mono mt-0.5">
-                          {f.type} • ID: {f.licenseNumber} • Cap: {f.capacity}
+                          ID: {f.licenseNumber} • Cap: {f.capacity}
                         </p>
                         {activeFlags.length > 0 && (
                           <p className="text-[10px] text-blue-400 mt-1.5">
@@ -358,25 +468,130 @@ export default function OnboardingPage() {
                 Back
               </button>
               <button
-                onClick={handleReviewStep}
+                onClick={handleGoToTitles}
                 disabled={facilities.length === 0}
                 className="flex-1 bg-white text-black font-bold py-4 rounded-2xl hover:bg-blue-600 hover:text-white transition-all disabled:opacity-20 text-md"
               >
-                Review {facilities.length} Locations
+                Continue to Your Titles
               </button>
             </div>
           </div>
         )}
 
-        {/* STEP 3 */}
+        {/* STEP 3 — Your Titles (self-compliance) */}
         {step === 3 && (
+          <div className="animate-in fade-in slide-in-from-right-4 duration-700">
+            <h1 className="text-3xl md:text-5xl font-bold mb-2 tracking-tight">Your Titles.</h1>
+            <p className="text-gray-400 mb-8 text-base leading-relaxed">
+              Many operators wear more than one hat. Select every position <span className="text-white font-semibold">you personally hold</span>
+              {' '}— we&apos;ll track the compliance documents <span className="text-white font-semibold">you</span> are required to upload for each.
+            </p>
+
+            {facilities.length > 1 && (
+              <div className="mb-6">
+                <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1.5">
+                  Which location do you work at?
+                </label>
+                <select
+                  value={selfFacilityId ?? ''}
+                  onChange={(e) => setSelfFacilityId(e.target.value)}
+                  className="w-full bg-black border border-gray-800 p-3.5 rounded-xl text-sm focus:border-blue-500 outline-none text-white"
+                >
+                  {facilities.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name} — {LICENSE_TYPE_LABELS[f.licenseType]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {titleSections.length === 0 ? (
+              <p className="text-gray-500 italic text-sm mb-8">
+                No regulatory titles are defined for the selected license types. You can skip this step.
+              </p>
+            ) : (
+              <div className="space-y-6 mb-8 max-h-[420px] overflow-y-auto pr-2 custom-scrollbar">
+                {titleSections.map(([ft, roles]) => (
+                  <div key={ft}>
+                    <p className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em] mb-2">
+                      {SECTOR_META[ft as FacilityType]?.label ?? ft} Titles
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {roles.map((roleName) => (
+                        <label
+                          key={roleName}
+                          className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer text-xs transition-all ${
+                            selectedRoles.includes(roleName)
+                              ? 'bg-blue-600/10 border-blue-500 text-white'
+                              : 'bg-black border-gray-800 text-gray-400 hover:border-gray-700'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedRoles.includes(roleName)}
+                            onChange={() => toggleRole(roleName)}
+                            className="accent-blue-500"
+                          />
+                          <span className="font-medium">{roleName}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex gap-4">
+              <button onClick={() => setStep(2)} className="p-5 text-gray-500 font-bold text-sm">
+                Back
+              </button>
+              <button
+                onClick={handleReviewStep}
+                className="flex-1 bg-white text-black font-bold py-4 rounded-2xl hover:bg-blue-600 hover:text-white transition-all text-md"
+              >
+                {selectedRoles.length > 0
+                  ? `Review (${selectedRoles.length} title${selectedRoles.length > 1 ? 's' : ''})`
+                  : 'Skip & Review'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* STEP 4 — Audit preview */}
+        {step === 4 && (
           <div className="animate-in fade-in zoom-in-95 duration-700">
             <h1 className="text-3xl md:text-5xl font-bold mb-4 tracking-tight">Audit Checklist.</h1>
             <p className="text-gray-400 mb-10 text-base md:text-lg leading-relaxed">
               We&apos;ve cross-referenced applicable rulesets and structured your compliance pipeline.
             </p>
 
-            <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar divide-y divide-gray-900">
+            {personalSummary.length > 0 && (
+              <div className="mb-8">
+                <p className="text-[11px] font-black text-blue-400 uppercase tracking-[0.2em] mb-3">
+                  Your Personal Requirements ({personalSummary.length})
+                </p>
+                <div className="space-y-3 max-h-[220px] overflow-y-auto pr-2 custom-scrollbar divide-y divide-gray-900">
+                  {personalSummary.map((req) => (
+                    <div key={req.id} className="pt-3 first:pt-0 flex justify-between items-center">
+                      <h3 className="font-bold text-sm text-gray-200">{req.requirement_name}</h3>
+                      <span
+                        className={`text-[9px] font-black uppercase tracking-[0.15em] px-2 py-0.5 rounded ${
+                          req.severity === 'critical' ? 'bg-red-500/10 text-red-500' : 'bg-blue-500/10 text-blue-500'
+                        }`}
+                      >
+                        {req.severity}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <p className="text-[11px] font-black text-gray-500 uppercase tracking-[0.2em] mb-3">
+              Facility Requirements ({requirementsSummary.length})
+            </p>
+            <div className="space-y-4 max-h-[360px] overflow-y-auto pr-2 custom-scrollbar divide-y divide-gray-900">
               {requirementsSummary.length === 0 ? (
                 <p className="text-gray-500 italic text-sm">No requirements found for the selected facility types.</p>
               ) : (

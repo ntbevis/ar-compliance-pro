@@ -2,10 +2,138 @@
 // Central strict-typed schema definitions. The source of truth for our pristine taxonomy.
 
 /**
- * Top-level regulatory authority domain.
+ * Top-level regulatory authority domain (broad sector).
  * Aligns with the `facility_type` column in the `facilities` and `compliance_criteria` tables.
+ * Kept intentionally at two values; the exact Arkansas license lives in `LicenseType`.
  */
 export type FacilityType = 'childcare_center' | 'nursing_home';
+
+/**
+ * The governing regulatory authority for a compliance criterion.
+ * Aligns with the `regulatory_body` column on `compliance_criteria`.
+ *  - ADE_OEC            Arkansas Dept. of Education, Office of Early Childhood (childcare)
+ *  - AR_DHS_DPSQA_OLTC  DHS Division of Provider Services & QA, Office of Long Term Care
+ *  - ADH                Arkansas Department of Health (e.g. hospice, sanitation)
+ *  - CMS                Federal Medicare/Medicaid certification overlay
+ */
+export type RegulatoryBody = 'ADE_OEC' | 'AR_DHS_DPSQA_OLTC' | 'ADH' | 'CMS';
+
+export const REGULATORY_BODY_LABELS: Record<RegulatoryBody, string> = {
+  ADE_OEC: 'ADE Office of Early Childhood',
+  AR_DHS_DPSQA_OLTC: 'DHS Office of Long Term Care (DPSQA)',
+  ADH: 'Arkansas Department of Health',
+  CMS: 'CMS (Federal Certification)',
+};
+
+/**
+ * Childcare license tiers administered by the ADE Office of Early Childhood.
+ */
+export type ChildcareLicenseType =
+  | 'childcare_center'
+  | 'childcare_family_home'
+  | 'registered_family_home'
+  | 'ost';
+
+/**
+ * Long-term care license types licensed by the DHS Office of Long Term Care.
+ * Note: "SNF" is a CMS certification overlay on a nursing facility, not a
+ * separate Arkansas license; hospice is licensed by ADH, not OLTC.
+ */
+export type LongTermCareLicenseType =
+  | 'nursing_facility'
+  | 'assisted_living_i'
+  | 'assisted_living_ii'
+  | 'residential_care'
+  | 'icf_iid'
+  | 'prtf'
+  | 'adult_day_care'
+  | 'post_acute_head_injury';
+
+/**
+ * The exact license a facility holds. Aligns with `facilities.license_type` and
+ * the membership values used in `compliance_criteria.applicable_license_types`.
+ */
+export type LicenseType = ChildcareLicenseType | LongTermCareLicenseType;
+
+/**
+ * Which exact license types belong to which broad sector. Drives the onboarding
+ * license picker and any sector-scoped filtering.
+ */
+export const LICENSE_TYPES_BY_FACILITY_TYPE: Record<FacilityType, ReadonlyArray<LicenseType>> = {
+  childcare_center: ['childcare_center', 'childcare_family_home', 'registered_family_home', 'ost'],
+  nursing_home: [
+    'nursing_facility',
+    'assisted_living_i',
+    'assisted_living_ii',
+    'residential_care',
+    'icf_iid',
+    'prtf',
+    'adult_day_care',
+    'post_acute_head_injury',
+  ],
+};
+
+export const LICENSE_TYPE_LABELS: Record<LicenseType, string> = {
+  // ADE Office of Early Childhood
+  childcare_center: 'Licensed Child Care Center',
+  childcare_family_home: 'Licensed Child Care Family Home',
+  registered_family_home: 'Registered Child Care Family Home',
+  ost: 'Out-of-School-Time Facility',
+  // DHS Office of Long Term Care
+  nursing_facility: 'Nursing Facility',
+  assisted_living_i: 'Assisted Living Facility (Level I)',
+  assisted_living_ii: 'Assisted Living Facility (Level II)',
+  residential_care: 'Residential Care Facility',
+  icf_iid: 'Intermediate Care Facility (ICF/IID)',
+  prtf: 'Psychiatric Residential Treatment Facility (PRTF)',
+  adult_day_care: 'Adult Day Care / Adult Day Health Care',
+  post_acute_head_injury: 'Post-Acute Head Injury Facility',
+};
+
+/**
+ * One-line descriptions surfaced under each license option in onboarding.
+ */
+export const LICENSE_TYPE_DESCRIPTIONS: Record<LicenseType, string> = {
+  childcare_center: '6+ children from more than one family',
+  childcare_family_home: '6 to 16 children in a residence',
+  registered_family_home: 'Fewer than 6 children (voluntary)',
+  ost: 'Center-based, school-age only',
+  nursing_facility: 'Skilled/long-term nursing care (SNF/NF)',
+  assisted_living_i: 'Supportive care, no nursing services',
+  assisted_living_ii: 'Nursing-home level of care eligible',
+  residential_care: 'Non-nursing supportive residential care',
+  icf_iid: 'Intellectual/developmental disability care',
+  prtf: 'Inpatient psychiatric care, under age 21',
+  adult_day_care: 'Daytime adult supportive/health services',
+  post_acute_head_injury: 'Specialized head-injury rehabilitation',
+};
+
+/** The governing authority for a given license type (for UI hints). */
+export const REGULATORY_BODY_BY_LICENSE_TYPE: Record<LicenseType, RegulatoryBody> = {
+  childcare_center: 'ADE_OEC',
+  childcare_family_home: 'ADE_OEC',
+  registered_family_home: 'ADE_OEC',
+  ost: 'ADE_OEC',
+  nursing_facility: 'AR_DHS_DPSQA_OLTC',
+  assisted_living_i: 'AR_DHS_DPSQA_OLTC',
+  assisted_living_ii: 'AR_DHS_DPSQA_OLTC',
+  residential_care: 'AR_DHS_DPSQA_OLTC',
+  icf_iid: 'AR_DHS_DPSQA_OLTC',
+  prtf: 'AR_DHS_DPSQA_OLTC',
+  adult_day_care: 'AR_DHS_DPSQA_OLTC',
+  post_acute_head_injury: 'AR_DHS_DPSQA_OLTC',
+};
+
+/**
+ * A regulatory title the user selects for themselves during onboarding (or in
+ * settings). `facilityRef` optionally pins the title to a specific facility
+ * (by the onboarding queue id, then resolved to a real facility id on save).
+ */
+export interface SelectedRole {
+  roleName: string;
+  facilityType: FacilityType;
+  facilityRef?: string | null;
+}
 
 /**
  * Sub-classification toggles persisted as boolean columns on the `facilities` table.
@@ -96,6 +224,8 @@ export interface Facility extends FacilityScopeToggles {
   org_id: string;
   name: string;
   facility_type: FacilityType;
+  /** The exact Arkansas license this facility holds (additive to facility_type). */
+  license_type: LicenseType | null;
   license_number: string | null;
   capacity: number | null;
   active_enrollment: number | null;
@@ -145,6 +275,14 @@ export interface ComplianceRule {
   attestation_allowed?: boolean;
   /** Role-specific override. When non-empty, only staff whose role is listed here are subject to this rule. */
   applicable_roles?: string[] | null;
+  /**
+   * Exact license-type scope. When non-empty, the rule only applies to
+   * facilities whose `license_type` is in this list. NULL/empty = applies to
+   * every license type within `facility_type` (the common, sector-wide case).
+   */
+  applicable_license_types?: string[] | null;
+  /** Governing regulatory authority for this criterion. */
+  regulatory_body?: RegulatoryBody | null;
 }
 
 /**

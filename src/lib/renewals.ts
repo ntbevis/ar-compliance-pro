@@ -55,7 +55,7 @@ function statusFor(daysUntil: number): RenewalStatus {
  * are intentionally skipped — there is nothing to renew.
  */
 export function computeRenewals(params: {
-  facility: Pick<Facility, 'facility_type' | FacilityToggleKey>;
+  facility: Pick<Facility, 'facility_type' | 'license_type' | FacilityToggleKey>;
   rules: ComplianceRule[];
   docs: RenewalDocInput[];
   personnelNameById: Map<string, string>;

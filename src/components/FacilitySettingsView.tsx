@@ -2,13 +2,23 @@
 
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { getFacilitySettings, updateFacilitySettings, updateFacilityProfile } from 'src/app/actions/compliance';
+import {
+  getFacilitySettings,
+  updateFacilitySettings,
+  updateFacilityProfile,
+  getMySelfRoles,
+  updateMySelfRoles,
+} from 'src/app/actions/compliance';
 import {
   FACILITY_TOGGLE_LABELS,
   TOGGLES_BY_FACILITY_TYPE,
+  LICENSE_TYPE_LABELS,
+  REGULATORY_BODY_BY_LICENSE_TYPE,
+  REGULATORY_BODY_LABELS,
   type FacilityScopeToggles,
   type FacilityToggleKey,
   type FacilityType,
+  type LicenseType,
 } from '@/lib/types';
 
 interface Props {
@@ -19,6 +29,7 @@ interface FacilityRow extends FacilityScopeToggles {
   id: string;
   name: string;
   facility_type: FacilityType;
+  license_type?: LicenseType | null;
   license_number?: string;
   capacity?: number;
 }
@@ -34,6 +45,11 @@ export default function FacilitySettingsView({ facilityId }: Props) {
   const [editName, setEditName] = useState('');
   const [editLicense, setEditLicense] = useState('');
   const [editCapacity, setEditCapacity] = useState<number | ''>('');
+
+  // Self-compliance (the current user's own regulatory titles at this facility)
+  const [myRoles, setMyRoles] = useState<string[]>([]);
+  const [availableRoles, setAvailableRoles] = useState<string[]>([]);
+  const [savingRoles, setSavingRoles] = useState<boolean>(false);
 
   useEffect(() => {
     async function load() {
@@ -64,6 +80,12 @@ export default function FacilitySettingsView({ facilityId }: Props) {
         } else {
           setFacility(null);
         }
+
+        const roleResult = await getMySelfRoles(facilityId);
+        if (roleResult.success) {
+          setMyRoles(roleResult.currentRoles);
+          setAvailableRoles(roleResult.availableRoles);
+        }
       } catch (err) {
         console.error('Failed to load facility settings:', err);
       } finally {
@@ -75,6 +97,26 @@ export default function FacilitySettingsView({ facilityId }: Props) {
 
   const onToggle = (key: FacilityToggleKey) => {
     setToggles((prev) => (prev ? { ...prev, [key]: !prev[key] } : prev));
+  };
+
+  const toggleMyRole = (roleName: string) => {
+    setMyRoles((prev) =>
+      prev.includes(roleName) ? prev.filter((r) => r !== roleName) : [...prev, roleName]
+    );
+  };
+
+  const handleSaveRoles = async () => {
+    setSavingRoles(true);
+    try {
+      const result = await updateMySelfRoles(facilityId, myRoles);
+      if (result.success) {
+        toast.success('Your titles were saved. Personal requirements refresh on next dashboard load.');
+      } else {
+        toast.error(result.error ?? 'Failed to save your titles.');
+      }
+    } finally {
+      setSavingRoles(false);
+    }
   };
 
   const handleSaveProfile = async () => {
@@ -185,9 +227,27 @@ export default function FacilitySettingsView({ facilityId }: Props) {
           </div>
         </div>
 
+        <div>
+          <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1.5">
+            License Type
+          </label>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-sm font-semibold text-slate-700">
+              {facility.license_type ? LICENSE_TYPE_LABELS[facility.license_type] : '—'}
+            </span>
+            <span className="text-[10px] uppercase tracking-wider text-slate-400">
+              Set at creation
+            </span>
+          </div>
+        </div>
+
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
           <span className="text-xs font-mono text-slate-400">
-            {facility.facility_type === 'childcare_center' ? 'Childcare Center • DCCECE' : 'Nursing Home • OLTC'}
+            {facility.license_type
+              ? REGULATORY_BODY_LABELS[REGULATORY_BODY_BY_LICENSE_TYPE[facility.license_type]]
+              : facility.facility_type === 'childcare_center'
+                ? 'ADE Office of Early Childhood'
+                : 'DHS Office of Long Term Care'}
           </span>
           <button
             onClick={handleSaveProfile}
@@ -246,6 +306,61 @@ export default function FacilitySettingsView({ facilityId }: Props) {
             {savingToggles ? 'Saving…' : 'Save Scope Flags'}
           </button>
         </div>
+      </section>
+
+      {/* ── My Titles (self-compliance) ──────────────────────────────────── */}
+      <section className="bg-white p-5 md:p-8 rounded-xl border border-slate-200 shadow-sm text-slate-800 space-y-5">
+        <header>
+          <h2 className="text-xl font-bold">🧑‍⚕️ My Titles at This Facility</h2>
+          <p className="text-sm text-slate-500 mt-1">
+            Select every position you personally hold here. We track the compliance documents
+            <span className="font-semibold text-slate-700"> you </span> must maintain for each, and they
+            appear under your name in the Personnel Vault for uploads.
+          </p>
+        </header>
+
+        {availableRoles.length === 0 ? (
+          <p className="text-sm text-slate-500 italic">
+            No regulatory titles are defined for this facility&apos;s license type.
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {availableRoles.map((roleName) => (
+              <label
+                key={roleName}
+                className={`flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition-all ${
+                  myRoles.includes(roleName)
+                    ? 'bg-blue-50 border-blue-400 text-slate-900'
+                    : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={myRoles.includes(roleName)}
+                  onChange={() => toggleMyRole(roleName)}
+                  className="accent-blue-500 w-4 h-4"
+                />
+                <span className="font-medium text-sm">{roleName}</span>
+              </label>
+            ))}
+          </div>
+        )}
+
+        {availableRoles.length > 0 && (
+          <div className="pt-1">
+            <button
+              onClick={handleSaveRoles}
+              disabled={savingRoles}
+              className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all ${
+                savingRoles
+                  ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                  : 'bg-blue-600 hover:bg-blue-700 text-white shadow-sm'
+              }`}
+            >
+              {savingRoles ? 'Saving…' : 'Save My Titles'}
+            </button>
+          </div>
+        )}
       </section>
     </div>
   );
