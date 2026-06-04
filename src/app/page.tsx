@@ -73,7 +73,7 @@ function LandingPageInner() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex flex-col">
       {/* Header */}
       <header className="absolute top-0 left-0 right-0 z-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -90,7 +90,7 @@ function LandingPageInner() {
       </header>
 
       {/* Main Content */}
-      <div className="flex items-center justify-center min-h-screen px-4 pt-28 sm:pt-24 lg:pt-32 pb-16 lg:pb-24">
+      <div className="flex flex-1 items-center justify-center px-4 pt-28 sm:pt-24 lg:pt-32 pb-8">
         <div className="max-w-6xl w-full grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-center">
           {/* Left Side - Marketing Content */}
           <div className="text-white space-y-6">
@@ -245,7 +245,7 @@ function LandingPageInner() {
       </div>
 
       {/* Footer */}
-      <footer className="relative py-6 mt-8 lg:absolute lg:bottom-0 lg:left-0 lg:right-0 lg:mt-0">
+      <footer className="py-6">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <p className="text-center text-blue-300 text-sm">
             © 2026 Compliance Guard Pro. Strictly-typed regulatory intelligence.
