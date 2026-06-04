@@ -99,12 +99,13 @@ function LandingPageInner() {
             </div>
             
             <h2 className="text-3xl md:text-5xl font-bold leading-tight">
-              Automated Compliance Management for Childcare &amp; Nursing Homes
+              Inspection-Ready Compliance for Childcare &amp; Long-Term Care
             </h2>
             
             <p className="text-lg md:text-xl text-blue-200 leading-relaxed">
-              Twin-score regulatory monitoring, dynamic facility scope flags, and real-time
-              personnel licensing oversight for childcare centers and nursing homes.
+              Compliance Guard Pro scores your facility and staff against the exact Arkansas
+              requirements your license demands &mdash; with AI document verification and
+              primary-source nurse-license monitoring.
             </p>
 
             <div className="space-y-4 pt-4">
@@ -115,8 +116,8 @@ function LandingPageInner() {
                   </svg>
                 </div>
                 <div>
-                  <h3 className="font-semibold text-lg">Real-Time Compliance Scoring</h3>
-                  <p className="text-blue-200 text-sm">Instant facility readiness calculations against applicable regulatory requirements</p>
+                  <h3 className="font-semibold text-lg">Twin-Score Readiness</h3>
+                  <p className="text-blue-200 text-sm">Live facility and staff compliance scores against the precise rules your license requires &mdash; so you see gaps before an inspector does.</p>
                 </div>
               </div>
 
@@ -127,8 +128,20 @@ function LandingPageInner() {
                   </svg>
                 </div>
                 <div>
-                  <h3 className="font-semibold text-lg">Operator-Verified Document Vault</h3>
-                  <p className="text-blue-200 text-sm">Director attestations and uploaded evidence with full audit trail.</p>
+                  <h3 className="font-semibold text-lg">AI-Verified Document Vault</h3>
+                  <p className="text-blue-200 text-sm">Upload a license or certificate and AI extracts expiration dates, validates it against the requirement, and preserves a full audit trail.</p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3">
+                <div className="w-6 h-6 bg-emerald-500 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
+                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="font-semibold text-lg">Nursys Nurse License Verification</h3>
+                  <p className="text-blue-200 text-sm">Automated, primary-source RN and LPN license checks through Nursys &mdash; no manual Board of Nursing lookups.</p>
                 </div>
               </div>
 
@@ -140,7 +153,7 @@ function LandingPageInner() {
                 </div>
                 <div>
                   <h3 className="font-semibold text-lg">Staffing Ratio Enforcement</h3>
-                  <p className="text-blue-200 text-sm">Automated monitoring of regulatory staff-to-resident requirements</p>
+                  <p className="text-blue-200 text-sm">Continuous monitoring of staff-to-resident and staff-to-child ratios for your exact license type.</p>
                 </div>
               </div>
             </div>
