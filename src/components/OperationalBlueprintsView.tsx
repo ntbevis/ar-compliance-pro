@@ -132,6 +132,10 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
 
   const [exporting, setExporting] = useState(false);
 
+  // Captured once at mount so render stays pure. The acknowledgment is an annual
+  // check, so a per-session snapshot of "now" is sufficient.
+  const [nowMs] = useState(() => Date.now());
+
   const loadTasks = useCallback(async () => {
     setTasksLoading(true);
     try {
@@ -163,9 +167,9 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
       } finally {
         if (!cancelled) setLoading(false);
       }
+      await loadTasks();
     }
     load();
-    loadTasks();
     return () => {
       cancelled = true;
     };
@@ -307,7 +311,7 @@ export default function OperationalBlueprintsView({ facilityId }: Props) {
   // re-opens only when the next annual one is due.
   const ackDate = lastAck ? new Date(lastAck.created_at) : null;
   const ackNextDue = ackDate ? new Date(ackDate.getTime() + 365 * 24 * 60 * 60 * 1000) : null;
-  const ackCurrent = !!(ackNextDue && Date.now() < ackNextDue.getTime());
+  const ackCurrent = !!(ackNextDue && nowMs < ackNextDue.getTime());
 
   return (
     <div className="space-y-8 max-w-6xl mx-auto">

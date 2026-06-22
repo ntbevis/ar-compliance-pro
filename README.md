@@ -62,8 +62,8 @@ Open [http://localhost:3000](http://localhost:3000).
   depth. Browser (anon/authenticated key) access is limited to document
   uploads scoped to the caller's own organization. See the
   `*_rls_tenant_isolation` and `*_perf_indexes_and_rls_initplan` migrations.
-- **Middleware** (`src/middleware.ts`) guards `/dashboard`, `/onboarding`, and
-  `/admin`, and enforces the onboarding-completion flow.
+- **Proxy** (`src/proxy.ts`, formerly `middleware.ts`) guards `/dashboard`,
+  `/onboarding`, and `/admin`, and enforces the onboarding-completion flow.
 
 ## Database
 
