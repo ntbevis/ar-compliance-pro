@@ -6,25 +6,46 @@ import type { FacilityType, LicenseType } from '@/lib/types';
 import {
   normalizeApplicableLicenseTypes,
   normalizeApplicableRoles,
+  UNIVERSAL_BASELINE_TAGS,
 } from '@/lib/reg-monitor';
 
 /**
+ * Whether a rule's sub_classification passes for a given set of activated scope
+ * toggles. Mirrors ruleAppliesToFacility's sub_classification gate so the
+ * onboarding preview matches exactly what the dashboard will later score:
+ *   - NULL / 'null' (universal), OR
+ *   - a universal baseline tag (all_staff / facility_management / education), OR
+ *   - a toggle currently switched on for the facility.
+ */
+function subClassificationApplies(
+  sub: unknown,
+  activeToggles: ReadonlySet<string>
+): boolean {
+  if (sub === null || sub === undefined || sub === 'null') return true;
+  const tag = String(sub);
+  if (UNIVERSAL_BASELINE_TAGS.has(tag)) return true;
+  return activeToggles.has(tag);
+}
+
+/**
  * Returns the headline compliance criteria for a facility type, optionally
- * narrowed to an exact license type. Used in the onboarding preview to show
- * prospective customers what will be tracked. Scope-toggle (sub_classification)
- * filtering still happens later in the dashboard once toggles are set; here we
- * only apply the broad sector + exact-license gate.
+ * narrowed to an exact license type AND the facility's activated scope toggles.
+ * Used in the onboarding preview so prospective customers see exactly what the
+ * dashboard will track. When `activeToggles` is provided we apply the full
+ * facility gate (sector + exact license + sub_classification); when omitted we
+ * fall back to the broad sector + license gate only (legacy behavior).
  */
 export async function getFacilityRequirements(
   facilityType: FacilityType,
-  licenseType?: LicenseType | null
+  licenseType?: LicenseType | null,
+  activeToggles?: readonly string[]
 ) {
   const supabase = await createClient();
 
   const { data: requirements, error } = await supabase
     .from('compliance_criteria')
     .select(
-      'id, requirement_name, required_document_type, severity, frequency, score_category, applicable_license_types, regulatory_body'
+      'id, requirement_name, required_document_type, severity, frequency, score_category, sub_classification, applicable_license_types, regulatory_body'
     )
     .eq('facility_type', facilityType)
     .order('severity', { ascending: false });
@@ -35,15 +56,26 @@ export async function getFacilityRequirements(
   }
 
   const rows = requirements ?? [];
-  if (!licenseType) return rows;
+  const toggleSet = activeToggles ? new Set(activeToggles) : null;
 
-  // Exact-license gate: keep rules that are unrestricted OR explicitly include
-  // this license type.
   return rows.filter((r) => {
-    const allowed = normalizeApplicableLicenseTypes(
-      (r as { applicable_license_types?: unknown }).applicable_license_types
-    );
-    return allowed === null || allowed.includes(licenseType);
+    // Exact-license gate: keep rules that are unrestricted OR explicitly include
+    // this license type.
+    if (licenseType) {
+      const allowed = normalizeApplicableLicenseTypes(
+        (r as { applicable_license_types?: unknown }).applicable_license_types
+      );
+      if (allowed !== null && !allowed.includes(licenseType)) return false;
+    }
+    // Scope-toggle gate: only applied when the caller passes the facility's
+    // activated toggles, so the preview reflects the exact scored rule set.
+    if (toggleSet) {
+      return subClassificationApplies(
+        (r as { sub_classification?: unknown }).sub_classification,
+        toggleSet
+      );
+    }
+    return true;
   });
 }
 
@@ -110,7 +142,11 @@ export async function getOnboardingRoleOptions(
  */
 export async function getPersonalRequirementsPreview(
   roleNames: string[],
-  selections: Array<{ facilityType: FacilityType; licenseType?: LicenseType | null }>
+  selections: Array<{
+    facilityType: FacilityType;
+    licenseType?: LicenseType | null;
+    toggles?: readonly string[];
+  }>
 ): Promise<
   Array<{
     id: string;
@@ -126,17 +162,24 @@ export async function getPersonalRequirementsPreview(
 
   const facilityTypes = Array.from(new Set(selections.map((s) => s.facilityType)));
   const licenseTypesByFacility = new Map<FacilityType, Set<string>>();
+  const togglesByFacility = new Map<FacilityType, Set<string>>();
   for (const s of selections) {
-    if (!s.licenseType) continue;
-    const set = licenseTypesByFacility.get(s.facilityType) ?? new Set<string>();
-    set.add(s.licenseType);
-    licenseTypesByFacility.set(s.facilityType, set);
+    if (s.licenseType) {
+      const set = licenseTypesByFacility.get(s.facilityType) ?? new Set<string>();
+      set.add(s.licenseType);
+      licenseTypesByFacility.set(s.facilityType, set);
+    }
+    if (s.toggles && s.toggles.length > 0) {
+      const set = togglesByFacility.get(s.facilityType) ?? new Set<string>();
+      for (const t of s.toggles) set.add(t);
+      togglesByFacility.set(s.facilityType, set);
+    }
   }
 
   const { data: rules, error } = await supabase
     .from('compliance_criteria')
     .select(
-      'id, facility_type, requirement_name, required_document_type, severity, frequency, score_category, applicable_roles, applicable_license_types'
+      'id, facility_type, requirement_name, required_document_type, severity, frequency, score_category, sub_classification, applicable_roles, applicable_license_types'
     )
     .in('facility_type', facilityTypes);
 
@@ -158,6 +201,11 @@ export async function getPersonalRequirementsPreview(
         !picked || picked.size === 0 || allowedLicenses.some((lt) => picked.has(lt));
       if (!intersects) return false;
     }
+
+    // Scope-toggle gate: a personnel rule pinned to a toggle (e.g. memory_care
+    // dementia training) only applies when that toggle is active for the sector.
+    const activeToggles = togglesByFacility.get(r.facility_type as FacilityType) ?? new Set<string>();
+    if (!subClassificationApplies(r.sub_classification, activeToggles)) return false;
 
     // Role gate: a rule with no applicable_roles applies to all staff; otherwise
     // one of the user's selected titles must be listed.

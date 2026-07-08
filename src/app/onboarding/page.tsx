@@ -144,13 +144,32 @@ export default function OnboardingPage() {
     setFacilities((prev) => prev.filter((f) => f.id !== id));
   };
 
-  /** Distinct sector + license combinations currently queued. */
-  const selectionsForQuery = () =>
-    Array.from(
-      new Map(
-        facilities.map((f) => [`${f.type}:${f.licenseType}`, { facilityType: f.type, licenseType: f.licenseType }])
-      ).values()
-    );
+  /**
+   * Distinct sector + license combinations currently queued, each carrying the
+   * union of active scope toggles across facilities that share the combination.
+   * Threading toggles through lets the preview apply the exact same gate the
+   * dashboard uses (sector + license + sub_classification).
+   */
+  const selectionsForQuery = () => {
+    const byKey = new Map<
+      string,
+      { facilityType: FacilityType; licenseType: LicenseType; toggles: Set<string> }
+    >();
+    for (const f of facilities) {
+      const key = `${f.type}:${f.licenseType}`;
+      const entry =
+        byKey.get(key) ?? { facilityType: f.type, licenseType: f.licenseType, toggles: new Set<string>() };
+      for (const k of Object.keys(f.toggles) as FacilityToggleKey[]) {
+        if (f.toggles[k]) entry.toggles.add(k);
+      }
+      byKey.set(key, entry);
+    }
+    return Array.from(byKey.values()).map((e) => ({
+      facilityType: e.facilityType,
+      licenseType: e.licenseType,
+      toggles: Array.from(e.toggles),
+    }));
+  };
 
   // Step 2 → 3: load the regulatory titles the user can claim for themselves.
   const handleGoToTitles = async () => {
@@ -182,7 +201,11 @@ export default function OnboardingPage() {
       const selections = selectionsForQuery();
       const allReqs: RequirementPreview[] = [];
       for (const sel of selections) {
-        const reqs = (await getFacilityRequirements(sel.facilityType, sel.licenseType)) as RequirementPreview[];
+        const reqs = (await getFacilityRequirements(
+          sel.facilityType,
+          sel.licenseType,
+          sel.toggles
+        )) as RequirementPreview[];
         allReqs.push(...reqs);
       }
       const seen = new Set<string>();
